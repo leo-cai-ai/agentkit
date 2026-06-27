@@ -1,0 +1,64 @@
+# ALTERNATIVE stack: app only (no bundled db). Connects to an EXTERNAL / shared
+# Postgres that lives elsewhere — another server, a managed DB, or one tunneled
+# to this host. Run with:
+#
+#   docker compose -f docker-compose.external.yml up -d --build
+#
+# Unlike the default stack, this file does NOT override the PG connection: host,
+# port, database, user, password and sslmode all come straight from .env, so you
+# point it wherever you need. It uses host networking, so AGENTKIT_PG_HOST=
+# 127.0.0.1 (or localhost) reaches the host's own localhost — handy when the
+# remote DB is exposed locally via an SSH tunnel (ssh -L 5432:db:5432 ...).
+#
+# Example .env for this file:
+#   AGENTKIT_VECTOR_STORE_BACKEND=postgres
+#   AGENTKIT_PG_HOST=127.0.0.1        # localhost/tunnel, OR a remote IP/hostname
+#   AGENTKIT_PG_PORT=5432
+#   AGENTKIT_PG_DATABASE=agentkitdb
+#   AGENTKIT_PG_USER=<user>
+#   AGENTKIT_PG_PASSWORD=<password>
+#   AGENTKIT_PG_SSLMODE=require       # public/remote DBs usually need require
+#
+# Prereqs on the external DB: the `vector` extension must exist in the target
+# database (CREATE EXTENSION IF NOT EXISTS vector;). Validate connectivity with:
+#   docker compose -f docker-compose.external.yml run --rm web agentkit init-db
+services:
+  web:
+    build: .
+    image: agentkit-web:latest
+    env_file:
+      - .env
+    # host networking (Linux): the container shares the host's network namespace,
+    # so AGENTKIT_PG_HOST=127.0.0.1 in .env points at the host's localhost. The
+    # app binds the host's :8501 directly (no ports: mapping in this mode).
+    network_mode: "host"
+    # Only force the backend; every PG connection detail is taken from .env so you
+    # can target any external/shared Postgres without editing this file.
+    environment:
+      AGENTKIT_VECTOR_STORE_BACKEND: postgres
+    volumes:
+      - ./tenants:/app/tenants:ro
+      - ./prompts:/app/prompts:ro
+      - ./skills:/app/skills:ro
+      - agentkit_data:/app/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8501/healthz', timeout=3).status==200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  agentkit_data:
