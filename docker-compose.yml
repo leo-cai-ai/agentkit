@@ -1,47 +1,22 @@
 services:
-  db:
-    # pgvector-enabled Postgres so long-term semantic memory works out of the box.
-    image: pgvector/pgvector:pg16
-    environment:
-      POSTGRES_DB: ${AGENTKIT_PG_DATABASE:-agentkit}
-      POSTGRES_USER: ${AGENTKIT_PG_USER:-agentkit}
-      # Set AGENTKIT_PG_PASSWORD in .env; this is required (no insecure default).
-      POSTGRES_PASSWORD: ${AGENTKIT_PG_PASSWORD:?set AGENTKIT_PG_PASSWORD in .env}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      # One-shot pgvector extension bootstrap on first init.
-      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${AGENTKIT_PG_USER:-agentkit} -d ${AGENTKIT_PG_DATABASE:-agentkit}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
-    # Not published to the host: only the web service reaches it over the
-    # internal compose network. Uncomment to inspect from the host.
-    # ports:
-    #   - "5432:5432"
-
   web:
     build: .
     image: agentkit-web:latest
-    depends_on:
-      db:
-        condition: service_healthy
     # Secrets and tokens are injected from .env (never baked into the image):
     #   AGENTKIT_WEB_AUTH_TOKEN, AGENTKIT_WEB_SECRET_KEY, LLM credentials, etc.
     env_file:
       - .env
-    # Container-network overrides win over .env so the app always reaches the
-    # bundled db service regardless of the host/sslmode set for local use.
+    # Connect to the Postgres already running on the HOST (not a compose-managed
+    # db). These container overrides win over .env; the DB name / user / password
+    # still come from .env. host.docker.internal resolves to the host via the
+    # host-gateway mapping in extra_hosts below (Docker 20.10+ on Linux).
     environment:
       AGENTKIT_VECTOR_STORE_BACKEND: postgres
-      AGENTKIT_PG_HOST: db
+      AGENTKIT_PG_HOST: host.docker.internal
       AGENTKIT_PG_PORT: "5432"
       AGENTKIT_PG_SSLMODE: disable
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8501:8501"
     volumes:
@@ -72,4 +47,3 @@ services:
 
 volumes:
   agentkit_data:
-  pgdata:
