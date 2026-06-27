@@ -54,6 +54,23 @@ def test_require_chat_json_parses(monkeypatch):
     assert llm_client.require_chat_json("s", "u") == {"a": 1}
 
 
+def test_require_chat_json_ignores_think_block(monkeypatch):
+    # Reasoning models prepend a <think> block whose prose contains braces;
+    # it must be stripped before the JSON is parsed.
+    reply = (
+        "<think>The user wants a status. I'll return {\"status\": \"ok\"}.</think>\n"
+        '{"status": "approved"}'
+    )
+    prov = _FlakyProvider(fail_times=0, then=reply)
+    _use(monkeypatch, prov, max_retries=0)
+    assert llm_client.require_chat_json("s", "u") == {"status": "approved"}
+
+
+def test_extract_json_handles_think_and_fence():
+    raw = "<think>reasoning with {braces}</think>\n```json\n{\"a\": 2}\n```"
+    assert llm_client._extract_json(raw) == {"a": 2}
+
+
 def test_empty_response_raises_without_retry(monkeypatch):
     prov = _FlakyProvider(fail_times=0, then="")
     _use(monkeypatch, prov, max_retries=3)

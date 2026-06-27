@@ -208,8 +208,26 @@ def require_chat_json(system: str, user: str) -> dict[str, Any]:
     return data
 
 
+def _strip_think(raw: str) -> str:
+    """Remove reasoning-model ``<think>...</think>`` blocks from a response.
+
+    Models like DeepSeek-R1 / Qwen emit a chain-of-thought wrapped in
+    ``<think>`` tags before the actual answer. That prose routinely contains
+    ``{`` / ``}`` characters, which makes the brace-matching fallback in
+    :func:`_extract_json` capture the thinking text and fail to parse. Strip
+    complete blocks first, then any dangling/unbalanced markers left behind by
+    truncated output.
+    """
+    cleaned = re.sub(r"<think\b[^>]*>.*?</think>", "", raw, flags=re.S | re.I)
+    # Unclosed opening tag (stream cut off before the answer/JSON began).
+    cleaned = re.sub(r"<think\b[^>]*>.*$", "", cleaned, flags=re.S | re.I)
+    # Stray closing tag with no matching open (the open block was dropped).
+    cleaned = re.sub(r"^.*?</think>", "", cleaned, flags=re.S | re.I)
+    return cleaned
+
+
 def _extract_json(raw: str) -> dict[str, Any] | None:
-    text = raw.strip()
+    text = _strip_think(raw).strip()
     fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", text, flags=re.S)
     if fence:
         text = fence.group(1).strip()

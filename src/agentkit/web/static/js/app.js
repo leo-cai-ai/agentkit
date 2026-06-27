@@ -23,6 +23,147 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+// --- Lightweight, XSS-safe markdown rendering for assistant replies. ---
+// All input is HTML-escaped first; formatting tags are then layered onto the
+// already-escaped text via controlled regexes, so untrusted LLM/model output
+// can never inject live HTML. Supports headings, lists, fenced/inline code,
+// bold, italic, and http(s)/mailto links.
+function renderMarkdownInline(escaped) {
+  let out = escaped.replace(/`([^`]+)`/g, (_m, code) => `<code>${code}</code>`);
+  out = out.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, label, url) => {
+    const trimmed = url.trim();
+    const safe = /^(https?:|mailto:)/i.test(trimmed) ? trimmed : "#";
+    return `<a href="${safe}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+  });
+  out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  out = out.replace(/__([^_]+)__/g, "<strong>$1</strong>");
+  out = out.replace(/(^|[^*])\*([^*\s][^*]*?)\*(?!\*)/g, "$1<em>$2</em>");
+  return out;
+}
+
+function renderMarkdown(raw) {
+  const lines = escapeHtml(String(raw ?? "")).split("\n");
+  const html = [];
+  let listType = null;
+  const closeList = () => {
+    if (listType) {
+      html.push(`</${listType}>`);
+      listType = null;
+    }
+  };
+  for (let i = 0; i < lines.length; ) {
+    const line = lines[i];
+    const fence = line.match(/^\s*```(\w*)\s*$/);
+    if (fence) {
+      closeList();
+      const code = [];
+      i += 1;
+      while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) {
+        code.push(lines[i]);
+        i += 1;
+      }
+      i += 1;
+      html.push(`<pre class="md-code"><code>${code.join("\n")}</code></pre>`);
+      continue;
+    }
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      closeList();
+      const level = heading[1].length;
+      html.push(`<h${level} class="md-h">${renderMarkdownInline(heading[2])}</h${level}>`);
+      i += 1;
+      continue;
+    }
+    const unordered = line.match(/^\s*[-*+]\s+(.*)$/);
+    if (unordered) {
+      if (listType !== "ul") {
+        closeList();
+        html.push('<ul class="md-list">');
+        listType = "ul";
+      }
+      html.push(`<li>${renderMarkdownInline(unordered[1])}</li>`);
+      i += 1;
+      continue;
+    }
+    const ordered = line.match(/^\s*\d+\.\s+(.*)$/);
+    if (ordered) {
+      if (listType !== "ol") {
+        closeList();
+        html.push('<ol class="md-list">');
+        listType = "ol";
+      }
+      html.push(`<li>${renderMarkdownInline(ordered[1])}</li>`);
+      i += 1;
+      continue;
+    }
+    if (!line.trim()) {
+      closeList();
+      i += 1;
+      continue;
+    }
+    closeList();
+    const para = [line];
+    i += 1;
+    while (
+      i < lines.length &&
+      lines[i].trim() &&
+      !/^\s*```/.test(lines[i]) &&
+      !/^(#{1,6})\s+/.test(lines[i]) &&
+      !/^\s*[-*+]\s+/.test(lines[i]) &&
+      !/^\s*\d+\.\s+/.test(lines[i])
+    ) {
+      para.push(lines[i]);
+      i += 1;
+    }
+    html.push(`<p>${para.map(renderMarkdownInline).join("<br>")}</p>`);
+  }
+  closeList();
+  return html.join("");
+}
+
+function thinkBlockHtml(content) {
+  return `<details class="think-block"><summary>Thinking</summary><div class="think-body">${renderMarkdown(content)}</div></details>`;
+}
+
+// Split an assistant reply into collapsible <think> blocks and markdown-rendered
+// answer segments. Handles complete blocks as well as a trailing unclosed
+// <think> (e.g. mid-stream or truncated output).
+function renderAssistantHtml(raw) {
+  const text = String(raw ?? "");
+  const parts = [];
+  const thinkRe = /<think\b[^>]*>([\s\S]*?)<\/think>/gi;
+  let lastIndex = 0;
+  let match;
+  while ((match = thinkRe.exec(text)) !== null) {
+    const before = text.slice(lastIndex, match.index);
+    if (before.trim()) parts.push(renderMarkdown(before));
+    if (match[1].trim()) parts.push(thinkBlockHtml(match[1]));
+    lastIndex = thinkRe.lastIndex;
+  }
+  let rest = text.slice(lastIndex);
+  const openMatch = rest.match(/<think\b[^>]*>/i);
+  if (openMatch) {
+    const before = rest.slice(0, openMatch.index);
+    if (before.trim()) parts.push(renderMarkdown(before));
+    const thinking = rest.slice(openMatch.index + openMatch[0].length);
+    if (thinking.trim()) parts.push(thinkBlockHtml(thinking));
+    rest = "";
+  }
+  if (rest.trim()) parts.push(renderMarkdown(rest));
+  return parts.length ? parts.join("") : renderMarkdown(text);
+}
+
+// Replace a streaming bubble's plain-text <p> with the formatted answer
+// (collapsible thinking + markdown) once the full reply is available.
+function finalizeAssistantBubble(bubble, text) {
+  if (!bubble || !bubble.p) return;
+  const body = document.createElement("div");
+  body.className = "chat-body";
+  body.innerHTML = renderAssistantHtml(text);
+  bubble.p.replaceWith(body);
+  bubble.p = body;
+}
+
 // The UI is a single chat window for every agent. Command-mode agents send only
 // {agent, text}; the server fills business params from tenant defaults + the
 // natural-language request. Chat-mode agents post to /api/chat instead.
@@ -607,7 +748,19 @@ function addChatMessage(role, text, labelOverride = "") {
   const node = document.createElement("div");
   node.className = `chat-message ${role}`;
   const label = labelOverride || (role === "user" ? "You" : getSelectedAgentLabel());
-  node.innerHTML = `<span>${label}</span><p>${escapeHtml(text)}</p>`;
+  const labelSpan = document.createElement("span");
+  labelSpan.textContent = label;
+  node.appendChild(labelSpan);
+  const body = document.createElement("div");
+  body.className = "chat-body";
+  if (role === "user") {
+    const paragraph = document.createElement("p");
+    paragraph.textContent = text;
+    body.appendChild(paragraph);
+  } else {
+    body.innerHTML = renderAssistantHtml(text);
+  }
+  node.appendChild(body);
   thread.appendChild(node);
   thread.scrollTop = thread.scrollHeight;
 }
@@ -619,7 +772,7 @@ function addApprovalChatMessage(text, approval, labelOverride = "") {
   node.className = "chat-message assistant approval-message";
   node.innerHTML = `
     <span>${escapeHtml(labelOverride || getSelectedAgentLabel())}</span>
-    <p>${escapeHtml(text)}</p>
+    <div class="chat-body">${renderAssistantHtml(text)}</div>
     ${approvalActionHtml(true, approval)}
   `;
   thread.appendChild(node);
@@ -697,11 +850,12 @@ function finalizeCommandResult(result, requestPayload, bubble, selectedAgent, st
       thread_id: response.output?.thread_id || "",
     };
     addApprovalChatMessage(result.assistant_text, approval, getSelectedAgentLabel());
-  } else if (bubble && !streamed) {
-    // Keep the live-streamed answer (e.g. the article body / recommendation).
-    // Only fall back to the server summary when nothing streamed this turn;
-    // the structured result panel below carries the rest of the detail.
-    bubble.p.textContent = result.assistant_text;
+  } else if (bubble) {
+    // Re-render the bubble with collapsible thinking + markdown. Prefer the
+    // live-streamed answer (e.g. the article body / recommendation) and fall
+    // back to the server summary only when nothing streamed this turn; the
+    // structured result panel below carries the rest of the detail.
+    finalizeAssistantBubble(bubble, streamed || result.assistant_text || "");
   }
   setExecutionState(status === "waiting_for_approval" ? "Waiting for approval" : "Completed", status === "waiting_for_approval" ? 2 : 5, status !== "waiting_for_approval");
   setAgentStatus(selectedAgent, status === "waiting_for_approval" ? "waiting" : "completed");
@@ -777,9 +931,10 @@ async function runChatTurn(message, selectedAgent, submit) {
     if (errored && !finalData) throw new Error(errored);
     if (finalData) {
       currentConversationId = finalData.conversation_id || currentConversationId;
-      // For chat agents the streamed text already equals the reply; only set it
-      // from the final payload when nothing streamed (keeps the live text).
-      if (bubble && !streamed && finalData.assistant_text) bubble.p.textContent = finalData.assistant_text;
+      // The streamed text already equals the reply; fall back to the final
+      // payload only when nothing streamed. Either way re-render the bubble
+      // with collapsible thinking + markdown.
+      finalizeAssistantBubble(bubble, streamed || finalData.assistant_text || "");
     }
     setExecutionState("Completed", 5, true);
     setAgentStatus(selectedAgent, "completed");
@@ -789,7 +944,7 @@ async function runChatTurn(message, selectedAgent, submit) {
       try {
         const result = await postChat({ agent: selectedAgent, message, conversation_id: currentConversationId });
         currentConversationId = result.conversation_id;
-        if (bubble) bubble.p.textContent = result.assistant_text;
+        finalizeAssistantBubble(bubble, result.assistant_text || "");
         setExecutionState("Completed", 5, true);
         setAgentStatus(selectedAgent, "completed");
         if (isNewConversation) await loadConversations(selectedAgent);
@@ -912,7 +1067,7 @@ async function approvePendingTask() {
     pruneDuplicateApprovalMessages();
     pendingApproval = null;
     clearPendingResult();
-    if (bubble && !streamed) bubble.p.textContent = result.assistant_text;
+    finalizeAssistantBubble(bubble, streamed || result.assistant_text || "");
     renderResult(result, approvedPayload);
     succeeded = true;
   } catch (error) {
@@ -965,7 +1120,7 @@ async function rejectPendingTask() {
     pendingApproval = null;
     clearPendingResult();
     // Rejected runs don't execute, so nothing streams -> show the rejection text.
-    if (bubble && !streamed) bubble.p.textContent = result.assistant_text;
+    finalizeAssistantBubble(bubble, streamed || result.assistant_text || "");
     renderResult(result, rejectedPayload);
     succeeded = true;
   } catch (error) {
