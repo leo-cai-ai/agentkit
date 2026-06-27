@@ -21,6 +21,8 @@ class OpenAICompatibleProvider:
         api_key: str | None,
         model: str | None,
         timeout_seconds: float = 30.0,
+        max_tokens: int | None = None,
+        extra_body: dict | None = None,
     ) -> None:
         if not base_url or not api_key or not model:
             raise LLMRequiredError(
@@ -31,11 +33,21 @@ class OpenAICompatibleProvider:
         from pydantic import SecretStr
 
         self._model_name = model
+        # Only forward optional knobs when set. max_tokens=None lets the endpoint
+        # default apply; reasoning models need a high cap so the <think> block
+        # plus the JSON answer fit within the completion budget. extra_body carries
+        # endpoint-specific params (e.g. disabling <think> via chat_template_kwargs).
+        kwargs: dict = {}
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+        if extra_body:
+            kwargs["extra_body"] = extra_body
         self._model = ChatOpenAI(
             base_url=base_url,
             api_key=SecretStr(api_key),
             model=model,
             timeout=timeout_seconds,
+            **kwargs,
         )
 
     def complete(self, system: str, user: str) -> str:

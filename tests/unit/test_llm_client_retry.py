@@ -71,6 +71,33 @@ def test_extract_json_handles_think_and_fence():
     assert llm_client._extract_json(raw) == {"a": 2}
 
 
+def test_truncated_think_yields_friendly_message(monkeypatch):
+    # Reasoning ran out of budget mid-thought: unclosed <think>, no JSON.
+    prov = _FlakyProvider(fail_times=0, then="<think>let me work through {the data")
+    _use(monkeypatch, prov, max_retries=0)
+    with pytest.raises(LLMRequiredError) as exc:
+        llm_client.require_chat_json("s", "u")
+    assert str(exc.value) == llm_client.TRUNCATED_RESPONSE_MESSAGE
+
+
+def test_truncated_json_object_yields_friendly_message(monkeypatch):
+    # JSON started but was cut off (unbalanced braces), no think tags.
+    prov = _FlakyProvider(fail_times=0, then='{"status": "appr')
+    _use(monkeypatch, prov, max_retries=0)
+    with pytest.raises(LLMRequiredError) as exc:
+        llm_client.require_chat_json("s", "u")
+    assert str(exc.value) == llm_client.TRUNCATED_RESPONSE_MESSAGE
+
+
+def test_non_truncated_garbage_keeps_diagnostic(monkeypatch):
+    # Not truncated, just not JSON -> keep the diagnostic (not the fallback).
+    prov = _FlakyProvider(fail_times=0, then="sorry, I cannot do that")
+    _use(monkeypatch, prov, max_retries=0)
+    with pytest.raises(LLMRequiredError) as exc:
+        llm_client.require_chat_json("s", "u")
+    assert "did not return a valid JSON object" in str(exc.value)
+
+
 def test_empty_response_raises_without_retry(monkeypatch):
     prov = _FlakyProvider(fail_times=0, then="")
     _use(monkeypatch, prov, max_retries=3)

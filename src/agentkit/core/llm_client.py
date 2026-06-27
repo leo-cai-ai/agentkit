@@ -23,6 +23,11 @@ from .logging_config import get_logger
 
 _log = get_logger("agentkit.llm")
 
+# User-facing fallback when a reply is cut off mid-output (commonly a reasoning
+# model whose <think> block exhausts the completion budget before the answer or
+# JSON is finished). Shown instead of a raw parse error / truncated dump.
+TRUNCATED_RESPONSE_MESSAGE = "结果超长，已被截取，请联系工作人员。"
+
 # Active streaming sink for the current execution context. When set (e.g. by an
 # SSE endpoint running the agent in a worker thread), ``require_chat_streaming``
 # pushes each text chunk to it as the model produces it. Only the user-facing
@@ -189,6 +194,13 @@ def require_chat_streaming(system: str, user: str) -> str:
             text = "".join(parts).strip()
             if not text:
                 raise LLMRequiredError("LLM returned an empty response.")
+            # If the answer was cut off mid-thought, append a graceful note (and
+            # stream it) instead of leaving the user with a dangling fragment.
+            if _has_unclosed_think(text):
+                _log.warning("Streamed answer truncated mid-<think>; appending fallback note.")
+                if sink is not None:
+                    sink("\n\n" + TRUNCATED_RESPONSE_MESSAGE)
+                text = f"{text}\n\n{TRUNCATED_RESPONSE_MESSAGE}"
             return text
     raise LLMRequiredError("LLM produced no response.")
 
@@ -204,8 +216,29 @@ def require_chat_json(system: str, user: str) -> dict[str, Any]:
     raw = require_chat(system, user)
     data = _extract_json(raw)
     if data is None:
+        # A truncated reply has no parseable JSON. Surface a clean fallback
+        # message rather than dumping the cut-off raw text at the user.
+        if _looks_truncated(raw):
+            _log.warning("LLM response truncated; no JSON parsed (len=%d).", len(raw))
+            raise LLMRequiredError(TRUNCATED_RESPONSE_MESSAGE)
         raise LLMRequiredError(f"LLM did not return a valid JSON object: {raw[:500]}")
     return data
+
+
+def _has_unclosed_think(raw: str) -> bool:
+    """True when more ``<think>`` opens than ``</think>`` closes (cut mid-thought)."""
+    opens = len(re.findall(r"<think\b", raw, flags=re.I))
+    closes = len(re.findall(r"</think\s*>", raw, flags=re.I))
+    return opens > closes
+
+
+def _looks_truncated(raw: str) -> bool:
+    """Heuristic: the response was cut off before completing.
+
+    Two strong signals: an unclosed ``<think>`` block (reasoning model ran out
+    of budget mid-thought) or an unbalanced ``{`` count (JSON cut mid-object).
+    """
+    return _has_unclosed_think(raw) or raw.count("{") > raw.count("}")
 
 
 def _strip_think(raw: str) -> str:

@@ -2,8 +2,45 @@
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
 from agentkit.config import Settings
 from agentkit.llm.base import LLMProvider, LLMRequiredError
+
+
+def _build_openai_extra_body(settings: Settings) -> dict[str, Any] | None:
+    """Assemble the OpenAI extra_body from the disable-thinking flag + raw JSON.
+
+    The convenience flag seeds ``chat_template_kwargs.enable_thinking = false``;
+    any ``openai_extra_body`` JSON is then merged on top (with a nested merge for
+    ``chat_template_kwargs`` so both can coexist). Returns None when empty.
+    """
+    extra: dict[str, Any] = {}
+    if settings.openai_disable_thinking:
+        extra["chat_template_kwargs"] = {"enable_thinking": False}
+
+    raw = settings.openai_extra_body.strip()
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise LLMRequiredError(
+                f"AGENTKIT_OPENAI_EXTRA_BODY is not valid JSON: {exc}"
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise LLMRequiredError("AGENTKIT_OPENAI_EXTRA_BODY must be a JSON object.")
+        for key, value in parsed.items():
+            if (
+                key == "chat_template_kwargs"
+                and isinstance(value, dict)
+                and isinstance(extra.get(key), dict)
+            ):
+                extra[key].update(value)
+            else:
+                extra[key] = value
+
+    return extra or None
 
 
 def build_provider(settings: Settings) -> LLMProvider:
@@ -60,6 +97,8 @@ def _build_single(provider: str, settings: Settings) -> LLMProvider:
             ),
             model=settings.openai_model,
             timeout_seconds=settings.llm_timeout_seconds,
+            max_tokens=settings.llm_max_tokens,
+            extra_body=_build_openai_extra_body(settings),
         )
     if provider == "fake":
         from agentkit.llm.fake import FakeProvider

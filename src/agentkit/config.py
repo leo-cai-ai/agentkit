@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     llm_max_retries: int = Field(default=2, ge=0)
     llm_timeout_seconds: float = 30.0
     llm_retry_base_delay: float = 0.5
+    # Max output (completion) tokens per call. None = use the endpoint default,
+    # which is often small and gets consumed by a reasoning model's <think>
+    # block before the JSON answer is emitted (truncated output -> "LLM did not
+    # return a valid JSON object"). Set this high (e.g. 4096) for reasoning
+    # models (DeepSeek-R1, Qwen-thinking, etc.) so the answer can finish.
+    llm_max_tokens: int | None = Field(default=None, gt=0)
     llm_requests_per_second: float = Field(default=0.9, gt=0)
     llm_rate_limiter_enabled: bool = True
     # Rate-limiter backend. 'process' is LangChain's in-memory token bucket
@@ -117,6 +123,18 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr | None = None
     openai_model: str | None = None
     openai_api_version: str | None = None
+    # Turn off a reasoning model's <think> output. Most OpenAI-compatible servers
+    # (vLLM / SGLang serving Qwen3, etc.) accept it via
+    # extra_body={"chat_template_kwargs": {"enable_thinking": false}}, which this
+    # flag sends. Governance/JSON calls don't benefit from chain-of-thought, so
+    # disabling it is faster, cheaper, and avoids truncated-JSON errors. Harmless
+    # on endpoints that ignore the flag (e.g. DeepSeek-R1, which can't disable it).
+    openai_disable_thinking: bool = False
+    # Raw JSON merged into the OpenAI request body (extra_body) for endpoint-
+    # specific params, e.g. '{"enable_thinking": false}' or
+    # '{"chat_template_kwargs": {"enable_thinking": false}}'. Merged on top of the
+    # openai_disable_thinking convenience above.
+    openai_extra_body: str = ""
 
     # Web management console security.
     web_auth_token: SecretStr | None = None

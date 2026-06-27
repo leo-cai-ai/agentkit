@@ -1071,10 +1071,12 @@ async function approvePendingTask() {
     renderResult(result, approvedPayload);
     succeeded = true;
   } catch (error) {
-    if (bubble) bubble.node.remove();
     setExecutionState("Failed");
     setAgentStatus(agentName, "failed");
-    alert(error.message);
+    // Show the message (incl. the truncation fallback) in the chat bubble
+    // rather than a jarring alert popup.
+    if (bubble) finalizeAssistantBubble(bubble, error.message);
+    else alert(error.message);
   } finally {
     if (!succeeded) {
       buttons.forEach((button) => {
@@ -1124,9 +1126,9 @@ async function rejectPendingTask() {
     renderResult(result, rejectedPayload);
     succeeded = true;
   } catch (error) {
-    if (bubble) bubble.node.remove();
     setExecutionState("Failed");
-    alert(error.message);
+    if (bubble) finalizeAssistantBubble(bubble, error.message);
+    else alert(error.message);
   } finally {
     if (!succeeded) {
       buttons.forEach((button) => {
