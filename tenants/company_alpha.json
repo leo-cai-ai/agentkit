@@ -1,0 +1,77 @@
+{
+  "tenant_id": "AI-ABC",
+  "enabled_domains": ["hr.recruitment", "marketing.social_growth", "support.customer_service"],
+  "agent_identity": {
+    "name": "Javes",
+    "description": "a generic enterprise AI workforce assistant powered by a governed LangGraph runtime"
+  },
+  "batch_threshold": 2,
+  "batch_size": 2,
+  "ui": {
+    "demo_prompt": "Rank the top 3 candidates for JOB-001 and explain why.",
+    "demo_prompts": {
+      "hr_recruiter": "Rank the top 3 candidates for JOB-001 and explain why.",
+      "xhs_growth": "整理每天的小红书top 5的文章和案例，比较后生成文章并准备发布，目标是30天内涨粉1w"
+    },
+    "default_user_id": "u-001",
+    "available_roles": ["recruiter", "hr_admin", "employee", "growth_manager"],
+    "default_roles": ["recruiter", "growth_manager"],
+    "job_requisitions": ["JOB-001"],
+    "default_job_id": "JOB-001",
+    "candidate_pool": ["C-100", "C-101", "C-102", "C-103", "C-104"],
+    "default_candidate_ids": ["C-100", "C-101", "C-102", "C-103", "C-104"],
+    "min_top_n": 1,
+    "max_top_n": 5,
+    "default_top_n": 3
+  },
+  "chat_agents": [
+    { "name": "hr_recruiter", "mode": "command" },
+    { "name": "xhs_growth", "mode": "command" },
+    {
+      "name": "customer_service",
+      "mode": "chat",
+      "label": "Customer Service Agent",
+      "mission": "Conversational support with long/short-term memory",
+      "memory": {
+        "window_turns": 6,
+        "max_context_tokens": 4000,
+        "retrieval_k": 4,
+        "extract_every_n_turns": 3
+      }
+    }
+  ],
+  "prompt_files": {
+    "agents.router": "prompts/agents/router.md",
+    "agents.general": "prompts/agents/general.md",
+    "agents.recruitment": "prompts/agents/recruitment.md",
+    "agents.social_growth": "prompts/agents/social_growth.md",
+    "agents.customer_service": "prompts/agents/customer_service.md"
+  },
+  "domain_personas": {
+    "hr.recruitment": "recruitment",
+    "marketing.social_growth": "social_growth",
+    "support.customer_service": "customer_service"
+  },
+  "role_permissions": {
+    "recruiter": ["hr.job.read", "hr.candidate.read"],
+    "hr_admin": ["hr.job.read", "hr.candidate.read", "hr.candidate.write"],
+    "employee": [],
+    "growth_manager": ["content.research", "content.write", "content.publish"]
+  },
+  "approval_required_skills": ["xhs.growth.campaign", "candidate.rank"],
+  "routing_hints": {
+    "candidate.rank": ["筛选", "候选人", "简历", "rank", "candidate"],
+    "xhs.growth.campaign": ["小红书", "涨粉", "笔记", "选题", "发布", "xhs", "growth"]
+  },
+  "social_growth": {
+    "default_topic": "enterprise AI agents",
+    "goal_days": 30,
+    "target_followers": 10000,
+    "cadence": "daily",
+    "publishing_mode": "draft"
+  },
+  "field_mappings": {
+    "candidate_id": "candidate_id",
+    "job_id": "job_id"
+  }
+}

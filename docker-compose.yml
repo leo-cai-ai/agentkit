@@ -1,0 +1,75 @@
+services:
+  db:
+    # pgvector-enabled Postgres so long-term semantic memory works out of the box.
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: ${AGENTKIT_PG_DATABASE:-agentkit}
+      POSTGRES_USER: ${AGENTKIT_PG_USER:-agentkit}
+      # Set AGENTKIT_PG_PASSWORD in .env; this is required (no insecure default).
+      POSTGRES_PASSWORD: ${AGENTKIT_PG_PASSWORD:?set AGENTKIT_PG_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # One-shot pgvector extension bootstrap on first init.
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${AGENTKIT_PG_USER:-agentkit} -d ${AGENTKIT_PG_DATABASE:-agentkit}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    # Not published to the host: only the web service reaches it over the
+    # internal compose network. Uncomment to inspect from the host.
+    # ports:
+    #   - "5432:5432"
+
+  web:
+    build: .
+    image: agentkit-web:latest
+    depends_on:
+      db:
+        condition: service_healthy
+    # Secrets and tokens are injected from .env (never baked into the image):
+    #   AGENTKIT_WEB_AUTH_TOKEN, AGENTKIT_WEB_SECRET_KEY, LLM credentials, etc.
+    env_file:
+      - .env
+    # Container-network overrides win over .env so the app always reaches the
+    # bundled db service regardless of the host/sslmode set for local use.
+    environment:
+      AGENTKIT_VECTOR_STORE_BACKEND: postgres
+      AGENTKIT_PG_HOST: db
+      AGENTKIT_PG_PORT: "5432"
+      AGENTKIT_PG_SSLMODE: disable
+    ports:
+      - "8501:8501"
+    volumes:
+      # Business config is editable on the host and mounted read-only.
+      - ./tenants:/app/tenants:ro
+      - ./prompts:/app/prompts:ro
+      - ./skills:/app/skills:ro
+      # Audit / conversation / checkpoint SQLite DBs persist in a named volume.
+      - agentkit_data:/app/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8501/healthz', timeout=3).status==200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  agentkit_data:
+  pgdata:

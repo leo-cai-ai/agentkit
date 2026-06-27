@@ -1,0 +1,772 @@
+"""Flask management console for the enterprise-agent demo.
+
+Run from the repository root:
+
+    python demo/web_flask/app.py
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime
+from functools import lru_cache
+from pathlib import Path
+from typing import Any
+
+from flask import Flask, Response, jsonify, render_template, request
+
+from agentkit.core.audit import SQLiteAuditLog
+from agentkit.core.contracts import TaskRequest
+from agentkit.core.identity import (
+    CHAT_USE,
+    GOVERNANCE_VIEW,
+    RUNS_VIEW,
+    TASK_APPROVE,
+    TASK_RUN,
+)
+from agentkit.runtime.bootstrap import build_runtime, resolve_tenant_id
+from agentkit.web.identity import current_principal, require_permission
+from agentkit.web.security import configure_security
+from agentkit.web.streaming import stream_response
+
+DEMO_ROOT = Path(__file__).resolve().parents[3]
+
+
+# Which context inputs each agent actually consumes. Agents not listed here are
+# treated as conversational (no structured inputs, driven purely by the prompt).
+AGENT_CONTEXT_FIELDS = {
+    "hr_recruiter": ["job_id", "top_n", "candidate_ids"],
+}
+
+DEFAULT_UI_CONFIG = {
+    "demo_prompt": "Rank the top 3 candidates for JOB-001 and explain why.",
+    "default_agent": "hr_recruiter",
+    "chat_agents": [
+        {
+            "name": "hr_recruiter",
+            "label": "HR Recruiter Agent",
+            "domain": "hr.recruitment",
+            "mission": "Candidate ranking and recruitment decisions",
+            "status": "online",
+            "allowed_skills": ["candidate.rank"],
+            "allowed_tools": ["ats.get_job", "ats.get_candidates"],
+            "fields": ["job_id", "top_n", "candidate_ids"],
+        }
+    ],
+    "demo_prompts": {
+        "hr_recruiter": "Rank the top 3 candidates for JOB-001 and explain why.",
+    },
+    "default_user_id": "u-001",
+    "available_roles": ["recruiter", "hr_admin", "employee"],
+    "default_roles": ["recruiter"],
+    "job_requisitions": ["JOB-001"],
+    "default_job_id": "JOB-001",
+    "candidate_pool": ["C-100", "C-101", "C-102", "C-103", "C-104"],
+    "default_candidate_ids": ["C-100", "C-101", "C-102", "C-103", "C-104"],
+    "min_top_n": 1,
+    "max_top_n": 5,
+    "default_top_n": 3,
+}
+
+app = Flask(__name__)
+# Pick up template/static edits without a manual restart (local demo convenience).
+app.config["TEMPLATES_AUTO_RELOAD"] = True
+app.jinja_env.auto_reload = True
+
+# Token auth, CSRF protection, secure cookies, and security headers.
+configure_security(app)
+
+
+@lru_cache(maxsize=8)
+def _build_runtime_cached(tenant_id: str):
+    return build_runtime(tenant_id=tenant_id)
+
+
+def get_runtime():
+    # Tenant id resolves from $AGENTKIT_TENANT_ID (or the default), so the
+    # console can be pointed at any tenant without code changes. Runtimes are
+    # cached per tenant id.
+    return _build_runtime_cached(resolve_tenant_id())
+
+
+@app.context_processor
+def inject_global_context() -> dict[str, Any]:
+    runtime = get_runtime()
+    ui = get_ui_config(runtime.tenant_config)
+    return {
+        "tenant_id": runtime.tenant_config["tenant_id"],
+        "db_path": display_path(runtime.db_path),
+        "demo_prompt": ui["demo_prompt"],
+    }
+
+
+@app.template_filter("format_cell")
+def format_cell(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    if isinstance(value, list | tuple | set):
+        return ", ".join(str(item) for item in value)
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+@app.template_filter("json_pretty")
+def json_pretty(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, indent=2, default=str)
+
+
+@app.template_filter("format_ts")
+def format_ts_filter(value: Any) -> str:
+    return format_timestamp(value)
+
+
+@app.get("/")
+def overview():
+    runtime = get_runtime()
+    gateway = runtime.gateway
+    audit = gateway.audit
+    counts = _safe_counts(audit)
+    completed = counts.get("completed", 0)
+    running = counts.get("running", 0)
+    failed = counts.get("failed", 0)
+    resolved = completed + failed
+    success_rate = round((completed / resolved) * 100, 1) if resolved else 100.0
+    batch_tools = sum(1 for tool in gateway.tools.all() if tool.supports_batch)
+    runs = _safe_runs(audit, limit=8)
+
+    metrics = [
+        {"label": "Runs Completed", "value": completed, "helper": "SQLite-backed"},
+        {"label": "Success Rate", "value": f"{success_rate}%", "helper": "Latest environment"},
+        {"label": "Active Runs", "value": running, "helper": "Currently executing"},
+        {
+            "label": "Skills Online",
+            "value": len(gateway.skills.all()),
+            "helper": "Business capabilities",
+        },
+        {"label": "Batch Tools", "value": batch_tools, "helper": "Scale-ready APIs"},
+    ]
+    impact_rows = [
+        {
+            "Area": "Recruiting",
+            "Agent": "Recruitment Intelligence",
+            "Status": "Online",
+            "Impact": "Candidate ranking and shortlisting",
+        },
+        {
+            "Area": "Onboarding",
+            "Agent": "Onboarding Coordinator",
+            "Status": "Planned",
+            "Impact": "Checklist and department readiness",
+        },
+        {
+            "Area": "Training",
+            "Agent": "Training Producer",
+            "Status": "Planned",
+            "Impact": "Learning material generation",
+        },
+        {
+            "Area": "HR Ops",
+            "Agent": "Policy Assistant",
+            "Status": "Planned",
+            "Impact": "Policy Q&A and monthly reporting",
+        },
+    ]
+    agent_rows = [
+        {
+            "Agent": agent.name,
+            "Domain": agent.domain,
+            "Health": "Working" if running else "Ready",
+            "Skills": len(agent.allowed_skills),
+        }
+        for agent in gateway.agents.all()
+    ]
+    capabilities = [
+        {
+            "name": "Recruitment",
+            "status": "Live",
+            "description": "Candidate ranking, ATS lookup, batch evaluation.",
+        },
+        {
+            "name": "Governance",
+            "status": "Live",
+            "description": "Role permissions, audit events, SQLite run history.",
+        },
+        {
+            "name": "Scale Execution",
+            "status": "Live",
+            "description": "Batch executor with configurable shard size.",
+        },
+    ]
+    return render_template(
+        "overview.html",
+        active="overview",
+        title="Management Dashboard",
+        metrics=metrics,
+        impact_rows=impact_rows,
+        agent_rows=agent_rows,
+        runs=runs,
+        capabilities=capabilities,
+    )
+
+
+@app.get("/healthz")
+def healthz():
+    # Lightweight liveness probe: public, no auth, no LLM, no runtime build.
+    return jsonify({"status": "ok"})
+
+
+@app.get("/command")
+def command():
+    runtime = get_runtime()
+    return render_template(
+        "command.html",
+        active="command",
+        title="Command Center",
+        ui=get_ui_config(runtime.tenant_config),
+        chat_agents=get_chat_agents(runtime),
+    )
+
+
+@app.get("/operations")
+def operations():
+    runtime = get_runtime()
+    audit = runtime.gateway.audit
+    counts = _safe_counts(audit)
+    completed = counts.get("completed", 0)
+    running = counts.get("running", 0)
+    failed = counts.get("failed", 0)
+    blocked = counts.get("waiting_for_approval", 0) + counts.get("rejected", 0)
+    total = sum(counts.values())
+    runs = _safe_runs(audit, limit=50)
+    selected_run_id = request.args.get("run_id") or (runs[0]["run_id"] if runs else "")
+    events = (
+        audit.events_for(selected_run_id)
+        if isinstance(audit, SQLiteAuditLog) and selected_run_id
+        else []
+    )
+
+    metrics = [
+        {"label": "Total Runs", "value": total, "helper": "Recorded executions"},
+        {"label": "Completed", "value": completed, "helper": "Finished successfully"},
+        {"label": "Running", "value": running, "helper": "Currently active"},
+        {"label": "Blocked", "value": blocked, "helper": "Awaiting or rejected approval"},
+        {"label": "Failed", "value": failed, "helper": "Requires attention"},
+    ]
+    event_rows = [
+        {
+            "Time": format_timestamp(event["ts"]),
+            "Event": event["type"],
+            "Details": json.dumps(event["payload"], ensure_ascii=False),
+        }
+        for event in events
+    ]
+    return render_template(
+        "operations.html",
+        active="operations",
+        title="Operations Monitor",
+        metrics=metrics,
+        runs=runs,
+        selected_run_id=selected_run_id,
+        event_rows=event_rows,
+    )
+
+
+@app.get("/governance")
+@require_permission(GOVERNANCE_VIEW)
+def governance():
+    runtime = get_runtime()
+    gateway = runtime.gateway
+    audit = gateway.audit
+    agents = [
+        {
+            "Name": agent.name,
+            "Domain": agent.domain,
+            "Model": agent.model,
+            "Prompt File": agent.prompt_file,
+            "Allowed Skills": ", ".join(agent.allowed_skills),
+            "Description": agent.description,
+        }
+        for agent in gateway.agents.all()
+    ]
+    skills = [
+        {
+            "Name": skill.name,
+            "Domain": skill.domain,
+            "Mode": skill.execution_mode,
+            "Skill File": skill.skill_file,
+            "Scripts": len(skill.skill_resources.get("scripts", [])),
+            "References": len(skill.skill_resources.get("references", [])),
+            "Permissions": ", ".join(skill.permissions),
+            "Tools": ", ".join(skill.tools),
+        }
+        for skill in gateway.skills.all()
+    ]
+    tools = [
+        {
+            "Name": tool.name,
+            "Domain": tool.domain,
+            "Batch": tool.supports_batch,
+            "Description": tool.description,
+        }
+        for tool in gateway.tools.all()
+    ]
+    event_counts = audit.event_counts_by_type() if isinstance(audit, SQLiteAuditLog) else []
+    cost_summary = audit.cost_summary() if isinstance(audit, SQLiteAuditLog) else {}
+    prompt_rows = [
+        {"Name": name, "File": path}
+        for name, path in runtime.tenant_config.get("prompt_files", {}).items()
+    ]
+    return render_template(
+        "governance.html",
+        active="governance",
+        title="Governance",
+        agents=agents,
+        skills=skills,
+        tools=tools,
+        prompt_rows=prompt_rows,
+        event_counts=event_counts,
+        cost_summary=cost_summary,
+    )
+
+
+def _effective_user_id(payload: dict, ui: dict) -> str:
+    """Attribute the request to the authenticated principal when available."""
+    principal = current_principal()
+    if principal.is_authenticated:
+        return principal.subject
+    return str(payload.get("user_id") or ui["default_user_id"])
+
+
+def _task_request_from_payload(payload: dict, ui: dict) -> TaskRequest:
+    """Build a ``TaskRequest`` from a web payload (raises ``ValueError`` on bad input)."""
+    text = str(payload.get("text") or ui["demo_prompt"])
+    user_id = _effective_user_id(payload, ui)
+    roles = _list_or_default(payload.get("roles"), ui["default_roles"])
+    candidate_ids = _list_or_default(payload.get("candidate_ids"), ui["default_candidate_ids"])
+    job_id = str(payload.get("job_id") or ui["default_job_id"])
+    try:
+        top_n = int(payload.get("top_n") or ui["default_top_n"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("top_n must be an integer.") from exc
+    agent = str(payload.get("agent") or ui.get("default_agent") or "")
+    approved_skills = _list_or_default(payload.get("approved_skills"), [])
+    rejected_skills = _list_or_default(payload.get("rejected_skills"), [])
+
+    context: dict[str, Any] = {
+        "agent": agent,
+        "job_id": job_id,
+        "candidate_ids": candidate_ids,
+        "top_n": top_n,
+    }
+    if approved_skills:
+        context["approved_skills"] = approved_skills
+    if rejected_skills:
+        context["rejected_skills"] = rejected_skills
+    context["principal"] = current_principal().to_public_dict()
+    return TaskRequest(user_id=user_id, roles=roles, text=text, context=context)
+
+
+def _sse(generator: Any) -> Response:
+    """Wrap an SSE frame generator in a streaming Flask response."""
+    response = Response(generator, mimetype="text/event-stream")
+    response.headers["X-Accel-Buffering"] = "no"
+    response.headers["Connection"] = "keep-alive"
+    return response
+
+
+@app.post("/api/tasks")
+@require_permission(TASK_RUN)
+def create_task():
+    payload = request.get_json(silent=True) or {}
+    runtime = get_runtime()
+    ui = get_ui_config(runtime.tenant_config)
+    try:
+        task_request = _task_request_from_payload(payload, ui)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    response = runtime.gateway.handle(task_request).to_dict()
+    return jsonify(
+        {
+            "assistant_text": format_chat_response(response),
+            "response": response,
+        }
+    )
+
+
+@app.post("/api/tasks/stream")
+@require_permission(TASK_RUN)
+def create_task_stream():
+    payload = request.get_json(silent=True) or {}
+    runtime = get_runtime()
+    ui = get_ui_config(runtime.tenant_config)
+    try:
+        task_request = _task_request_from_payload(payload, ui)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    def produce() -> dict[str, Any]:
+        response = runtime.gateway.handle(task_request).to_dict()
+        return {
+            "assistant_text": format_chat_response(response),
+            "response": response,
+        }
+
+    return _sse(stream_response(produce))
+
+
+@app.post("/api/tasks/resume")
+@require_permission(TASK_APPROVE)
+def resume_task():
+    payload = request.get_json(silent=True) or {}
+    thread_id = str(payload.get("thread_id") or "").strip()
+    if not thread_id:
+        return jsonify({"error": "thread_id is required."}), 400
+    approved_skills = _list_or_default(payload.get("approved_skills"), [])
+    rejected_skills = _list_or_default(payload.get("rejected_skills"), [])
+    runtime = get_runtime()
+    try:
+        response = runtime.gateway.resume(
+            thread_id,
+            approved_skills=approved_skills,
+            rejected_skills=rejected_skills,
+        ).to_dict()
+    except KeyError:
+        # Thread expired/unknown (e.g. server restart with in-memory checkpointer).
+        return jsonify({"error": "This approval session expired. Please resubmit the task."}), 409
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(
+        {
+            "assistant_text": format_chat_response(response),
+            "response": response,
+        }
+    )
+
+
+@app.post("/api/tasks/resume/stream")
+@require_permission(TASK_APPROVE)
+def resume_task_stream():
+    payload = request.get_json(silent=True) or {}
+    thread_id = str(payload.get("thread_id") or "").strip()
+    if not thread_id:
+        return jsonify({"error": "thread_id is required."}), 400
+    approved_skills = _list_or_default(payload.get("approved_skills"), [])
+    rejected_skills = _list_or_default(payload.get("rejected_skills"), [])
+    runtime = get_runtime()
+
+    def produce() -> dict[str, Any]:
+        try:
+            response = runtime.gateway.resume(
+                thread_id,
+                approved_skills=approved_skills,
+                rejected_skills=rejected_skills,
+            ).to_dict()
+        except KeyError as exc:
+            raise ValueError("This approval session expired. Please resubmit the task.") from exc
+        return {
+            "assistant_text": format_chat_response(response),
+            "response": response,
+        }
+
+    return _sse(stream_response(produce))
+
+
+@app.post("/api/chat")
+@require_permission(CHAT_USE)
+def api_chat():
+    payload = request.get_json(silent=True) or {}
+    runtime = get_runtime()
+    chat_service = getattr(runtime, "chat_service", None)
+    if chat_service is None:
+        return jsonify({"error": "Conversational memory is not available."}), 503
+
+    ui = get_ui_config(runtime.tenant_config)
+    agent = str(payload.get("agent") or ui.get("default_agent") or "")
+    if not chat_service.is_chat_agent(agent):
+        return jsonify(
+            {"error": f"Agent '{agent}' is not a chat-mode agent. Use /api/tasks instead."}
+        ), 400
+
+    message = str(payload.get("message") or payload.get("text") or "").strip()
+    if not message:
+        return jsonify({"error": "message is required."}), 400
+    user_id = _effective_user_id(payload, ui)
+    conversation_id = payload.get("conversation_id") or None
+
+    try:
+        result = chat_service.chat(
+            agent=agent,
+            user_id=user_id,
+            message=message,
+            conversation_id=str(conversation_id) if conversation_id else None,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(result)
+
+
+@app.post("/api/chat/stream")
+@require_permission(CHAT_USE)
+def api_chat_stream():
+    payload = request.get_json(silent=True) or {}
+    runtime = get_runtime()
+    chat_service = getattr(runtime, "chat_service", None)
+    if chat_service is None:
+        return jsonify({"error": "Conversational memory is not available."}), 503
+
+    ui = get_ui_config(runtime.tenant_config)
+    agent = str(payload.get("agent") or ui.get("default_agent") or "")
+    if not chat_service.is_chat_agent(agent):
+        return jsonify(
+            {"error": f"Agent '{agent}' is not a chat-mode agent. Use /api/tasks instead."}
+        ), 400
+
+    message = str(payload.get("message") or payload.get("text") or "").strip()
+    if not message:
+        return jsonify({"error": "message is required."}), 400
+    user_id = _effective_user_id(payload, ui)
+    conversation_id = payload.get("conversation_id") or None
+
+    def produce() -> dict[str, Any]:
+        return chat_service.chat(
+            agent=agent,
+            user_id=user_id,
+            message=message,
+            conversation_id=str(conversation_id) if conversation_id else None,
+        )
+
+    return _sse(stream_response(produce))
+
+
+@app.get("/api/conversations")
+@require_permission(CHAT_USE)
+def api_conversations():
+    runtime = get_runtime()
+    chat_service = getattr(runtime, "chat_service", None)
+    if chat_service is None:
+        return jsonify({"conversations": []})
+    ui = get_ui_config(runtime.tenant_config)
+    agent = str(request.args.get("agent") or ui.get("default_agent") or "")
+    user_id = _effective_user_id(request.args, ui)
+    return jsonify({"conversations": chat_service.list_conversations(agent=agent, user_id=user_id)})
+
+
+@app.post("/api/conversations")
+@require_permission(CHAT_USE)
+def api_create_conversation():
+    payload = request.get_json(silent=True) or {}
+    runtime = get_runtime()
+    chat_service = getattr(runtime, "chat_service", None)
+    if chat_service is None:
+        return jsonify({"error": "Conversational memory is not available."}), 503
+    ui = get_ui_config(runtime.tenant_config)
+    agent = str(payload.get("agent") or ui.get("default_agent") or "")
+    if not chat_service.is_chat_agent(agent):
+        return jsonify({"error": f"Agent '{agent}' is not a chat-mode agent."}), 400
+    user_id = _effective_user_id(payload, ui)
+    title = payload.get("title")
+    conversation_id = chat_service.new_conversation(
+        agent=agent, user_id=user_id, title=str(title) if title else None
+    )
+    return jsonify({"conversation_id": conversation_id})
+
+
+@app.get("/api/conversations/<conversation_id>/messages")
+@require_permission(CHAT_USE)
+def api_conversation_messages(conversation_id: str):
+    runtime = get_runtime()
+    chat_service = getattr(runtime, "chat_service", None)
+    if chat_service is None:
+        return jsonify({"messages": []})
+    ui = get_ui_config(runtime.tenant_config)
+    user_id = _effective_user_id(request.args, ui)
+    return jsonify(
+        {"messages": chat_service.messages(conversation_id=conversation_id, user_id=user_id)}
+    )
+
+
+@app.get("/api/runs")
+@require_permission(RUNS_VIEW)
+def api_runs():
+    audit = get_runtime().gateway.audit
+    return jsonify({"runs": _safe_runs(audit, limit=50)})
+
+
+@app.get("/api/runs/<run_id>")
+@require_permission(RUNS_VIEW)
+def api_run_events(run_id: str):
+    audit = get_runtime().gateway.audit
+    events = audit.events_for(run_id) if isinstance(audit, SQLiteAuditLog) else []
+    return jsonify({"events": events})
+
+
+@app.get("/api/registry")
+def api_registry():
+    gateway = get_runtime().gateway
+    return jsonify(
+        {
+            "agents": [agent.__dict__ for agent in gateway.agents.all()],
+            "skills": [
+                {
+                    "name": skill.name,
+                    "domain": skill.domain,
+                    "description": skill.description,
+                    "execution_mode": skill.execution_mode,
+                    "permissions": skill.permissions,
+                    "tools": skill.tools,
+                    "skill_folder": skill.skill_folder,
+                    "skill_file": skill.skill_file,
+                    "skill_resources": skill.skill_resources,
+                }
+                for skill in gateway.skills.all()
+            ],
+            "tools": [
+                {
+                    "name": tool.name,
+                    "domain": tool.domain,
+                    "description": tool.description,
+                    "supports_batch": tool.supports_batch,
+                }
+                for tool in gateway.tools.all()
+            ],
+        }
+    )
+
+
+def format_chat_response(response: dict[str, Any]) -> str:
+    final = response.get("output", {}).get("final", {})
+    if final.get("message"):
+        return str(final["message"])
+
+    ranked = final.get("ranked_candidates", [])
+    if not ranked:
+        if final.get("campaign_summary"):
+            article = final.get("article", {})
+            publish = final.get("publish", {})
+            lines = [
+                str(final["campaign_summary"]),
+                f"Draft: {article.get('title', 'untitled')}",
+                f"Publish package: {publish.get('status', 'not prepared')} "
+                f"on {publish.get('channel', 'configured channel')}.",
+            ]
+            return "\n".join(lines)
+        message = response.get("output", {}).get("message")
+        return str(
+            message
+            or (
+                "The request completed, but no conversational message "
+                "or business result was returned."
+            )
+        )
+
+    lines = []
+    if final.get("summary"):
+        lines.append(str(final["summary"]))
+        lines.append("")
+    lines.extend(
+        [
+            f"Completed. Evaluated {final.get('evaluated_count', len(ranked))} candidates for "
+            f"{final.get('job_title', final.get('job_id', 'the selected requisition'))}.",
+            "Recommended shortlist:",
+        ]
+    )
+    for index, candidate in enumerate(ranked, start=1):
+        matched = ", ".join(candidate.get("matched_skills", [])) or "none"
+        lines.append(
+            f"{index}. {candidate.get('name')} ({candidate.get('candidate_id')}) - "
+            f"score {candidate.get('score')}. Matched: {matched}. {candidate.get('reason')}"
+        )
+    return "\n".join(lines)
+
+
+def get_ui_config(tenant_config: dict[str, Any]) -> dict[str, Any]:
+    ui = dict(DEFAULT_UI_CONFIG)
+    tenant_ui = tenant_config.get("ui", {})
+    ui.update(tenant_ui)
+    if "chat_agents" not in tenant_ui:
+        ui["chat_agents"] = tenant_config.get("chat_agents", ui.get("chat_agents", []))
+    return ui
+
+
+def get_chat_agents(runtime) -> list[dict[str, Any]]:
+    config_items = runtime.tenant_config.get("chat_agents", [])
+    configured = {str(item.get("name")): item for item in config_items if isinstance(item, dict)}
+    enabled_domains = set(runtime.tenant_config.get("enabled_domains", []))
+    selected_names = list(configured) or [
+        agent.name for agent in runtime.gateway.agents.all() if agent.domain != "platform"
+    ]
+    rows = []
+    for name in selected_names:
+        try:
+            profile = runtime.gateway.agents.get(name)
+        except KeyError:
+            continue
+        # enabled_domains is the single source of truth for what a tenant exposes:
+        # an agent whose domain is not enabled never reaches the console.
+        if profile.domain not in enabled_domains:
+            continue
+        config = configured.get(name, {})
+        rows.append(
+            {
+                "name": profile.name,
+                "label": config.get("label") or profile.name.replace("_", " ").title(),
+                "domain": profile.domain,
+                "mission": config.get("mission") or profile.description,
+                "status": config.get("status") or "online",
+                "allowed_skills": profile.allowed_skills,
+                "allowed_tools": profile.allowed_tools,
+                "fields": config.get("fields") or AGENT_CONTEXT_FIELDS.get(name, []),
+                "mode": str(config.get("mode") or "command").lower(),
+            }
+        )
+    return rows
+
+
+def display_path(path: str | Path) -> str:
+    resolved = Path(path).resolve()
+    try:
+        display = resolved.relative_to(DEMO_ROOT)
+    except ValueError:
+        display = resolved
+    return str(display).replace("\\", "/")
+
+
+def format_timestamp(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    try:
+        return datetime.fromtimestamp(float(value)).strftime("%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError, OSError):
+        return str(value)
+
+
+def _safe_counts(audit) -> dict[str, int]:
+    if isinstance(audit, SQLiteAuditLog):
+        return audit.run_counts_by_status()
+    return {}
+
+
+def _safe_runs(audit, *, limit: int) -> list[dict[str, Any]]:
+    if isinstance(audit, SQLiteAuditLog):
+        return audit.list_runs(limit=limit)
+    return []
+
+
+def _list_or_default(value: Any, default: list[str]) -> list[str]:
+    if value is None:
+        return list(default)
+    if isinstance(value, str):
+        return [value]
+    return [str(item) for item in value]
+
+
+if __name__ == "__main__":
+    # use_reloader stays False on purpose: the Werkzeug reloader spawns child
+    # processes that orphan on Windows and keep holding port 8501, which makes
+    # the browser hit a stale process. TEMPLATES_AUTO_RELOAD already picks up
+    # template/static edits live; only Python changes need a manual restart.
+    app.run(host="127.0.0.1", port=8501, debug=False, use_reloader=False)

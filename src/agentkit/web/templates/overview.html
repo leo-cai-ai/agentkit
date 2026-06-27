@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% from "_components.html" import metric_grid, data_table, status_pill %}
+
+{% block content %}
+  {{ metric_grid(metrics) }}
+
+  <section class="dashboard-grid">
+    <article class="panel wide">
+      <div class="panel-head">
+        <h2>Business Impact</h2>
+        <span>Core application areas</span>
+      </div>
+      {{ data_table(impact_rows) }}
+    </article>
+
+    <article class="panel">
+      <div class="panel-head">
+        <h2>Agent Workforce</h2>
+        <span>Registered profiles</span>
+      </div>
+      {{ data_table(agent_rows) }}
+    </article>
+
+    <article class="panel">
+      <div class="panel-head">
+        <h2>Latest Activity</h2>
+        <a href="{{ url_for('operations') }}">View all</a>
+      </div>
+      {% if runs %}
+        <div class="activity-list">
+          {% for run in runs[:5] %}
+            <a class="activity-item" href="{{ url_for('operations', run_id=run.run_id) }}">
+              {{ status_pill(run.status) }}
+              <strong>{{ run.user_id }}</strong>
+              <span>{{ run.text }}</span>
+            </a>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="empty-state">No agent runs have been recorded yet.</div>
+      {% endif %}
+    </article>
+  </section>
+
+  <section class="capability-grid">
+    {% for capability in capabilities %}
+      <article class="capability-card">
+        <div>
+          <strong>{{ capability.name }}</strong>
+          <span>{{ capability.status }}</span>
+        </div>
+        <p>{{ capability.description }}</p>
+      </article>
+    {% endfor %}
+  </section>
+{% endblock %}

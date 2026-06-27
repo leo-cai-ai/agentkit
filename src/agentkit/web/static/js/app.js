@@ -1,0 +1,1007 @@
+function readUiConfig() {
+  const node = document.getElementById("ui-config");
+  if (!node) return {};
+  try {
+    return JSON.parse(node.textContent || "{}");
+  } catch {
+    return {};
+  }
+}
+
+const UI_CONFIG = readUiConfig();
+const DEMO_PROMPT = UI_CONFIG.demo_prompt || "Rank the top 3 candidates for JOB-001 and explain why.";
+let pendingApproval = null;
+let currentConversationId = null;
+let conversationCache = [];
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+// The UI is a single chat window for every agent. Command-mode agents send only
+// {agent, text}; the server fills business params from tenant defaults + the
+// natural-language request. Chat-mode agents post to /api/chat instead.
+function collectCommandPayload(message) {
+  return {
+    text: message,
+    agent: getSelectedAgentName(),
+  };
+}
+
+function getSelectedAgentMode() {
+  const card = getAgentCard(getSelectedAgentName());
+  return (card?.dataset.agentMode || "command").toLowerCase();
+}
+
+function getSelectedAgentName() {
+  return document.querySelector('input[name="agent"]:checked')?.value || UI_CONFIG.default_agent || "";
+}
+
+function getAgentCard(agentName) {
+  return Array.from(document.querySelectorAll("[data-agent-card]")).find((card) => card.dataset.agentCard === agentName);
+}
+
+function getSelectedAgentLabel() {
+  const selected = getSelectedAgentName();
+  const card = getAgentCard(selected);
+  return card?.querySelector("strong")?.textContent?.trim() || selected || "Agent";
+}
+
+function getSelectedAgentDemoPrompt() {
+  const selected = getSelectedAgentName();
+  const card = getAgentCard(selected);
+  return card?.dataset.demoPrompt || UI_CONFIG.demo_prompts?.[selected] || DEMO_PROMPT;
+}
+
+function getCsrfToken() {
+  return document.querySelector('meta[name="csrf-token"]')?.content || "";
+}
+
+async function postTask(payload) {
+  const response = await fetch("/api/tasks", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": getCsrfToken(),
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || `Request failed with ${response.status}`);
+  }
+  return response.json();
+}
+
+async function postResume(payload) {
+  const response = await fetch("/api/tasks/resume", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": getCsrfToken(),
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    let message = `Request failed with ${response.status}`;
+    try {
+      const data = await response.json();
+      message = data.error || message;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message);
+  }
+  return response.json();
+}
+
+async function postChat(payload) {
+  const response = await fetch("/api/chat", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": getCsrfToken(),
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    let message = `Request failed with ${response.status}`;
+    try {
+      const data = await response.json();
+      message = data.error || message;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message);
+  }
+  return response.json();
+}
+
+function parseSseFrame(frame) {
+  let event = "message";
+  const dataLines = [];
+  for (const line of frame.split("\n")) {
+    if (line.startsWith(":")) continue;
+    if (line.startsWith("event:")) event = line.slice(6).trim();
+    else if (line.startsWith("data:")) dataLines.push(line.slice(5).replace(/^ /, ""));
+  }
+  if (!dataLines.length) return null;
+  try {
+    return { event, data: JSON.parse(dataLines.join("\n")) };
+  } catch {
+    return { event, data: {} };
+  }
+}
+
+// Stream an SSE endpoint. Returns the parsed `final` payload (or null). Tokens
+// are delivered to handlers.onToken as they arrive; handlers.onError captures a
+// server-side error frame. Throws when the response is not a usable event
+// stream so callers can fall back to the blocking JSON endpoint.
+async function streamSse(url, payload, handlers = {}) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": getCsrfToken() },
+    body: JSON.stringify(payload),
+  });
+  const contentType = response.headers.get("Content-Type") || "";
+  if (!response.ok || !contentType.includes("text/event-stream") || !response.body) {
+    let message = `Request failed with ${response.status}`;
+    try {
+      const data = await response.json();
+      message = data.error || message;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalData = null;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let index;
+    while ((index = buffer.indexOf("\n\n")) !== -1) {
+      const frame = buffer.slice(0, index);
+      buffer = buffer.slice(index + 2);
+      const parsed = parseSseFrame(frame);
+      if (!parsed) continue;
+      if (parsed.event === "token") handlers.onToken?.(parsed.data.delta || "");
+      else if (parsed.event === "final") {
+        finalData = parsed.data;
+        handlers.onFinal?.(parsed.data);
+      } else if (parsed.event === "error") handlers.onError?.(parsed.data.error || "stream error");
+    }
+  }
+  return finalData;
+}
+
+function scrollChatToBottom() {
+  const thread = document.getElementById("chat-thread");
+  if (thread) thread.scrollTop = thread.scrollHeight;
+}
+
+// A streaming assistant bubble whose `<p>` text is appended to as tokens arrive.
+function addLiveAssistantMessage(labelOverride = "") {
+  const thread = document.getElementById("chat-thread");
+  if (!thread) return null;
+  const node = document.createElement("div");
+  node.className = "chat-message assistant";
+  const span = document.createElement("span");
+  span.textContent = labelOverride || getSelectedAgentLabel();
+  const paragraph = document.createElement("p");
+  node.appendChild(span);
+  node.appendChild(paragraph);
+  thread.appendChild(node);
+  scrollChatToBottom();
+  return { node, p: paragraph };
+}
+
+function resetChatThread(greeting) {
+  const thread = document.getElementById("chat-thread");
+  if (!thread) return;
+  thread.innerHTML = "";
+  if (greeting) {
+    addChatMessage("assistant", greeting, getSelectedAgentLabel());
+  }
+}
+
+function formatRelativeTime(epochSeconds) {
+  const ts = Number(epochSeconds);
+  if (!ts) return "";
+  const deltaMs = Date.now() - ts * 1000;
+  if (deltaMs < 0) return "just now";
+  const minutes = Math.floor(deltaMs / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Date(ts * 1000).toLocaleDateString();
+}
+
+function conversationTitle(conv) {
+  if (!conv) return "New conversation";
+  return (conv.title || "").trim() || "Untitled conversation";
+}
+
+function conversationMeta(conv) {
+  if (!conv) return "Start a fresh thread";
+  const when = formatRelativeTime(conv.updated_at || conv.created_at);
+  return when ? `Updated ${when}` : "Saved conversation";
+}
+
+function setConversationTrigger(conv) {
+  const titleEl = document.querySelector("[data-conversation-current]");
+  const metaEl = document.querySelector("[data-conversation-current-meta]");
+  if (titleEl) titleEl.textContent = conversationTitle(conv);
+  if (metaEl) metaEl.textContent = conversationMeta(conv);
+}
+
+function renderConversationMenu() {
+  const menu = document.querySelector("[data-conversation-menu]");
+  if (!menu) return;
+  const items = [
+    `<li class="conversation-item" role="option" data-conversation-id="" data-active="${!currentConversationId}">
+       <span class="conversation-item-title">New conversation</span>
+       <span class="conversation-item-meta">Start a fresh thread</span>
+     </li>`,
+  ];
+  for (const conv of conversationCache) {
+    const active = conv.id === currentConversationId;
+    items.push(
+      `<li class="conversation-item" role="option" data-conversation-id="${escapeHtml(conv.id)}" data-active="${active}">
+         <span class="conversation-item-title">${escapeHtml(conversationTitle(conv))}</span>
+         <span class="conversation-item-meta">${escapeHtml(conversationMeta(conv))}</span>
+       </li>`
+    );
+  }
+  menu.innerHTML = items.join("");
+}
+
+function closeConversationMenu() {
+  const picker = document.querySelector("[data-conversation-picker]");
+  const menu = document.querySelector("[data-conversation-menu]");
+  const trigger = document.querySelector("[data-conversation-trigger]");
+  picker?.classList.remove("open");
+  if (menu) menu.hidden = true;
+  trigger?.setAttribute("aria-expanded", "false");
+}
+
+function openConversationMenu() {
+  const picker = document.querySelector("[data-conversation-picker]");
+  const menu = document.querySelector("[data-conversation-menu]");
+  const trigger = document.querySelector("[data-conversation-trigger]");
+  if (!menu) return;
+  renderConversationMenu();
+  picker?.classList.add("open");
+  menu.hidden = false;
+  trigger?.setAttribute("aria-expanded", "true");
+}
+
+function syncConversationTrigger() {
+  const conv = conversationCache.find((c) => c.id === currentConversationId);
+  setConversationTrigger(conv || null);
+}
+
+async function loadConversations(agent) {
+  const menu = document.querySelector("[data-conversation-menu]");
+  if (!menu) return;
+  try {
+    const response = await fetch(`/api/conversations?agent=${encodeURIComponent(agent)}`);
+    if (!response.ok) return;
+    const data = await response.json();
+    conversationCache = data.conversations || [];
+  } catch {
+    conversationCache = [];
+  }
+  syncConversationTrigger();
+  renderConversationMenu();
+}
+
+async function loadConversationMessages(conversationId) {
+  if (!conversationId) {
+    resetChatThread("");
+    return;
+  }
+  try {
+    const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/messages`);
+    if (!response.ok) return;
+    const data = await response.json();
+    const thread = document.getElementById("chat-thread");
+    if (thread) thread.innerHTML = "";
+    for (const msg of data.messages || []) {
+      addChatMessage(msg.role === "user" ? "user" : "assistant", msg.content, msg.role === "user" ? "You" : getSelectedAgentLabel());
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+async function startNewConversation() {
+  currentConversationId = null;
+  resetChatThread("New conversation started. How can I help?");
+  closeConversationMenu();
+  syncConversationTrigger();
+}
+
+function setExecutionState(label, activeIndex = -1, done = false) {
+  const state = document.getElementById("execution-state");
+  const steps = Array.from(document.querySelectorAll("#step-list li"));
+  if (state) state.textContent = label;
+  steps.forEach((step, index) => {
+    step.classList.toggle("active", index === activeIndex);
+    step.classList.toggle("done", done || index < activeIndex);
+  });
+}
+
+function setAgentStatus(agentName, label) {
+  document.querySelectorAll("[data-agent-status]").forEach((item) => {
+    const isSelected = item.dataset.agentStatus === agentName;
+    item.classList.toggle("active", isSelected);
+    const status = item.querySelector("em");
+    if (status) {
+      status.textContent = isSelected ? label : "online";
+    }
+  });
+}
+
+function applyAgentMode() {
+  const mode = getSelectedAgentMode();
+  const bar = document.querySelector("[data-conversation-bar]");
+  if (bar) bar.hidden = mode !== "chat";
+}
+
+function bindAgentSelector() {
+  const radios = Array.from(document.querySelectorAll('input[name="agent"]'));
+  const update = async (isUserChange) => {
+    if (!document.querySelector('input[name="agent"]:checked') && radios[0]) {
+      radios[0].checked = true;
+    }
+    const selected = getSelectedAgentName();
+    document.querySelectorAll("[data-agent-card]").forEach((card) => {
+      card.classList.toggle("active", card.dataset.agentCard === selected);
+    });
+    setAgentStatus(selected, "selected");
+    applyAgentMode();
+
+    if (isUserChange) {
+      // Switching agents starts a fresh thread; chat agents also load history.
+      currentConversationId = null;
+      clearPendingResult();
+      if (getSelectedAgentMode() === "chat") {
+        resetChatThread(`Hi, I'm the ${getSelectedAgentLabel()}. How can I help?`);
+        await loadConversations(selected);
+      } else {
+        resetChatThread("");
+      }
+    } else if (getSelectedAgentMode() === "chat") {
+      await loadConversations(selected);
+    }
+  };
+  radios.forEach((radio) => radio.addEventListener("change", () => update(true)));
+  update(false);
+}
+
+function tableHtml(rows) {
+  if (!rows || rows.length === 0) {
+    return '<div class="empty-state">No records to display.</div>';
+  }
+  const columns = Object.keys(rows[0]);
+  const header = columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("");
+  const body = rows
+    .map((row) => {
+      const cells = columns
+        .map((column) => {
+          const value = row[column];
+          const rendered = Array.isArray(value) ? value.join(", ") : value ?? "";
+          return `<td>${escapeHtml(rendered)}</td>`;
+        })
+        .join("");
+      return `<tr>${cells}</tr>`;
+    })
+    .join("");
+  return `<div class="table-wrap"><table class="data-table"><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
+function renderBusinessOutput(final) {
+  const rankedCandidates = final.ranked_candidates || [];
+  if (rankedCandidates.length) {
+    return tableHtml(rankedCandidates);
+  }
+
+  const blocks = [];
+  if (final.campaign_summary) {
+    blocks.push(`<p class="response-text">${escapeHtml(final.campaign_summary)}</p>`);
+  }
+  if (final.growth_goal) {
+    blocks.push(`
+      <div class="metric-strip">
+        <div><span>Platform</span><strong>${escapeHtml(final.platform || "business")}</strong></div>
+        <div><span>Goal</span><strong>${escapeHtml(final.growth_goal.target_followers || "")} followers</strong></div>
+        <div><span>Window</span><strong>${escapeHtml(final.growth_goal.days || "")} days</strong></div>
+        <div><span>Cadence</span><strong>${escapeHtml(final.cadence || "")}</strong></div>
+      </div>
+    `);
+  }
+  if (final.agent_pipeline?.length) {
+    blocks.push(`<h3 class="result-subtitle">Agent Pipeline</h3>${tableHtml(final.agent_pipeline)}`);
+  }
+  if (final.top_cases?.length) {
+    blocks.push(`<h3 class="result-subtitle">Top Cases</h3>${tableHtml(final.top_cases)}`);
+  }
+  if (final.comparison?.length) {
+    blocks.push(`<h3 class="result-subtitle">Pattern Comparison</h3>${tableHtml(final.comparison)}`);
+  }
+  if (final.article) {
+    const outline = (final.article.outline || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+    blocks.push(`
+      <div class="article-draft">
+        <h3>${escapeHtml(final.article.title || "Article Draft")}</h3>
+        ${outline ? `<ol>${outline}</ol>` : ""}
+        <pre>${escapeHtml(final.article.body || "")}</pre>
+      </div>
+    `);
+  }
+  if (final.publish) {
+    blocks.push(`<h3 class="result-subtitle">Publish Package</h3>${tableHtml([final.publish])}`);
+  }
+
+  return blocks.length ? blocks.join("") : '<div class="empty-state">No structured business output to display.</div>';
+}
+
+function summarizePayload(payload) {
+  if (!payload || typeof payload !== "object") return String(payload ?? "");
+  if (payload.node) return `node=${payload.node}`;
+  if (payload.skill) return `skill=${payload.skill} ${payload.reason || payload.mode || payload.confidence || ""}`.trim();
+  if (payload.steps) return `steps=${payload.steps.length}`;
+  if (payload.text) return String(payload.text).slice(0, 120);
+  if (Object.prototype.hasOwnProperty.call(payload, "has_error")) return `has_error=${payload.has_error}`;
+  return JSON.stringify(payload).slice(0, 160);
+}
+
+function formatTimestamp(value) {
+  if (value === null || value === undefined || value === "") return "";
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return String(value);
+  const date = new Date(numeric * 1000);
+  const pad = (part) => String(part).padStart(2, "0");
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+  ].join("-") + " " + [
+    pad(date.getHours()),
+    pad(date.getMinutes()),
+    pad(date.getSeconds()),
+  ].join(":");
+}
+
+function planRows(plan) {
+  const rows = [];
+  if (plan?.route) {
+    rows.push({ Item: "Route", Value: plan.route.skill_name || "", Detail: plan.route.reason || "" });
+    rows.push({ Item: "Confidence", Value: plan.route.confidence || "", Detail: "" });
+  }
+  for (const step of plan?.steps || []) {
+    rows.push({
+      Item: `Step ${step.step_id}`,
+      Value: step.skill_name,
+      Detail: `mode=${step.mode} depends_on=${JSON.stringify(step.depends_on || [])}`,
+    });
+  }
+  return rows;
+}
+
+function auditRows(events) {
+  return (events || []).map((event) => ({
+    Time: formatTimestamp(event.ts),
+    Event: event.type,
+    Summary: summarizePayload(event.payload),
+  }));
+}
+
+function approvalActionHtml(waitingForApproval, approval) {
+  if (!waitingForApproval) return "";
+  const skills = approval?.skills || [];
+  const skillText = skills.length ? skills.join(", ") : "selected skill";
+  return `
+    <div class="approval-box">
+      <div>
+        <strong>Human approval required</strong>
+        <p>Approve execution for <code>${escapeHtml(skillText)}</code>. This demo will resubmit the same task with an approval token in the request context.</p>
+      </div>
+      <div class="approval-actions">
+        <button class="secondary danger" type="button" data-reject-pending>Reject</button>
+        <button class="primary" type="button" data-approve-pending>Approve & Run</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderResult(payload, requestPayload = null, options = {}) {
+  const region = document.getElementById("result-region");
+  if (!region) return;
+  const response = payload.response || {};
+  const final = response.output?.final || {};
+  const ranked = final.ranked_candidates || [];
+  const outputStatus = response.output?.status || "";
+  const waitingForApproval = outputStatus === "waiting_for_approval";
+  const rejected = outputStatus === "rejected";
+  const approval = response.output?.governance?.approval || response.output?.approval || final.approval || {};
+  pendingApproval = waitingForApproval && requestPayload
+    ? { request: { ...requestPayload }, skills: approval.skills || [], thread_id: response.output?.thread_id || "" }
+    : null;
+  const conversationMessage = final.message || response.output?.message || "";
+  const rawPlan = escapeHtml(JSON.stringify(response.plan || {}, null, 2));
+  const rawAudit = escapeHtml(JSON.stringify(response.audit_events || [], null, 2));
+  const hidePrimaryPanel = options.hidePrimaryPanel === true;
+  const primaryTitle = waitingForApproval
+    ? "Approval Required"
+    : rejected
+      ? "Approval Rejected"
+    : conversationMessage
+      ? "Conversation Response"
+      : "Decision Output";
+  const primarySubtitle = waitingForApproval
+    ? "Human-in-the-loop checkpoint"
+    : rejected
+      ? "Execution stopped"
+    : conversationMessage
+      ? "General answer"
+      : final.job_title || final.job_id || "Completed";
+  const primaryBody = conversationMessage
+    ? `<p class="response-text">${escapeHtml(conversationMessage)}</p>${approvalActionHtml(waitingForApproval, approval)}`
+    : renderBusinessOutput(final);
+
+  region.hidden = false;
+  region.innerHTML = `
+    ${hidePrimaryPanel ? "" : `
+      <article class="panel result-card">
+        <div class="panel-head">
+          <h2>${primaryTitle}</h2>
+          <span>${escapeHtml(primarySubtitle)}</span>
+        </div>
+        ${primaryBody}
+      </article>
+    `}
+    <section class="result-grid">
+      <article class="panel">
+        <div class="panel-head"><h2>Execution Plan</h2><span>LangGraph route</span></div>
+        ${tableHtml(planRows(response.plan))}
+      </article>
+      <article class="panel">
+        <div class="panel-head"><h2>Audit Timeline</h2><span>${(response.audit_events || []).length} events</span></div>
+        ${tableHtml(auditRows(response.audit_events))}
+      </article>
+      <article class="panel">
+        <div class="json-panel">
+          <div class="json-title">Raw Plan</div>
+          <pre class="json-pre">${rawPlan}</pre>
+        </div>
+      </article>
+      <article class="panel">
+        <div class="json-panel">
+          <div class="json-title">Raw Audit</div>
+          <pre class="json-pre">${rawAudit}</pre>
+        </div>
+      </article>
+    </section>
+  `;
+  if (options.scroll !== false) {
+    region.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
+
+function addChatMessage(role, text, labelOverride = "") {
+  const thread = document.getElementById("chat-thread");
+  if (!thread) return;
+  const node = document.createElement("div");
+  node.className = `chat-message ${role}`;
+  const label = labelOverride || (role === "user" ? "You" : getSelectedAgentLabel());
+  node.innerHTML = `<span>${label}</span><p>${escapeHtml(text)}</p>`;
+  thread.appendChild(node);
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function addApprovalChatMessage(text, approval, labelOverride = "") {
+  const thread = document.getElementById("chat-thread");
+  if (!thread) return;
+  const node = document.createElement("div");
+  node.className = "chat-message assistant approval-message";
+  node.innerHTML = `
+    <span>${escapeHtml(labelOverride || getSelectedAgentLabel())}</span>
+    <p>${escapeHtml(text)}</p>
+    ${approvalActionHtml(true, approval)}
+  `;
+  thread.appendChild(node);
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function addAssistantResponse(result, requestPayload) {
+  const response = result.response || {};
+  const final = response.output?.final || {};
+  const approval = response.output?.governance?.approval || response.output?.approval || final.approval || {};
+  const label = getSelectedAgentLabel();
+  if (response.output?.status === "waiting_for_approval") {
+    pendingApproval = { request: { ...requestPayload }, skills: approval.skills || [], thread_id: response.output?.thread_id || "" };
+    addApprovalChatMessage(result.assistant_text, approval, label);
+    return;
+  }
+  addChatMessage("assistant", result.assistant_text, label);
+}
+
+function resolveApprovalActions(label) {
+  document.querySelectorAll("#chat-thread .approval-box").forEach((box) => {
+    const actions = box.querySelector(".approval-actions");
+    if (actions) {
+      actions.innerHTML = `<span class="approval-resolution">${escapeHtml(label)}</span>`;
+    }
+  });
+  document.querySelectorAll("#chat-thread .approval-message").forEach((message) => {
+    message.dataset.approvalResolved = label.toLowerCase();
+  });
+}
+
+function pruneDuplicateApprovalMessages() {
+  const messages = Array.from(document.querySelectorAll("#chat-thread .chat-message.assistant"));
+  let keptApprovalMessage = false;
+  for (const message of messages) {
+    const text = message.textContent || "";
+    const isApprovalWait = text.includes("This run is waiting for human approval before execution.");
+    if (!isApprovalWait) continue;
+    if (message.classList.contains("approval-message") && !keptApprovalMessage) {
+      keptApprovalMessage = true;
+      continue;
+    }
+    message.remove();
+  }
+}
+
+function clearPendingResult() {
+  const region = document.getElementById("result-region");
+  if (!region) return;
+  region.innerHTML = "";
+  region.hidden = true;
+}
+
+function bindRangeOutputs() {
+  document.querySelectorAll('input[type="range"][data-range-output]').forEach((input) => {
+    const output = document.getElementById(input.dataset.rangeOutput);
+    const update = () => {
+      if (output) output.value = input.value;
+    };
+    input.addEventListener("input", update);
+    update();
+  });
+}
+
+function finalizeCommandResult(result, requestPayload, bubble, selectedAgent, streamed = "") {
+  const response = result.response || {};
+  const final = response.output?.final || {};
+  const status = response.output?.status;
+  const approval = response.output?.governance?.approval || response.output?.approval || final.approval || {};
+  if (status === "waiting_for_approval") {
+    if (bubble) bubble.node.remove();
+    pendingApproval = {
+      request: { ...requestPayload },
+      skills: approval.skills || [],
+      thread_id: response.output?.thread_id || "",
+    };
+    addApprovalChatMessage(result.assistant_text, approval, getSelectedAgentLabel());
+  } else if (bubble && !streamed) {
+    // Keep the live-streamed answer (e.g. the article body / recommendation).
+    // Only fall back to the server summary when nothing streamed this turn;
+    // the structured result panel below carries the rest of the detail.
+    bubble.p.textContent = result.assistant_text;
+  }
+  setExecutionState(status === "waiting_for_approval" ? "Waiting for approval" : "Completed", status === "waiting_for_approval" ? 2 : 5, status !== "waiting_for_approval");
+  setAgentStatus(selectedAgent, status === "waiting_for_approval" ? "waiting" : "completed");
+  const intentType = response.output?.governance?.intent?.intent_type || final.intent_type || "";
+  const hidePrimaryPanel = Boolean(final.conversation) || ["waiting_for_approval", "rejected"].includes(status) || ["platform_question", "chit_chat", "unknown"].includes(intentType);
+  renderResult(result, requestPayload, { hidePrimaryPanel });
+}
+
+async function runCommandTurn(message, selectedAgent, submit) {
+  const requestPayload = collectCommandPayload(message);
+  const bubble = addLiveAssistantMessage(getSelectedAgentLabel());
+  let streamed = "";
+  let errored = null;
+  try {
+    const finalData = await streamSse("/api/tasks/stream", requestPayload, {
+      onToken: (delta) => {
+        streamed += delta;
+        if (bubble) bubble.p.textContent = streamed;
+        scrollChatToBottom();
+      },
+      onError: (msg) => {
+        errored = msg;
+      },
+    });
+    if (errored && !finalData) throw new Error(errored);
+    finalizeCommandResult(finalData, requestPayload, bubble, selectedAgent, streamed);
+  } catch (error) {
+    if (!streamed) {
+      try {
+        const result = await postTask(requestPayload);
+        if (bubble) bubble.node.remove();
+        addAssistantResponse(result, requestPayload);
+        const status = result.response?.output?.status;
+        const final = result.response?.output?.final || {};
+        setExecutionState(status === "waiting_for_approval" ? "Waiting for approval" : "Completed", status === "waiting_for_approval" ? 2 : 5, status !== "waiting_for_approval");
+        setAgentStatus(selectedAgent, status === "waiting_for_approval" ? "waiting" : "completed");
+        const intentType = result.response?.output?.governance?.intent?.intent_type || final.intent_type || "";
+        const hidePrimaryPanel = Boolean(final.conversation) || ["waiting_for_approval", "rejected"].includes(status) || ["platform_question", "chit_chat", "unknown"].includes(intentType);
+        renderResult(result, requestPayload, { hidePrimaryPanel });
+        return;
+      } catch (fallbackError) {
+        error = fallbackError;
+      }
+    }
+    if (bubble) bubble.p.textContent = error.message;
+    setExecutionState("Failed");
+    setAgentStatus(selectedAgent, "failed");
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+async function runChatTurn(message, selectedAgent, submit) {
+  const isNewConversation = !currentConversationId;
+  const bubble = addLiveAssistantMessage(getSelectedAgentLabel());
+  let streamed = "";
+  let errored = null;
+  try {
+    const finalData = await streamSse(
+      "/api/chat/stream",
+      { agent: selectedAgent, message, conversation_id: currentConversationId },
+      {
+        onToken: (delta) => {
+          streamed += delta;
+          if (bubble) bubble.p.textContent = streamed;
+          scrollChatToBottom();
+        },
+        onError: (msg) => {
+          errored = msg;
+        },
+      },
+    );
+    if (errored && !finalData) throw new Error(errored);
+    if (finalData) {
+      currentConversationId = finalData.conversation_id || currentConversationId;
+      // For chat agents the streamed text already equals the reply; only set it
+      // from the final payload when nothing streamed (keeps the live text).
+      if (bubble && !streamed && finalData.assistant_text) bubble.p.textContent = finalData.assistant_text;
+    }
+    setExecutionState("Completed", 5, true);
+    setAgentStatus(selectedAgent, "completed");
+    if (isNewConversation) await loadConversations(selectedAgent);
+  } catch (error) {
+    if (!streamed) {
+      try {
+        const result = await postChat({ agent: selectedAgent, message, conversation_id: currentConversationId });
+        currentConversationId = result.conversation_id;
+        if (bubble) bubble.p.textContent = result.assistant_text;
+        setExecutionState("Completed", 5, true);
+        setAgentStatus(selectedAgent, "completed");
+        if (isNewConversation) await loadConversations(selectedAgent);
+        return;
+      } catch (fallbackError) {
+        error = fallbackError;
+      }
+    }
+    if (bubble) bubble.p.textContent = error.message;
+    setExecutionState("Failed");
+    setAgentStatus(selectedAgent, "failed");
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+function bindChatForm() {
+  const chatForm = document.getElementById("chat-form");
+  if (!chatForm) return;
+  const input = chatForm.querySelector('input[name="message"]');
+  const submit = chatForm.querySelector('button[type="submit"]');
+  const runChat = async (message) => {
+    if (!message.trim()) return;
+    addChatMessage("user", message);
+    input.value = "";
+    submit.disabled = true;
+    const selectedAgent = getSelectedAgentName();
+    setAgentStatus(selectedAgent, "running");
+    setExecutionState("Processing", 0);
+    if (getSelectedAgentMode() === "chat") {
+      await runChatTurn(message, selectedAgent, submit);
+    } else {
+      await runCommandTurn(message, selectedAgent, submit);
+    }
+  };
+  chatForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    runChat(input.value);
+  });
+  document.querySelector("[data-chat-demo]")?.addEventListener("click", () => runChat(getSelectedAgentDemoPrompt()));
+}
+
+function bindConversationBar() {
+  document.querySelector("[data-new-conversation]")?.addEventListener("click", () => {
+    startNewConversation();
+  });
+
+  const trigger = document.querySelector("[data-conversation-trigger]");
+  const menu = document.querySelector("[data-conversation-menu]");
+  trigger?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const isOpen = document.querySelector("[data-conversation-picker]")?.classList.contains("open");
+    if (isOpen) {
+      closeConversationMenu();
+    } else {
+      openConversationMenu();
+    }
+  });
+
+  menu?.addEventListener("click", async (event) => {
+    const item = event.target.closest("[data-conversation-id]");
+    if (!item) return;
+    const id = item.dataset.conversationId || null;
+    closeConversationMenu();
+    currentConversationId = id;
+    syncConversationTrigger();
+    if (id) {
+      await loadConversationMessages(id);
+    } else {
+      startNewConversation();
+    }
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest("[data-conversation-picker]")) {
+      closeConversationMenu();
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeConversationMenu();
+  });
+}
+
+async function approvePendingTask() {
+  if (!pendingApproval) return;
+  const agentName = pendingApproval.request.agent;
+  const agentLabel = getSelectedAgentLabel();
+  const buttons = document.querySelectorAll("[data-approve-pending], [data-reject-pending]");
+  buttons.forEach((button) => {
+    button.disabled = true;
+  });
+  setExecutionState("Approved, executing", 3);
+  setAgentStatus(agentName, "running");
+  // Prefer in-place resume (fast path): no re-running intent/route/plan.
+  // Fall back to a full resubmit when no checkpoint thread is available.
+  const usingResume = Boolean(pendingApproval.thread_id);
+  const approvedPayload = usingResume
+    ? { thread_id: pendingApproval.thread_id, approved_skills: pendingApproval.skills }
+    : { ...pendingApproval.request, approved_skills: pendingApproval.skills };
+  const bubble = addLiveAssistantMessage(agentLabel);
+  let streamed = "";
+  let errored = null;
+  let succeeded = false;
+  try {
+    const result = await streamSse(usingResume ? "/api/tasks/resume/stream" : "/api/tasks/stream", approvedPayload, {
+      onToken: (delta) => {
+        streamed += delta;
+        if (bubble) bubble.p.textContent = streamed;
+        scrollChatToBottom();
+      },
+      onError: (msg) => {
+        errored = msg;
+      },
+    });
+    if (errored && !result) throw new Error(errored);
+    const status = result.response?.output?.status;
+    setExecutionState(status === "waiting_for_approval" ? "Waiting for approval" : "Completed", status === "waiting_for_approval" ? 2 : 5, status !== "waiting_for_approval");
+    setAgentStatus(agentName, status === "waiting_for_approval" ? "waiting" : "completed");
+    resolveApprovalActions("Approved");
+    pruneDuplicateApprovalMessages();
+    pendingApproval = null;
+    clearPendingResult();
+    if (bubble && !streamed) bubble.p.textContent = result.assistant_text;
+    renderResult(result, approvedPayload);
+    succeeded = true;
+  } catch (error) {
+    if (bubble) bubble.node.remove();
+    setExecutionState("Failed");
+    setAgentStatus(agentName, "failed");
+    alert(error.message);
+  } finally {
+    if (!succeeded) {
+      buttons.forEach((button) => {
+        button.disabled = false;
+      });
+    }
+  }
+}
+
+async function rejectPendingTask() {
+  if (!pendingApproval) return;
+  const agentName = pendingApproval.request.agent;
+  const agentLabel = getSelectedAgentLabel();
+  const buttons = document.querySelectorAll("[data-approve-pending], [data-reject-pending]");
+  buttons.forEach((button) => {
+    button.disabled = true;
+  });
+  setExecutionState("Rejected", 2);
+  setAgentStatus(agentName, "rejected");
+  const usingResume = Boolean(pendingApproval.thread_id);
+  const rejectedPayload = usingResume
+    ? { thread_id: pendingApproval.thread_id, rejected_skills: pendingApproval.skills }
+    : { ...pendingApproval.request, rejected_skills: pendingApproval.skills };
+  const bubble = addLiveAssistantMessage(agentLabel);
+  let streamed = "";
+  let errored = null;
+  let succeeded = false;
+  try {
+    const result = await streamSse(usingResume ? "/api/tasks/resume/stream" : "/api/tasks/stream", rejectedPayload, {
+      onToken: (delta) => {
+        streamed += delta;
+        if (bubble) bubble.p.textContent = streamed;
+        scrollChatToBottom();
+      },
+      onError: (msg) => {
+        errored = msg;
+      },
+    });
+    if (errored && !result) throw new Error(errored);
+    setExecutionState("Rejected", 2);
+    resolveApprovalActions("Rejected");
+    pruneDuplicateApprovalMessages();
+    pendingApproval = null;
+    clearPendingResult();
+    // Rejected runs don't execute, so nothing streams -> show the rejection text.
+    if (bubble && !streamed) bubble.p.textContent = result.assistant_text;
+    renderResult(result, rejectedPayload);
+    succeeded = true;
+  } catch (error) {
+    if (bubble) bubble.node.remove();
+    setExecutionState("Failed");
+    alert(error.message);
+  } finally {
+    if (!succeeded) {
+      buttons.forEach((button) => {
+        button.disabled = false;
+      });
+    }
+  }
+}
+
+function bindApprovalActions() {
+  document.addEventListener("click", (event) => {
+    const approveButton = event.target.closest("[data-approve-pending]");
+    if (approveButton) {
+      event.preventDefault();
+      approvePendingTask();
+      return;
+    }
+
+    const rejectButton = event.target.closest("[data-reject-pending]");
+    if (rejectButton) {
+      event.preventDefault();
+      rejectPendingTask();
+    }
+  });
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  bindAgentSelector();
+  bindRangeOutputs();
+  bindChatForm();
+  bindConversationBar();
+  bindApprovalActions();
+});

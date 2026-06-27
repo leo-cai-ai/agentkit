@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% from "_components.html" import data_table %}
+
+{% block content %}
+  <section class="dashboard-grid governance-grid">
+    <article class="panel">
+      <div class="panel-head">
+        <h2>Agent Profiles</h2>
+        <span>Runtime boundary</span>
+      </div>
+      {{ data_table(agents) }}
+    </article>
+
+    <article class="panel">
+      <div class="panel-head">
+        <h2>Tool Registry</h2>
+        <span>MCP-ready contract</span>
+      </div>
+      {{ data_table(tools) }}
+    </article>
+
+    <article class="panel wide">
+      <div class="panel-head">
+        <h2>Skill Registry</h2>
+        <span>Business capability layer</span>
+      </div>
+      {{ data_table(skills) }}
+    </article>
+
+    <article class="panel">
+      <div class="panel-head">
+        <h2>Prompt Registry</h2>
+        <span>File-managed prompts</span>
+      </div>
+      {{ data_table(prompt_rows) }}
+    </article>
+
+    <article class="panel">
+      <div class="panel-head">
+        <h2>Audit Store</h2>
+        <span>SQLite</span>
+      </div>
+      <div class="key-value">
+        <span>Path</span>
+        <strong>{{ db_path }}</strong>
+      </div>
+      {{ data_table(event_counts) }}
+    </article>
+
+    {% if cost_summary %}
+    <article class="panel">
+      <div class="panel-head">
+        <h2>LLM Cost &amp; Tokens</h2>
+        <span>Across all recorded runs</span>
+      </div>
+      <div class="key-value">
+        <span>LLM calls</span>
+        <strong>{{ cost_summary.calls }}</strong>
+      </div>
+      <div class="key-value">
+        <span>Input tokens</span>
+        <strong>{{ cost_summary.input_tokens }}</strong>
+      </div>
+      <div class="key-value">
+        <span>Output tokens</span>
+        <strong>{{ cost_summary.output_tokens }}</strong>
+      </div>
+      <div class="key-value">
+        <span>Total tokens</span>
+        <strong>{{ cost_summary.total_tokens }}</strong>
+      </div>
+      <div class="key-value">
+        <span>Estimated cost (USD)</span>
+        <strong>${{ '%.4f'|format(cost_summary.cost_usd) }}</strong>
+      </div>
+    </article>
+    {% endif %}
+  </section>
+{% endblock %}

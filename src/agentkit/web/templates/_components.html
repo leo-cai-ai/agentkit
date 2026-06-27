@@ -1,0 +1,43 @@
+{% macro metric_grid(metrics) -%}
+  <section class="metric-grid">
+    {% for metric in metrics %}
+      <article class="metric-tile">
+        <span>{{ metric.label }}</span>
+        <strong>{{ metric.value }}</strong>
+        <small>{{ metric.helper }}</small>
+      </article>
+    {% endfor %}
+  </section>
+{%- endmacro %}
+
+{% macro data_table(rows, empty='No records to display.') -%}
+  {% if rows %}
+    {% set columns = rows[0].keys() | list %}
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr>
+            {% for column in columns %}
+              <th>{{ column }}</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+            <tr>
+              {% for column in columns %}
+                <td>{{ row[column] | format_cell }}</td>
+              {% endfor %}
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="empty-state">{{ empty }}</div>
+  {% endif %}
+{%- endmacro %}
+
+{% macro status_pill(status) -%}
+  <span class="status-pill status-{{ status | lower }}">{{ status }}</span>
+{%- endmacro %}

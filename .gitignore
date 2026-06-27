@@ -1,0 +1,18 @@
+.env
+
+# Private vendor LLM provider (kept local, not pushed)
+src/agentkit/llm/customer_band.py
+
+# superpowers / worktree scratch
+.worktrees/
+.superpowers/
+
+# Python / tooling
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/

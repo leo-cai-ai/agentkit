@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <script id="ui-config" type="application/json">{{ ui | tojson }}</script>
+  {% set agent_options = chat_agents if chat_agents is defined and chat_agents else ui.chat_agents | default([]) %}
+  <section class="command-layout">
+    <article class="panel command-panel">
+      <div class="panel-head">
+        <h2>Ask The AI Workforce</h2>
+        <span>Conversational command center</span>
+      </div>
+
+      <section class="chat-command">
+        <fieldset class="agent-selector field-wide">
+          <legend>Active Agent</legend>
+          <div class="agent-card-grid" role="radiogroup" aria-label="Active agent">
+            {% for agent in agent_options %}
+              {% set demo_prompt = ui.demo_prompts.get(agent.name, ui.demo_prompt) if ui.demo_prompts is defined else ui.demo_prompt %}
+              <label class="agent-card" data-agent-card="{{ agent.name }}" data-demo-prompt="{{ demo_prompt }}" data-agent-mode="{{ agent.mode | default('command') }}">
+                <input type="radio" name="agent" value="{{ agent.name }}" {{ 'checked' if agent.name == ui.default_agent else '' }}>
+                <span class="agent-card-top">
+                  <strong>{{ agent.label | default(agent.name | replace('_', ' ') | title) }}</strong>
+                  <em>{{ agent.status | default('online') }}</em>
+                </span>
+                <span class="agent-domain">{{ agent.domain | default('configured agent') }}</span>
+                <span class="agent-mission">{{ agent.mission | default(agent.description | default('Ready for governed tasks.')) }}</span>
+                <span class="agent-skills">{{ agent.allowed_skills | default([]) | join(', ') }}</span>
+              </label>
+            {% else %}
+              <label class="agent-card active" data-agent-card="{{ ui.default_agent }}" data-demo-prompt="{{ ui.demo_prompt }}" data-agent-mode="command">
+                <input type="radio" name="agent" value="{{ ui.default_agent }}" checked>
+                <span class="agent-card-top">
+                  <strong>{{ ui.default_agent | replace('_', ' ') | title }}</strong>
+                  <em>online</em>
+                </span>
+                <span class="agent-domain">configured agent</span>
+                <span class="agent-mission">Restart the Flask service to load full agent metadata.</span>
+                <span class="agent-skills">runtime fallback</span>
+              </label>
+            {% endfor %}
+          </div>
+        </fieldset>
+
+        <div class="conversation-bar" data-conversation-bar hidden>
+          <div class="conversation-picker" data-conversation-picker>
+            <span class="conversation-picker-caption">Conversation</span>
+            <button
+              type="button"
+              class="conversation-trigger"
+              data-conversation-trigger
+              aria-haspopup="listbox"
+              aria-expanded="false"
+            >
+              <span class="conversation-trigger-body">
+                <span class="conversation-trigger-title" data-conversation-current>New conversation</span>
+                <span class="conversation-trigger-meta" data-conversation-current-meta>Start a fresh thread</span>
+              </span>
+              <svg class="conversation-caret" viewBox="0 0 12 12" aria-hidden="true">
+                <path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <ul class="conversation-menu" data-conversation-menu role="listbox" aria-label="Conversation history" hidden></ul>
+          </div>
+          <button class="secondary conversation-new" type="button" data-new-conversation>
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.2v9.6M3.2 8h9.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            New chat
+          </button>
+        </div>
+
+        <div id="chat-thread" class="chat-thread" aria-live="polite">
+          <div class="chat-message assistant">
+            <span>Agent</span>
+            <p>Select an agent and start chatting. Try <code>who are you</code> or <code>{{ ui.demo_prompt }}</code></p>
+          </div>
+        </div>
+
+        <form id="chat-form" class="chat-input-row">
+          <input name="message" placeholder="Message the AI workforce" autocomplete="off">
+          <button class="primary" type="submit">Send</button>
+          <button class="secondary" type="button" data-chat-demo>Use Demo Prompt</button>
+        </form>
+      </section>
+    </article>
+
+    <aside class="panel live-panel">
+      <div class="panel-head">
+        <h2>Execution State</h2>
+        <span id="execution-state">Idle</span>
+      </div>
+      <ol class="step-list" id="step-list">
+        <li>Route request</li>
+        <li>Build execution plan</li>
+        <li>Human approval</li>
+        <li>Run governed skill</li>
+        <li>Persist audit trail</li>
+      </ol>
+
+      <div class="agent-status-panel">
+        <div class="mini-panel-head">
+          <h3>Agent Status</h3>
+          <span>Selectable workforce</span>
+        </div>
+        <div class="agent-status-list">
+          {% for agent in agent_options %}
+            <div class="agent-status-item" data-agent-status="{{ agent.name }}">
+              <div>
+                <strong>{{ agent.label | default(agent.name | replace('_', ' ') | title) }}</strong>
+                <span>{{ agent.domain | default('configured agent') }}</span>
+              </div>
+              <em>{{ agent.status | default('online') }}</em>
+            </div>
+          {% else %}
+            <div class="agent-status-item active" data-agent-status="{{ ui.default_agent }}">
+              <div>
+                <strong>{{ ui.default_agent | replace('_', ' ') | title }}</strong>
+                <span>metadata pending</span>
+              </div>
+              <em>selected</em>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <section id="result-region" class="result-region" hidden></section>
+{% endblock %}

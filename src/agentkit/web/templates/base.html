@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="csrf-token" content="{{ csrf_token }}">
+    <title>{{ title }} | Enterprise AI Workforce</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+    <script defer src="{{ url_for('static', filename='js/app.js') }}"></script>
+  </head>
+  <body data-page="{{ active }}">
+    <aside class="sidebar">
+      <a class="brand" href="{{ url_for('overview') }}">
+        <span class="brand-mark">EA</span>
+        <span>
+          <strong>Enterprise AI</strong>
+          <small>Workforce Console</small>
+        </span>
+      </a>
+      <nav class="nav">
+        <a class="{{ 'active' if active == 'overview' else '' }}" href="{{ url_for('overview') }}">Overview</a>
+        <a class="{{ 'active' if active == 'command' else '' }}" href="{{ url_for('command') }}">Command</a>
+        <a class="{{ 'active' if active == 'operations' else '' }}" href="{{ url_for('operations') }}">Operations</a>
+        <a class="{{ 'active' if active == 'governance' else '' }}" href="{{ url_for('governance') }}">Governance</a>
+      </nav>
+      <div class="sidebar-card">
+        <span>Active Tenant</span>
+        <strong>{{ tenant_id }}</strong>
+      </div>
+      <div class="sidebar-foot">
+        <span>v1.0</span>
+        <span>·</span>
+        <span>LangGraph Runtime</span>
+      </div>
+    </aside>
+
+    <main class="page-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Governed LangGraph Agents</p>
+          <h1>{{ title }}</h1>
+        </div>
+        <div class="topbar-meta">
+          <div class="meta-chip online">
+            <span>System</span>
+            <strong>Online</strong>
+          </div>
+          <div class="meta-chip">
+            <span>Tenant</span>
+            <strong>{{ tenant_id }}</strong>
+          </div>
+          <div class="meta-chip">
+            <span>Audit Store</span>
+            <strong>{{ db_path }}</strong>
+          </div>
+        </div>
+      </header>
+
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>
