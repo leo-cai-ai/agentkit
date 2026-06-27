@@ -17,7 +17,13 @@ from agentkit.core.registry import AgentRegistry, SkillRegistry, ToolRegistry
 from agentkit.core.skill_store import SkillFileStore, attach_skill_packages
 from agentkit.runtime.pack_registry import discover_packs
 
-DEMO_ROOT = Path(__file__).resolve().parents[3]  # repo root: src/agentkit/runtime/ -> repo
+# Root that holds the editable config tree (tenants/ prompts/ skills/ data/).
+# When running from a source checkout this is the repo root
+# (src/agentkit/runtime/ -> repo). When the package is pip-installed (e.g. inside
+# the Docker image) __file__ lives under site-packages, so parents[3] would point
+# into the venv; AGENTKIT_ROOT lets the deployment pin the real config root
+# (the Dockerfile/compose set it to /app).
+DEMO_ROOT = Path(os.environ.get("AGENTKIT_ROOT") or Path(__file__).resolve().parents[3]).resolve()
 TENANTS_DIR = DEMO_ROOT / "tenants"
 DATA_DIR = DEMO_ROOT / "data"
 DEFAULT_TENANT_ID = "company_alpha"

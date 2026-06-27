@@ -36,6 +36,12 @@ services:
     # can target any external/shared Postgres without editing this file.
     environment:
       AGENTKIT_VECTOR_STORE_BACKEND: postgres
+      # Read-only root FS: keep every runtime write inside the writable tmpfs
+      # (/tmp) — no bytecode/cache/HOME writes into /opt/venv or ~/.cache.
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPYCACHEPREFIX: /tmp/pycache
+      HOME: /tmp
+      XDG_CACHE_HOME: /tmp/cache
     volumes:
       - ./tenants:/app/tenants:ro
       - ./prompts:/app/prompts:ro

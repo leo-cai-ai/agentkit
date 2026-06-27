@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---- builder: install dependencies into a venv with uv ----
-FROM python:3.11-slim AS builder
+FROM python:3.12.10-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -21,12 +21,16 @@ COPY src ./src
 RUN uv pip install --python "$VIRTUAL_ENV/bin/python" ".[serve,pg]"
 
 # ---- runtime: minimal image, non-root ----
-FROM python:3.11-slim AS runtime
+FROM python:3.12.10-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     VIRTUAL_ENV=/opt/venv \
-    PATH="/opt/venv/bin:$PATH"
+    PATH="/opt/venv/bin:$PATH" \
+    # The package is pip-installed into the venv, so it can't derive the config
+    # root from __file__. Pin it to /app where tenants/prompts/skills are copied
+    # and the data volume is mounted.
+    AGENTKIT_ROOT=/app
 
 # Create an unprivileged user to run the app.
 RUN useradd --create-home --uid 10001 appuser

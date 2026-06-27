@@ -24,12 +24,10 @@ from agentkit.core.identity import (
     TASK_APPROVE,
     TASK_RUN,
 )
-from agentkit.runtime.bootstrap import build_runtime, resolve_tenant_id
+from agentkit.runtime.bootstrap import DEMO_ROOT, build_runtime, resolve_tenant_id
 from agentkit.web.identity import current_principal, require_permission
 from agentkit.web.security import configure_security
 from agentkit.web.streaming import stream_response
-
-DEMO_ROOT = Path(__file__).resolve().parents[3]
 
 
 # Which context inputs each agent actually consumes. Agents not listed here are

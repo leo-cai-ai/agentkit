@@ -50,6 +50,13 @@ services:
       AGENTKIT_PG_HOST: db
       AGENTKIT_PG_PORT: "5432"
       AGENTKIT_PG_SSLMODE: disable
+      # Read-only root FS: keep every runtime write inside the writable tmpfs
+      # (/tmp). Disable bytecode-on-disk and redirect any .pyc / cache / HOME
+      # writes there so libraries can't try to write into /opt/venv or ~/.cache.
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPYCACHEPREFIX: /tmp/pycache
+      HOME: /tmp
+      XDG_CACHE_HOME: /tmp/cache
     ports:
       - "8501:8501"
     volumes:
@@ -63,6 +70,9 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    # Read-only root FS is safe: the only runtime writes are the audit/checkpoint
+    # SQLite DBs under /app/data (the agentkit_data volume) and any cache/HOME
+    # writes, which the env vars above redirect to the writable /tmp tmpfs.
     read_only: true
     tmpfs:
       - /tmp
