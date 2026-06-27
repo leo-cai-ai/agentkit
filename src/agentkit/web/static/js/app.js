@@ -13,6 +13,18 @@ const DEMO_PROMPT = UI_CONFIG.demo_prompt || "Rank the top 3 candidates for JOB-
 let pendingApproval = null;
 let currentConversationId = null;
 let conversationCache = [];
+let chatBusy = false;
+
+// Disable both the Send and "Use Demo Prompt" buttons while a turn is running so
+// a previous command/chat can't be re-triggered before it finishes.
+function setChatBusy(busy) {
+  chatBusy = busy;
+  document
+    .querySelectorAll('#chat-form button[type="submit"], #chat-form [data-chat-demo]')
+    .forEach((button) => {
+      button.disabled = busy;
+    });
+}
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -967,17 +979,22 @@ function bindChatForm() {
   const input = chatForm.querySelector('input[name="message"]');
   const submit = chatForm.querySelector('button[type="submit"]');
   const runChat = async (message) => {
+    if (chatBusy) return;
     if (!message.trim()) return;
     addChatMessage("user", message);
     input.value = "";
-    submit.disabled = true;
+    setChatBusy(true);
     const selectedAgent = getSelectedAgentName();
     setAgentStatus(selectedAgent, "running");
     setExecutionState("Processing", 0);
-    if (getSelectedAgentMode() === "chat") {
-      await runChatTurn(message, selectedAgent, submit);
-    } else {
-      await runCommandTurn(message, selectedAgent, submit);
+    try {
+      if (getSelectedAgentMode() === "chat") {
+        await runChatTurn(message, selectedAgent, submit);
+      } else {
+        await runCommandTurn(message, selectedAgent, submit);
+      }
+    } finally {
+      setChatBusy(false);
     }
   };
   chatForm.addEventListener("submit", (event) => {

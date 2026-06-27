@@ -55,6 +55,7 @@ DEFAULT_UI_CONFIG = {
     ],
     "demo_prompts": {
         "hr_recruiter": "Rank the top 3 candidates for JOB-001 and explain why.",
+        "customer_service": "我上周买的东西到现在还没收到，能帮我看看物流到哪了吗？",
     },
     "default_user_id": "u-001",
     "available_roles": ["recruiter", "hr_admin", "employee"],

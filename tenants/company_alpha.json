@@ -11,7 +11,8 @@
     "demo_prompt": "Rank the top 3 candidates for JOB-001 and explain why.",
     "demo_prompts": {
       "hr_recruiter": "Rank the top 3 candidates for JOB-001 and explain why.",
-      "xhs_growth": "整理每天的小红书top 5的文章和案例，比较后生成文章并准备发布，目标是30天内涨粉1w"
+      "xhs_growth": "整理每天的小红书top 5的文章和案例，比较后生成文章并准备发布，目标是30天内涨粉1w",
+      "customer_service": "我上周买的东西到现在还没收到，能帮我看看物流到哪了吗？"
     },
     "default_user_id": "u-001",
     "available_roles": ["recruiter", "hr_admin", "employee", "growth_manager"],
