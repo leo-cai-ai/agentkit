@@ -22,6 +22,7 @@ worker thread so a tool that itself calls the LLM stays correlated and governed.
 from __future__ import annotations
 
 import contextvars
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
@@ -33,6 +34,23 @@ from .logging_config import get_logger
 from .tracing import span
 
 _log = get_logger("agentkit.tools")
+_POOL_LOCK = threading.Lock()
+_POOL: ThreadPoolExecutor | None = None
+_POOL_WORKERS = 0
+
+
+def _shared_pool(max_workers: int) -> ThreadPoolExecutor:
+    """Return a process-wide bounded pool for synchronous tool handlers."""
+    global _POOL, _POOL_WORKERS
+    workers = max(1, int(max_workers))
+    with _POOL_LOCK:
+        if _POOL is None or _POOL_WORKERS != workers:
+            old = _POOL
+            _POOL = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="agentkit-tool")
+            _POOL_WORKERS = workers
+            if old is not None:
+                old.shutdown(wait=False, cancel_futures=True)
+        return _POOL
 
 
 class _Audit(Protocol):
@@ -57,6 +75,7 @@ class ToolExecutor:
         audit: _Audit | None = None,
         run_id: str | None = None,
         timeout_seconds: float = 30.0,
+        max_workers: int = 32,
         max_retries: int = 0,
         retry_base_delay: float = 0.2,
     ) -> None:
@@ -64,6 +83,7 @@ class ToolExecutor:
         self._audit = audit
         self._run_id = run_id
         self._timeout = float(timeout_seconds)
+        self._max_workers = max(1, int(max_workers))
         self._max_retries = max(0, int(max_retries))
         self._retry_base_delay = float(retry_base_delay)
         self._idempotency_cache: dict[tuple[str, str], dict[str, Any]] = {}
@@ -153,16 +173,13 @@ class ToolExecutor:
         # may make. The thread can't be force-killed on timeout, but the run is
         # unblocked and the failure is surfaced.
         ctx = contextvars.copy_context()
-        pool = ThreadPoolExecutor(max_workers=1)
+        pool = _shared_pool(self._max_workers)
         future = pool.submit(ctx.run, handler, args)
         try:
             return future.result(timeout=timeout)
         except FuturesTimeoutError as exc:
+            future.cancel()
             raise ToolTimeoutError(f"tool timed out after {timeout}s") from exc
-        finally:
-            # Non-blocking: on timeout the orphaned worker can't be force-killed,
-            # but we must not wait for it (that would defeat the timeout).
-            pool.shutdown(wait=False, cancel_futures=True)
 
     def _record(self, run_id: str, event_type: str, payload: dict[str, Any]) -> None:
         if self._audit is not None:

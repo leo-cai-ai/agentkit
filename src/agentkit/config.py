@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     # only apply to calls that are safe to repeat (tool marked idempotent or an
     # _idempotency_key supplied); default 0 keeps non-idempotent side effects safe.
     tool_timeout_seconds: float = Field(default=30.0, ge=0.0)
+    tool_max_workers: int = Field(default=32, ge=1)
     tool_max_retries: int = Field(default=0, ge=0)
     tool_retry_base_delay: float = Field(default=0.2, ge=0.0)
 
@@ -98,8 +99,8 @@ class Settings(BaseSettings):
     # Human-approval checkpointing. "memory" pauses the graph at the approval
     # gate and resumes in-place (no full re-run); "sqlite" does the same but
     # persists checkpoints on disk so a paused task survives restarts and is
-    # resumable across processes/workers; "none" keeps the legacy path
-    # (waiting output + full resubmit to approve).
+    # resumable across processes/workers; "none" uses waiting output plus a
+    # protected full resubmit to approve.
     approval_checkpointer: Literal["memory", "sqlite", "none"] = "memory"
 
     # AI provider credentials — vendor-neutral naming (consumed by the
@@ -145,6 +146,9 @@ class Settings(BaseSettings):
     # Identity & console RBAC. Shared-token login maps to this subject/roles.
     web_token_subject: str = "console-admin"
     web_token_roles: str = "admin"
+    # Trusted tenant/business roles for shared-token login. Empty means the web
+    # layer falls back to tenant ui.default_roles for local/demo operation.
+    web_token_business_roles: str = ""
     # SSO via a reverse proxy that terminates OIDC/SAML and forwards identity
     # headers (oauth2-proxy / API gateway). Only trust these headers when the
     # proxy is the sole ingress; do not expose the app directly to clients.
@@ -153,6 +157,8 @@ class Settings(BaseSettings):
     auth_proxy_email_header: str = "X-Forwarded-Email"
     auth_proxy_roles_header: str = "X-Forwarded-Roles"
     auth_proxy_default_roles: str = "viewer"
+    auth_proxy_business_roles_header: str = "X-Forwarded-Business-Roles"
+    auth_proxy_default_business_roles: str = ""
     # Optional role->permission override as a JSON object, e.g.
     # '{"operator": ["task:run","task:approve"]}'. Merged over the built-in roles.
     rbac_role_permissions: str = ""
@@ -184,9 +190,19 @@ class Settings(BaseSettings):
     # Backend for long-term-memory vector storage + nearest-neighbour search.
     # 'sqlite' (default) keeps the per-tenant SQLite `memories` table with a
     # linear cosine scan (sufficient at the per-user scope this targets). Other
-    # backends (e.g. chroma / sqlite-vec / pgvector / milvus) can be added behind
+    # backends (e.g. chroma / sqlite-vec / milvus) can be added behind
     # the VectorStore protocol without changing the retriever or its callers.
-    vector_store_backend: Literal["sqlite", "chroma", "postgres"] = "sqlite"
+    vector_store_backend: Literal["sqlite", "postgres"] = "sqlite"
+
+    # Enterprise knowledge-base RAG scaffolding. Defaults are inert; deployments
+    # can wire ingestion/search backends later without changing agent entrypoints.
+    rag_enabled: bool = False
+    rag_chunk_max_chars: int = Field(default=1200, gt=0)
+    rag_chunk_overlap_chars: int = Field(default=120, ge=0)
+    rag_keyword_weight: float = Field(default=0.4, ge=0.0)
+    rag_vector_weight: float = Field(default=0.6, ge=0.0)
+    rag_reranker: Literal["none", "llm"] = "none"
+    rag_top_k: int = Field(default=5, ge=0)
 
     # PostgreSQL connection (used when a backend is set to 'postgres', e.g.
     # vector_store_backend=postgres with the pgvector extension). Either set a

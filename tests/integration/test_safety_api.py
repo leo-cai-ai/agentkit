@@ -40,7 +40,7 @@ def client(monkeypatch):
 
 def _login_and_csrf(client) -> str:
     assert client.post("/login", data={"token": "secret-token"}).status_code == 302
-    page = client.get("/command")
+    page = client.get("/chat")
     return re.search(rb'name="csrf-token" content="([^"]+)"', page.data).group(1).decode()
 
 

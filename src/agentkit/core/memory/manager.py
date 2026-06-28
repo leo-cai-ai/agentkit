@@ -93,7 +93,7 @@ class ConversationManager:
             return self._chat_fn
         from agentkit.core import llm_client
 
-        # Stream the assistant reply to the active sink (if any) so chat-mode
+        # Stream the assistant reply to the active sink (if any) so chat-first
         # agents deliver tokens live; identical to require_chat when no sink.
         return llm_client.require_chat_streaming
 
@@ -120,8 +120,16 @@ class ConversationManager:
                 user_id=user_id,
                 title=self._title_from(text),
             )
-        elif self._store.get_conversation(conversation_id) is None:
-            raise ValueError(f"Unknown conversation_id: {conversation_id}")
+        else:
+            conv = self._store.get_conversation(conversation_id)
+            if conv is None:
+                raise ValueError(f"Unknown conversation_id: {conversation_id}")
+            if (
+                conv["tenant_id"] != tenant_id
+                or conv["agent"] != agent
+                or conv["user_id"] != user_id
+            ):
+                raise ValueError("Conversation does not belong to this user/agent.")
 
         if self._audit is not None:
             run_id = self._audit.start_run(tenant_id=tenant_id, user_id=user_id, text=text)
@@ -238,6 +246,84 @@ class ConversationManager:
             },
         )
 
+    def retrieve_memories(
+        self,
+        *,
+        tenant_id: str,
+        agent: str,
+        user_id: str,
+        query: str,
+    ) -> list[str]:
+        """Retrieve semantic memories for callers that do not use ``chat()``."""
+        if self._retriever is None:
+            return []
+        try:
+            return self._retriever.retrieve(
+                tenant_id=tenant_id,
+                agent=agent,
+                user_id=user_id,
+                query=query,
+                k=self._retrieval_k,
+            )
+        except Exception:  # noqa: BLE001 - retrieval should not break graph routing
+            return []
+
+    def record_external_turn(
+        self,
+        *,
+        tenant_id: str,
+        agent: str,
+        user_id: str,
+        conversation_id: str,
+        user_text: str | None,
+        assistant_text: str,
+        run_id: str | None = None,
+    ) -> None:
+        """Persist a turn produced by another runtime, then run memory extraction."""
+        conv = self._store.get_conversation(conversation_id)
+        if conv is None:
+            raise ValueError(f"Unknown conversation_id: {conversation_id}")
+        if (
+            conv["tenant_id"] != tenant_id
+            or conv["agent"] != agent
+            or conv["user_id"] != user_id
+        ):
+            raise ValueError("Conversation does not belong to this user/agent.")
+        if user_text:
+            self._store.add_message(
+                conversation_id=conversation_id,
+                role="user",
+                content=user_text,
+                token_estimate=self._tokenizer.estimate(user_text),
+                run_id=run_id,
+            )
+        self._store.add_message(
+            conversation_id=conversation_id,
+            role="assistant",
+            content=assistant_text,
+            token_estimate=self._tokenizer.estimate(assistant_text),
+            run_id=run_id,
+        )
+        if run_id:
+            self._record(
+                run_id,
+                "conversation_message",
+                {
+                    "conversation_id": conversation_id,
+                    "agent": agent,
+                    "external_runtime": True,
+                },
+            )
+        self._maybe_extract(
+            tenant_id=tenant_id,
+            agent=agent,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            user_text=user_text or "",
+            assistant_text=assistant_text,
+            run_id=run_id or "",
+        )
+
     def _refuse(
         self,
         *,
@@ -324,5 +410,5 @@ class ConversationManager:
             self._record(run_id, "memory_extraction_failed", {"error": str(exc)})
 
     def _record(self, run_id: str, event_type: str, payload: dict[str, Any]) -> None:
-        if self._audit is not None:
+        if self._audit is not None and run_id:
             self._audit.record(run_id, event_type, payload)

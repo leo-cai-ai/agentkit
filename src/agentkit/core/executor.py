@@ -163,6 +163,7 @@ class PlanExecutor:
 
     def _build_tool_invoker(self, run_id: str) -> ToolExecutor:
         timeout = 30.0
+        max_workers = 32
         max_retries = 0
         retry_base_delay = 0.2
         try:
@@ -170,6 +171,7 @@ class PlanExecutor:
 
             settings = get_settings()
             timeout = float(getattr(settings, "tool_timeout_seconds", timeout))
+            max_workers = int(getattr(settings, "tool_max_workers", max_workers))
             max_retries = int(getattr(settings, "tool_max_retries", max_retries))
             retry_base_delay = float(getattr(settings, "tool_retry_base_delay", retry_base_delay))
         except Exception:  # noqa: BLE001 - settings optional in lightweight tests
@@ -179,6 +181,7 @@ class PlanExecutor:
             audit=self._audit,
             run_id=run_id,
             timeout_seconds=timeout,
+            max_workers=max_workers,
             max_retries=max_retries,
             retry_base_delay=retry_base_delay,
         )

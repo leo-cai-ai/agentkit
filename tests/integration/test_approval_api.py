@@ -80,7 +80,7 @@ def client(monkeypatch):
 
 def _login_and_csrf(client) -> str:
     assert client.post("/login", data={"token": "secret-token"}).status_code == 302
-    page = client.get("/command")
+    page = client.get("/chat")
     return re.search(rb'name="csrf-token" content="([^"]+)"', page.data).group(1).decode()
 
 
@@ -115,6 +115,48 @@ def test_resume_requires_thread_id(client):
         headers={"X-CSRF-Token": token},
     )
     assert resp.status_code == 400
+
+
+def test_approval_resubmit_endpoint_requires_approval_context(client):
+    token = _login_and_csrf(client)
+    resp = client.post(
+        "/api/tasks/approve",
+        json={"agent": "hr_recruiter", "text": "Rank candidates."},
+        headers={"X-CSRF-Token": token},
+    )
+    assert resp.status_code == 400
+
+
+def test_approval_resubmit_rejects_overlapping_decision(client):
+    token = _login_and_csrf(client)
+    resp = client.post(
+        "/api/tasks/approve",
+        json={
+            "agent": "hr_recruiter",
+            "text": "Rank candidates.",
+            "approved_skills": ["candidate.rank"],
+            "rejected_skills": ["candidate.rank"],
+        },
+        headers={"X-CSRF-Token": token},
+    )
+    assert resp.status_code == 400
+    assert "both approve and reject" in resp.get_json()["error"]
+
+
+def test_approval_resubmit_endpoint_completes_with_preapproval(client):
+    token = _login_and_csrf(client)
+    resp = client.post(
+        "/api/tasks/approve",
+        json={
+            "agent": "hr_recruiter",
+            "text": "Rank the top candidate for JOB-001.",
+            "approved_skills": ["candidate.rank"],
+        },
+        headers={"X-CSRF-Token": token},
+    )
+    assert resp.status_code == 200
+    out = resp.get_json()["response"]["output"]
+    assert out["governance"]["approval"]["status"] == "approved"
 
 
 def test_resume_without_csrf_rejected(client):

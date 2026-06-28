@@ -6,6 +6,7 @@ import types
 
 import pytest
 
+from agentkit.core.contracts import AgentProfile, SkillDefinition, ToolDefinition
 from agentkit.runtime import pack_registry
 
 
@@ -82,3 +83,83 @@ def test_entry_point_overrides_builtin(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pack_registry, "iter_entry_points", lambda *, group: [_EP()])
     packs = pack_registry.discover_packs()
     assert packs["hr.recruitment"] is override_register
+
+
+def test_builtin_pack_contracts_pass() -> None:
+    results = pack_registry.validate_pack_contracts()
+    assert results
+    assert all(result.passed for result in results), [result.to_dict() for result in results]
+
+
+def test_pack_contract_reports_missing_agent_skill() -> None:
+    def bad_register(**kwargs: object) -> None:
+        agents = kwargs["agents"]
+        assert hasattr(agents, "register")
+        agents.register(
+            AgentProfile(
+                name="bad_agent",
+                domain="demo.bad",
+                description="",
+                allowed_skills=["missing.skill"],
+                allowed_tools=[],
+            )
+        )
+
+    result = pack_registry.validate_pack_contract("demo.bad", bad_register)
+    assert not result.passed
+    assert any("missing skill" in error for error in result.errors)
+
+
+def test_pack_contract_reports_malformed_contract_fields() -> None:
+    def handler(*args: object, **kwargs: object) -> dict:
+        return {}
+
+    def bad_register(**kwargs: object) -> None:
+        agents = kwargs["agents"]
+        skills = kwargs["skills"]
+        tools = kwargs["tools"]
+        assert hasattr(agents, "register")
+        assert hasattr(skills, "register")
+        assert hasattr(tools, "register")
+        agents.register(
+            AgentProfile(
+                name="bad_agent",
+                domain="demo.bad",
+                description="",
+                allowed_skills=("bad.skill",),  # type: ignore[arg-type]
+                allowed_tools=[],
+            )
+        )
+        skills.register(
+            SkillDefinition(
+                name="bad.skill",
+                domain="demo.bad",
+                description="",
+                input_schema={"type": "object", "properties": {}},
+                output_schema={"type": "object"},
+                permissions=["demo:run"],
+                execution_mode="batch",
+                tools=["bad.tool"],
+                handler=handler,
+                batch_key="items",
+                keywords=("bad",),  # type: ignore[arg-type]
+            )
+        )
+        tools.register(
+            ToolDefinition(
+                name="bad.tool",
+                domain="demo.bad",
+                description="",
+                handler=handler,
+                idempotent="yes",  # type: ignore[arg-type]
+                timeout_seconds=-1,
+            )
+        )
+
+    result = pack_registry.validate_pack_contract("demo.bad", bad_register)
+    assert not result.passed
+    assert any("allowed_skills must be a list" in error for error in result.errors)
+    assert any("keywords must be a list" in error for error in result.errors)
+    assert any("batch_key 'items' is not in input_schema" in error for error in result.errors)
+    assert any("idempotent must be a bool" in error for error in result.errors)
+    assert any("timeout_seconds must be >= 0" in error for error in result.errors)

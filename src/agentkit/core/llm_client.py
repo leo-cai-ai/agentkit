@@ -53,6 +53,7 @@ __all__ = [
     "stream_sink",
     "budget_guard",
     "enforce_budget",
+    "clear_provider_cache",
     "chat",
     "chat_json",
 ]
@@ -97,6 +98,13 @@ def _get_provider():
     return build_provider(get_settings())
 
 
+def clear_provider_cache() -> None:
+    """Drop the cached provider so the next call rebuilds from current settings."""
+    cache_clear = getattr(_get_provider, "cache_clear", None)
+    if callable(cache_clear):
+        cache_clear()
+
+
 def llm_available() -> bool:
     try:
         _get_provider()
@@ -106,7 +114,7 @@ def llm_available() -> bool:
 
 
 def require_model():
-    """Back-compat shim: return the configured provider (raises if unavailable)."""
+    """Return the configured provider, raising when no provider is available."""
     try:
         return _get_provider()
     except LLMRequiredError:
@@ -268,11 +276,14 @@ def _extract_json(raw: str) -> dict[str, Any] | None:
         data = json.loads(text)
         return data if isinstance(data, dict) else None
     except Exception:
-        match = re.search(r"\{.*\}", text, flags=re.S)
-        if not match:
-            return None
-        try:
-            data = json.loads(match.group(0))
-            return data if isinstance(data, dict) else None
-        except Exception:
-            return None
+        decoder = json.JSONDecoder()
+        for index, char in enumerate(text):
+            if char != "{":
+                continue
+            try:
+                data, _end = decoder.raw_decode(text[index:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data, dict):
+                return data
+        return None

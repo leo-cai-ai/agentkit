@@ -96,3 +96,30 @@ def test_output_review_error_forces_failed(monkeypatch):
         request=_request(), plan=_plan(steps=[_step()]), output=output
     )
     assert result["status"] == "failed"
+
+
+def test_output_review_failed_defaults_to_warning_for_final_payload(monkeypatch):
+    monkeypatch.setattr(
+        llm_client,
+        "_get_provider",
+        _provider({"status": "failed", "reason": "unsafe", "findings": []}),
+    )
+    output = {"final": {"message": "done"}}
+    result = OutputReviewer({}).review(
+        request=_request(), plan=_plan(steps=[_step()]), output=output
+    )
+    assert result["status"] == "approved_with_warnings"
+
+
+def test_output_review_can_fail_closed(monkeypatch):
+    monkeypatch.setattr(
+        llm_client,
+        "_get_provider",
+        _provider({"status": "failed", "reason": "unsafe", "findings": []}),
+    )
+    output = {"final": {"message": "done"}}
+    result = OutputReviewer({"output_review_policy": "block_on_failed"}).review(
+        request=_request(), plan=_plan(steps=[_step()]), output=output
+    )
+    assert result["status"] == "failed"
+    assert result["enforcement"] == "blocked"

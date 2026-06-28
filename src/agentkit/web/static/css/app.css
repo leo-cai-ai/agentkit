@@ -668,9 +668,9 @@ h2 {
   line-height: 1.5;
 }
 
-/* ============================ Command center ============================ */
+/* ============================ Chat console ============================ */
 
-.command-layout {
+.chat-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 340px;
   gap: 18px;
@@ -1770,7 +1770,7 @@ select:focus {
   }
 
   .dashboard-grid,
-  .command-layout,
+  .chat-layout,
   .result-grid {
     grid-template-columns: 1fr;
   }

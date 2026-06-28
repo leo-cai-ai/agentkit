@@ -1,16 +1,16 @@
-"""Manage filesystem skill packages for the demo.
+"""Manage filesystem skill packages for AgentKit.
 
 Examples:
 
-    python demo/tools/skill_tool.py list
-    python demo/tools/skill_tool.py show candidate-rank
-    python demo/tools/skill_tool.py add policy-qa \
+    python tools/skill_tool.py list
+    python tools/skill_tool.py show candidate-rank
+    python tools/skill_tool.py add policy-qa \
         --description "Answer policy questions" --resources references scripts
-    python demo/tools/skill_tool.py update policy-qa --description "Answer HR policy questions"
-    python demo/tools/skill_tool.py read-resource candidate-rank references/scoring.md
-    python demo/tools/skill_tool.py write-resource policy-qa references/policy.md \
+    python tools/skill_tool.py update policy-qa --description "Answer HR policy questions"
+    python tools/skill_tool.py read-resource candidate-rank references/scoring.md
+    python tools/skill_tool.py write-resource policy-qa references/policy.md \
         --body-file policy.md
-    python demo/tools/skill_tool.py validate
+    python tools/skill_tool.py validate
 """
 
 from __future__ import annotations
@@ -22,12 +22,16 @@ from pathlib import Path
 
 from agentkit.core.skill_store import SkillFileStore
 
-DEMO_ROOT = Path(__file__).resolve().parents[1]
+AGENTKIT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Read and write demo skill folders.")
-    parser.add_argument("--root", default=str(DEMO_ROOT / "skills"), help="Skill root directory.")
+    parser = argparse.ArgumentParser(description="Read and write AgentKit skill folders.")
+    parser.add_argument(
+        "--root",
+        default=str(AGENTKIT_ROOT / "skills"),
+        help="Skill root directory.",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("list", help="List available filesystem skills.")
@@ -88,7 +92,7 @@ def main() -> int:
     subparsers.add_parser("validate", help="Validate all skill folders.")
 
     args = parser.parse_args()
-    store = SkillFileStore(args.root, display_root=DEMO_ROOT)
+    store = SkillFileStore(args.root, display_root=AGENTKIT_ROOT)
 
     if args.command == "list":
         rows = [

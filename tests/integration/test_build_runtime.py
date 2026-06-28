@@ -10,4 +10,7 @@ def test_build_runtime_registers_expected_components(tmp_path):
     assert "candidate.rank" in skill_names
     assert {"router", "general", "hr_recruiter"} <= agent_names
     assert runtime.tenant_config["tenant_id"]
+    assert runtime.manifest
+    assert runtime.manifest["tenant_config"]["sha256"]
+    assert runtime.tenant_config["runtime_manifest"] == runtime.manifest
     assert (tmp_path / "audit.sqlite").exists()

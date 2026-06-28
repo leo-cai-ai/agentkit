@@ -25,9 +25,12 @@ TASK_APPROVE = "task:approve"
 CHAT_USE = "chat:use"
 GOVERNANCE_VIEW = "governance:view"
 RUNS_VIEW = "runs:view"
+RUNTIME_ADMIN = "runtime:admin"
 WILDCARD = "*"  # grants every permission
 
-ALL_PERMISSIONS = frozenset({TASK_RUN, TASK_APPROVE, CHAT_USE, GOVERNANCE_VIEW, RUNS_VIEW})
+ALL_PERMISSIONS = frozenset(
+    {TASK_RUN, TASK_APPROVE, CHAT_USE, GOVERNANCE_VIEW, RUNS_VIEW, RUNTIME_ADMIN}
+)
 
 # Built-in role -> permission bindings. Override/extend via settings
 # (AGENTKIT_RBAC_ROLE_PERMISSIONS as a JSON object of role -> [permissions]).
@@ -125,6 +128,7 @@ __all__ = [
     "CHAT_USE",
     "GOVERNANCE_VIEW",
     "RUNS_VIEW",
+    "RUNTIME_ADMIN",
     "WILDCARD",
     "ALL_PERMISSIONS",
     "DEFAULT_ROLE_PERMISSIONS",

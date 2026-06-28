@@ -136,22 +136,6 @@ class SqliteVectorStore:
         scored.sort(key=lambda hit: hit.score, reverse=True)
         return scored[:k]
 
-# TODO: implement ChromaVectorStore
-# class ChromaVectorStore:
-#     def __init__(self, store: ConversationStore) -> None:
-#         self._store = store
-    
-#     def add(self, *, scope: MemoryScope, text: str, embedding: Sequence[float], kind: str = "fact", source_conversation_id: str | None = None, salience: float = 1.0) -> str:
-#         return self._store.add_memory(
-#             tenant_id=scope.tenant_id, agent=scope.agent, user_id=scope.user_id, text=text, embedding=embedding, kind=kind, source_conversation_id=source_conversation_id, salience=salience
-#         )
-    
-#     def query(self, *, scope: MemoryScope, embedding: Sequence[float], k: int, min_score: float = 0.0) -> list[VectorHit]:
-#         return self._store.query_memories(
-#             tenant_id=scope.tenant_id, agent=scope.agent, user_id=scope.user_id, embedding=embedding, k=k, min_score=min_score
-#         )
-
-
 def build_vector_store(settings: object, store: ConversationStore) -> VectorStore:
     """Build the configured VectorStore (default: SQLite linear scan).
 
@@ -165,8 +149,6 @@ def build_vector_store(settings: object, store: ConversationStore) -> VectorStor
         from .pg_vector_store import PgVectorStore
 
         return PgVectorStore(settings)
-    # elif backend in ("chroma"):
-    #     return ChromaVectorStore(store)
     raise ValueError(
         f"Unsupported vector_store_backend: {backend!r}. "
         "Supported backends: 'sqlite', 'postgres'."

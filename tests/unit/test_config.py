@@ -20,6 +20,11 @@ def _fresh_settings(monkeypatch, **env):
         "AGENTKIT_WEB_SECRET_KEY",
         "AGENTKIT_WEB_COOKIE_SECURE",
         "AGENTKIT_WEB_AUTH_DISABLED",
+        "AGENTKIT_WEB_TOKEN_BUSINESS_ROLES",
+        "AGENTKIT_AUTH_PROXY_BUSINESS_ROLES_HEADER",
+        "AGENTKIT_AUTH_PROXY_DEFAULT_BUSINESS_ROLES",
+        "AGENTKIT_TOOL_MAX_WORKERS",
+        "AGENTKIT_VECTOR_STORE_BACKEND",
         "AGENTKIT_MEMORY_WINDOW_TURNS",
         "AGENTKIT_MEMORY_MAX_CONTEXT_TOKENS",
     ]:
@@ -37,6 +42,9 @@ def test_defaults(monkeypatch):
     assert s.llm_requests_per_second == 0.9
     assert s.llm_rate_limiter_enabled is True
     assert s.deterministic_fastpath is False
+    assert s.tool_max_workers == 32
+    assert s.web_token_business_roles == ""
+    assert s.auth_proxy_business_roles_header == "X-Forwarded-Business-Roles"
 
 
 def test_rate_limit_env_overrides(monkeypatch):
@@ -125,6 +133,17 @@ def test_invalid_provider_rejected(monkeypatch):
     assert raised
 
 
+def test_invalid_vector_store_backend_rejected(monkeypatch):
+    import pydantic
+
+    raised = False
+    try:
+        _fresh_settings(monkeypatch, AGENTKIT_VECTOR_STORE_BACKEND="chroma")
+    except pydantic.ValidationError:
+        raised = True
+    assert raised
+
+
 def test_memory_defaults(monkeypatch):
     s = _fresh_settings(monkeypatch)
     assert s.memory_window_turns == 6
@@ -152,6 +171,17 @@ def test_embedding_defaults(monkeypatch):
     assert s.embedding_api_key is None
     assert s.memory_dedup_threshold == 0.92
     assert s.memory_min_retrieval_score == 0.1
+
+
+def test_rag_defaults(monkeypatch):
+    s = _fresh_settings(monkeypatch)
+    assert s.rag_enabled is False
+    assert s.rag_chunk_max_chars == 1200
+    assert s.rag_chunk_overlap_chars == 120
+    assert s.rag_keyword_weight == 0.4
+    assert s.rag_vector_weight == 0.6
+    assert s.rag_reranker == "none"
+    assert s.rag_top_k == 5
 
 
 def test_get_settings_cached(monkeypatch):

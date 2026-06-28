@@ -38,16 +38,19 @@ def _dev_admin() -> Principal:
         display_name="Dev (auth disabled)",
         roles=("admin",),
         auth_method="dev",
+        claims={"business_roles": []},
     )
 
 
 def session_principal(settings: Settings) -> Principal:
     roles = tuple(parse_roles(getattr(settings, "web_token_roles", "admin"))) or ("admin",)
+    business_roles = parse_roles(getattr(settings, "web_token_business_roles", ""))
     return Principal(
         subject=getattr(settings, "web_token_subject", "console-admin") or "console-admin",
         display_name="Console Admin",
         roles=roles,
         auth_method="token",
+        claims={"business_roles": business_roles},
     )
 
 
@@ -59,6 +62,9 @@ def proxy_header_principal(headers: Any, settings: Settings) -> Principal | None
     roles = tuple(parse_roles(headers.get(settings.auth_proxy_roles_header, "")))
     if not roles:
         roles = tuple(parse_roles(settings.auth_proxy_default_roles))
+    business_roles = parse_roles(headers.get(settings.auth_proxy_business_roles_header, ""))
+    if not business_roles:
+        business_roles = parse_roles(settings.auth_proxy_default_business_roles)
     email = (headers.get(settings.auth_proxy_email_header) or "").strip()
     return Principal(
         subject=user,
@@ -66,6 +72,7 @@ def proxy_header_principal(headers: Any, settings: Settings) -> Principal | None
         email=email,
         roles=roles,
         auth_method="proxy",
+        claims={"business_roles": business_roles},
     )
 
 

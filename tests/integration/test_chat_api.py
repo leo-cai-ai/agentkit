@@ -10,6 +10,30 @@ import agentkit.config as config_mod
 
 
 def _responder(system: str, user: str) -> str:
+    s = system.lower()
+    if "intent decomposition module" in s:
+        return (
+            '{"intent_type":"business_task","goal":"rank","target":{"kind":"none","name":""},'
+            '"entities":{},"confidence":"high","signals":[]}'
+        )
+    if "routing node" in s:
+        return '{"skill_name":"candidate.rank","reason":"match","confidence":"high"}'
+    if "planning node" in s:
+        return (
+            '{"steps":[{"step_id":1,"skill_name":"candidate.rank","mode":"plan_execute",'
+            '"depends_on":[]}],"warnings":[]}'
+        )
+    if "plan-review node" in s or "output-review node" in s:
+        return '{"status":"approved","reason":"ok","findings":[]}'
+    if "approval-governance node" in s:
+        return (
+            '{"risk_level":"low","approval_summary":"ok","concerns":[],'
+            '"recommended_status":"approved"}'
+        )
+    if "execute-preflight node" in s:
+        return '{"execution_goal":"rank","expected_outputs":[],"risks":[]}'
+    if "recruiting assistant" in s:
+        return "Recommended hire."
     return "Hello, how can I help you today?"
 
 
@@ -26,19 +50,21 @@ def client(monkeypatch):
 
     monkeypatch.setattr(llm_client, "_get_provider", lambda: FakeProvider(responder=_responder))
 
-    from agentkit.web.app import app
+    from agentkit.web.app import app, clear_runtime_cache
     from agentkit.web.security import configure_security
 
     configure_security(app)
+    clear_runtime_cache()
     app.config.update(TESTING=False, PROPAGATE_EXCEPTIONS=False)
     yield app.test_client()
+    clear_runtime_cache()
     config_mod.get_settings.cache_clear()
 
 
 def _login_and_csrf(client) -> str:
     resp = client.post("/login", data={"token": "secret-token"})
     assert resp.status_code == 302
-    page = client.get("/command")
+    page = client.get("/chat")
     return re.search(rb'name="csrf-token" content="([^"]+)"', page.data).group(1).decode()
 
 
@@ -46,23 +72,37 @@ def test_chat_endpoint_returns_reply_and_conversation(client):
     token = _login_and_csrf(client)
     resp = client.post(
         "/api/chat",
-        json={"agent": "customer_service", "message": "hi there"},
+        json={
+            "user_id": "browser-user",
+            "context": {"agent": "customer_service", "message": "hi there"},
+        },
         headers={"X-CSRF-Token": token},
     )
     assert resp.status_code == 200
     data = resp.get_json()
+    assert data["mode"] == "answer"
+    assert data["agent_kind"] == "answer"
     assert data["assistant_text"] == "Hello, how can I help you today?"
     assert data["conversation_id"]
 
 
-def test_chat_endpoint_rejects_command_agent(client):
+def test_chat_endpoint_routes_action_agent(client):
     token = _login_and_csrf(client)
     resp = client.post(
         "/api/chat",
-        json={"agent": "hr_recruiter", "message": "hi"},
+        json={"context": {"agent": "hr_recruiter", "message": "Rank candidates."}},
         headers={"X-CSRF-Token": token},
     )
-    assert resp.status_code == 400
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["mode"] == "action"
+    assert data["agent_kind"] == "action"
+    assert data["conversation_id"]
+    assert data["response"]["output"]["status"] == "waiting_for_approval"
+    msgs = client.get(f"/api/conversations/{data['conversation_id']}/messages").get_json()[
+        "messages"
+    ]
+    assert [msg["role"] for msg in msgs] == ["user", "assistant"]
 
 
 def test_chat_without_csrf_rejected(client):

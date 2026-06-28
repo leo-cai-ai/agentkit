@@ -11,6 +11,7 @@ from agentkit.eval import (
     EvalCase,
     LLMJudge,
     load_cases,
+    make_gateway_trace_target,
     run_check,
     run_eval,
 )
@@ -43,6 +44,24 @@ def test_unknown_check_type_fails_gracefully() -> None:
     out = run_check(CheckSpec("does_not_exist"), "x")
     assert not out.passed
     assert "unknown check type" in out.detail
+
+
+def test_json_path_and_event_sequence_checks() -> None:
+    output = json.dumps(
+        {
+            "status": "waiting_for_approval",
+            "audit_event_types": ["run_started", "context_prepared", "run_paused"],
+        }
+    )
+    assert run_check(CheckSpec("json_path_exists", "status"), output).passed
+    assert run_check(
+        CheckSpec("json_path_equals", {"path": "status", "equals": "waiting_for_approval"}),
+        output,
+    ).passed
+    assert run_check(
+        CheckSpec("event_sequence", ["run_started", "run_paused"]),
+        output,
+    ).passed
 
 
 # --- judge ------------------------------------------------------------------ #
@@ -149,3 +168,60 @@ def test_extract_text_prefers_final_message() -> None:
 def test_extract_text_falls_back_to_json() -> None:
     text = extract_text({"output": {"ranked_candidates": [{"name": "Ann"}]}})
     assert "Ann" in text
+
+
+def test_gateway_trace_target_can_resume_without_leaking_eval_control_context() -> None:
+    class _Response:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def to_dict(self):
+            return self._payload
+
+    class _Gateway:
+        def __init__(self):
+            self.request_context = {}
+            self.resumed = False
+
+        def handle(self, request):
+            self.request_context = dict(request.context)
+            return _Response(
+                {
+                    "output": {"status": "waiting_for_approval", "thread_id": "t1"},
+                    "audit_events": [{"type": "run_paused"}],
+                }
+            )
+
+        def resume(self, thread_id, *, approved_skills, rejected_skills, decision_context):
+            self.resumed = True
+            assert thread_id == "t1"
+            assert approved_skills == ["candidate.rank"]
+            assert rejected_skills == []
+            assert decision_context["source"] == "eval"
+            return _Response(
+                {
+                    "output": {"final": {"message": "done"}},
+                    "audit_events": [
+                        {"type": "run_paused"},
+                        {"type": "run_resumed"},
+                        {"type": "run_finished"},
+                    ],
+                }
+            )
+
+    class _Runtime:
+        def __init__(self):
+            self.gateway = _Gateway()
+
+    runtime = _Runtime()
+    target = make_gateway_trace_target(runtime)
+    case = EvalCase(
+        id="resume",
+        user="rank",
+        context={"_eval_resume": {"approved_skills": ["candidate.rank"]}},
+    )
+    data = json.loads(target(case))
+    assert runtime.gateway.resumed is True
+    assert "_eval_resume" not in runtime.gateway.request_context
+    assert data["initial_status"] == "waiting_for_approval"
+    assert data["status"] == "completed"

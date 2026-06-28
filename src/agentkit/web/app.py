@@ -1,13 +1,14 @@
-"""Flask management console for the enterprise-agent demo.
+"""Flask management console for AgentKit.
 
 Run from the repository root:
 
-    python demo/web_flask/app.py
+    agentkit web
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -15,20 +16,23 @@ from typing import Any
 
 from flask import Flask, Response, jsonify, render_template, request
 
+from agentkit.config import get_settings
 from agentkit.core.audit import SQLiteAuditLog
 from agentkit.core.contracts import TaskRequest
 from agentkit.core.identity import (
     CHAT_USE,
     GOVERNANCE_VIEW,
     RUNS_VIEW,
+    RUNTIME_ADMIN,
     TASK_APPROVE,
     TASK_RUN,
+    has_permission,
+    load_role_permissions,
 )
-from agentkit.runtime.bootstrap import DEMO_ROOT, build_runtime, resolve_tenant_id
+from agentkit.runtime.bootstrap import AGENTKIT_ROOT, build_runtime, resolve_tenant_id
 from agentkit.web.identity import current_principal, require_permission
 from agentkit.web.security import configure_security
 from agentkit.web.streaming import stream_response
-
 
 # Which context inputs each agent actually consumes. Agents not listed here are
 # treated as conversational (no structured inputs, driven purely by the prompt).
@@ -49,6 +53,8 @@ DEFAULT_UI_CONFIG = {
             "allowed_skills": ["candidate.rank"],
             "allowed_tools": ["ats.get_job", "ats.get_candidates"],
             "fields": ["job_id", "top_n", "candidate_ids"],
+            "mode": "chat",
+            "actions_enabled": True,
         }
     ],
     "demo_prompts": {
@@ -68,7 +74,7 @@ DEFAULT_UI_CONFIG = {
 }
 
 app = Flask(__name__)
-# Pick up template/static edits without a manual restart (local demo convenience).
+# Pick up template/static edits without a manual restart during local development.
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.jinja_env.auto_reload = True
 
@@ -86,6 +92,11 @@ def get_runtime():
     # console can be pointed at any tenant without code changes. Runtimes are
     # cached per tenant id.
     return _build_runtime_cached(resolve_tenant_id())
+
+
+def clear_runtime_cache() -> None:
+    """Drop cached runtimes so tenant configs, prompts, and packs reload."""
+    _build_runtime_cached.cache_clear()
 
 
 @app.context_processor
@@ -217,13 +228,26 @@ def healthz():
     return jsonify({"status": "ok"})
 
 
-@app.get("/command")
-def command():
+@app.post("/api/admin/reload")
+@require_permission(RUNTIME_ADMIN)
+def api_admin_reload():
+    """Reload settings, LLM provider, and cached tenant runtimes."""
+    from agentkit.config import get_settings
+    from agentkit.core.llm_client import clear_provider_cache
+
+    get_settings.cache_clear()
+    clear_provider_cache()
+    clear_runtime_cache()
+    return jsonify({"status": "reloaded", "tenant_id": resolve_tenant_id()})
+
+
+@app.get("/chat")
+def chat_console():
     runtime = get_runtime()
     return render_template(
-        "command.html",
-        active="command",
-        title="Command Center",
+        "chat.html",
+        active="chat",
+        title="Chat Console",
         ui=get_ui_config(runtime.tenant_config),
         chat_agents=get_chat_agents(runtime),
     )
@@ -339,11 +363,105 @@ def _effective_user_id(payload: dict, ui: dict) -> str:
     return str(payload.get("user_id") or ui["default_user_id"])
 
 
-def _task_request_from_payload(payload: dict, ui: dict) -> TaskRequest:
+def _trusted_business_roles(
+    *,
+    tenant_config: dict[str, Any],
+    ui: dict[str, Any],
+) -> tuple[list[str], str]:
+    """Resolve tenant business roles from trusted identity/config, never payload."""
+    principal = current_principal()
+    role_permissions = tenant_config.get("role_permissions", {})
+    known_business_roles = set(role_permissions) if isinstance(role_permissions, dict) else set()
+
+    business_claims = _list_or_default(principal.claims.get("business_roles"), [])
+    claim_roles = [role for role in business_claims if role in known_business_roles]
+    if claim_roles:
+        return claim_roles, "principal.claims.business_roles"
+
+    role_mapping = tenant_config.get("principal_business_roles", {})
+    if isinstance(role_mapping, dict):
+        mapped: list[str] = []
+        for role in principal.roles:
+            for business_role in _list_or_default(role_mapping.get(role), []):
+                if business_role in known_business_roles and business_role not in mapped:
+                    mapped.append(business_role)
+        if mapped:
+            return mapped, "tenant.principal_business_roles"
+
+    # Some proxies send business roles and console roles in the same header. Treat
+    # only roles that exist in tenant role_permissions as business roles.
+    overlapping = [
+        str(role) for role in principal.roles if str(role) in known_business_roles
+    ]
+    if overlapping:
+        return overlapping, "principal.roles"
+
+    # Local/shared-token deployments stay usable without trusting browser input.
+    # Production SSO should prefer business role claims or tenant mapping above.
+    if principal.auth_method == "proxy":
+        return [], "none"
+    fallback = [
+        role
+        for role in _list_or_default(ui.get("default_roles"), [])
+        if not known_business_roles or role in known_business_roles
+    ]
+    return fallback, "tenant.ui.default_roles"
+
+
+def _approval_context_from_payload(
+    payload: dict[str, Any],
+    *,
+    allow_approval_context: bool,
+) -> tuple[list[str], list[str]]:
+    approved_skills = _list_or_default(payload.get("approved_skills"), [])
+    rejected_skills = _list_or_default(payload.get("rejected_skills"), [])
+    if (approved_skills or rejected_skills) and not allow_approval_context:
+        raise ValueError(
+            "approval decisions are not accepted on /api/tasks; use /api/tasks/resume "
+            "or /api/tasks/approve."
+        )
+    overlap = sorted(set(approved_skills) & set(rejected_skills))
+    if overlap:
+        raise ValueError(
+            "approval decision cannot both approve and reject the same skills: "
+            + ", ".join(overlap)
+        )
+    return approved_skills, rejected_skills
+
+
+def _approval_decision_context(
+    *,
+    approved_skills: list[str],
+    rejected_skills: list[str],
+    source: str,
+) -> dict[str, Any]:
+    if approved_skills and rejected_skills:
+        action = "mixed"
+    elif rejected_skills:
+        action = "reject"
+    else:
+        action = "approve"
+    return {
+        "source": source,
+        "action": action,
+        "principal": current_principal().to_public_dict(),
+        "approved_skills": list(approved_skills),
+        "rejected_skills": list(rejected_skills),
+    }
+
+
+def _task_request_from_payload(
+    payload: dict,
+    *,
+    tenant_config: dict[str, Any],
+    ui: dict[str, Any],
+    allowed_agents: set[str] | None = None,
+    allow_approval_context: bool = False,
+) -> TaskRequest:
     """Build a ``TaskRequest`` from a web payload (raises ``ValueError`` on bad input)."""
     text = str(payload.get("text") or ui["demo_prompt"])
     user_id = _effective_user_id(payload, ui)
-    roles = _list_or_default(payload.get("roles"), ui["default_roles"])
+    roles, roles_source = _trusted_business_roles(tenant_config=tenant_config, ui=ui)
     candidate_ids = _list_or_default(payload.get("candidate_ids"), ui["default_candidate_ids"])
     job_id = str(payload.get("job_id") or ui["default_job_id"])
     try:
@@ -351,8 +469,13 @@ def _task_request_from_payload(payload: dict, ui: dict) -> TaskRequest:
     except (TypeError, ValueError) as exc:
         raise ValueError("top_n must be an integer.") from exc
     agent = str(payload.get("agent") or ui.get("default_agent") or "")
-    approved_skills = _list_or_default(payload.get("approved_skills"), [])
-    rejected_skills = _list_or_default(payload.get("rejected_skills"), [])
+    if allowed_agents is not None and agent not in allowed_agents:
+        allowed = ", ".join(sorted(allowed_agents)) or "(none)"
+        raise ValueError(f"agent '{agent}' is not an enabled action agent. Allowed: {allowed}.")
+    approved_skills, rejected_skills = _approval_context_from_payload(
+        payload,
+        allow_approval_context=allow_approval_context,
+    )
 
     context: dict[str, Any] = {
         "agent": agent,
@@ -360,11 +483,40 @@ def _task_request_from_payload(payload: dict, ui: dict) -> TaskRequest:
         "candidate_ids": candidate_ids,
         "top_n": top_n,
     }
+    extra_context = payload.get("context")
+    if isinstance(extra_context, dict):
+        reserved_context_keys = {
+            "agent",
+            "approval",
+            "approval_decision",
+            "approved_skills",
+            "business_roles_source",
+            "candidate_ids",
+            "principal",
+            "rejected_skills",
+            "roles",
+            "safety",
+            "top_n",
+            "user_id",
+        }
+        for key, value in extra_context.items():
+            key = str(key)
+            if key not in reserved_context_keys:
+                context[key] = value
+    if "roles" in payload:
+        context["ignored_payload_roles"] = _list_or_default(payload.get("roles"), [])
     if approved_skills:
         context["approved_skills"] = approved_skills
     if rejected_skills:
         context["rejected_skills"] = rejected_skills
+    if approved_skills or rejected_skills:
+        context["approval_decision"] = _approval_decision_context(
+            approved_skills=approved_skills,
+            rejected_skills=rejected_skills,
+            source="web-resubmit",
+        )
     context["principal"] = current_principal().to_public_dict()
+    context["business_roles_source"] = roles_source
     return TaskRequest(user_id=user_id, roles=roles, text=text, context=context)
 
 
@@ -376,6 +528,329 @@ def _sse(generator: Any) -> Response:
     return response
 
 
+def _permission_denied(permission: str):
+    mapping = load_role_permissions(get_settings())
+    if has_permission(current_principal(), permission, mapping):
+        return None
+    return jsonify({"error": f"Forbidden: requires permission '{permission}'."}), 403
+
+
+def _payload_context(payload: dict[str, Any]) -> dict[str, Any]:
+    context = payload.get("context")
+    return dict(context) if isinstance(context, dict) else {}
+
+
+def _chat_agent_from_payload(
+    payload: dict[str, Any],
+    *,
+    context: dict[str, Any],
+    ui: dict[str, Any],
+) -> str:
+    return str(
+        context.get("agent")
+        or context.get("agent_name")
+        or payload.get("agent")
+        or ui.get("default_agent")
+        or ""
+    )
+
+
+def _chat_message_from_payload(
+    payload: dict[str, Any],
+    *,
+    context: dict[str, Any],
+) -> str:
+    return str(
+        context.get("message")
+        or context.get("input")
+        or context.get("text")
+        or payload.get("message")
+        or payload.get("input")
+        or payload.get("text")
+        or ""
+    ).strip()
+
+
+def _chat_conversation_id(
+    payload: dict[str, Any],
+    *,
+    context: dict[str, Any],
+) -> str | None:
+    conversation_id = context.get("conversation_id") or payload.get("conversation_id")
+    return str(conversation_id) if conversation_id else None
+
+
+def _chat_approval_from_payload(
+    payload: dict[str, Any],
+    *,
+    context: dict[str, Any],
+) -> dict[str, Any] | None:
+    raw = context.get("approval", payload.get("approval"))
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("context.approval must be an object.")
+
+    action = str(raw.get("action") or "").strip().lower()
+    if action not in {"approve", "reject"}:
+        raise ValueError("context.approval.action must be 'approve' or 'reject'.")
+
+    skills = _list_or_default(raw.get("skills"), [])
+    if not skills:
+        decision_key = "approved_skills" if action == "approve" else "rejected_skills"
+        skills = _list_or_default(raw.get(decision_key), [])
+    if not skills:
+        raise ValueError("context.approval.skills is required.")
+
+    request_payload = raw.get("request")
+    if request_payload is not None and not isinstance(request_payload, dict):
+        raise ValueError("context.approval.request must be an object when provided.")
+
+    return {
+        "action": action,
+        "thread_id": str(raw.get("thread_id") or "").strip(),
+        "skills": skills,
+        "request": dict(request_payload) if isinstance(request_payload, dict) else None,
+    }
+
+
+def _task_payload_from_chat_payload(
+    payload: dict[str, Any],
+    *,
+    agent: str,
+    message: str,
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    task_payload: dict[str, Any] = {
+        "agent": agent,
+        "text": message,
+        "context": {
+            key: value
+            for key, value in context.items()
+            if key
+            not in {
+                "agent",
+                "agent_name",
+                "approval",
+                "conversation_id",
+                "input",
+                "message",
+                "text",
+            }
+        },
+    }
+    if "user_id" in payload:
+        task_payload["user_id"] = payload["user_id"]
+    for field in ("job_id", "candidate_ids", "top_n", "skill"):
+        if field in context:
+            task_payload[field] = context[field]
+        elif field in payload:
+            task_payload[field] = payload[field]
+    return task_payload
+
+
+def _format_action_chat_result(
+    response: dict[str, Any],
+    *,
+    conversation_id: str | None = None,
+) -> dict[str, Any]:
+    result = {
+        "mode": "action",
+        "interaction_mode": "chat",
+        "agent_kind": "action",
+        "assistant_text": format_chat_response(response),
+        "response": response,
+    }
+    if conversation_id:
+        result["conversation_id"] = conversation_id
+    return result
+
+
+def _action_chat_runner(
+    *,
+    payload: dict[str, Any],
+    runtime: Any,
+    ui: dict[str, Any],
+    agent: str,
+    message: str,
+    context: dict[str, Any],
+    approval: dict[str, Any] | None = None,
+) -> Callable[[], dict[str, Any]]:
+    chat_service = getattr(runtime, "chat_service", None)
+    user_id = _effective_user_id(payload, ui)
+    conversation_id = _chat_conversation_id(payload, context=context)
+    action_memory: dict[str, Any] | None = None
+    if chat_service is not None:
+        action_context = chat_service.prepare_action_turn(
+            agent=agent,
+            user_id=user_id,
+            message=message,
+            conversation_id=conversation_id,
+        )
+        conversation_id = str(action_context["conversation_id"])
+        action_memory = action_context["memory"]
+
+    task_payload = _task_payload_from_chat_payload(
+        payload,
+        agent=agent,
+        message=message,
+        context=context,
+    )
+    task_payload.setdefault("context", {})
+    task_payload["context"]["conversation_id"] = conversation_id
+    if action_memory is not None:
+        task_payload["context"]["chat_memory"] = action_memory
+    allowed_agents = _action_agent_names(runtime)
+
+    def record_action_result(
+        response: dict[str, Any],
+        *,
+        user_message: str | None,
+    ) -> dict[str, Any]:
+        result = _format_action_chat_result(response, conversation_id=conversation_id)
+        if chat_service is not None and conversation_id:
+            try:
+                chat_service.record_action_turn(
+                    agent=agent,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    user_message=user_message,
+                    assistant_text=result["assistant_text"],
+                    run_id=str(response.get("output", {}).get("run_id") or ""),
+                )
+            except ValueError:
+                # Conversation persistence must not hide a successful governed run.
+                pass
+        return result
+
+    if approval:
+        approved_skills = approval["skills"] if approval["action"] == "approve" else []
+        rejected_skills = approval["skills"] if approval["action"] == "reject" else []
+        if approval["thread_id"]:
+            decision_context = _approval_decision_context(
+                approved_skills=approved_skills,
+                rejected_skills=rejected_skills,
+                source="chat-resume",
+            )
+
+            def run_resume() -> dict[str, Any]:
+                response = runtime.gateway.resume(
+                    approval["thread_id"],
+                    approved_skills=approved_skills,
+                    rejected_skills=rejected_skills,
+                    decision_context=decision_context,
+                ).to_dict()
+                return record_action_result(response, user_message=message)
+
+            return run_resume
+        else:
+            resubmit_payload = approval["request"] or task_payload
+            request_context = _payload_context(resubmit_payload)
+            resubmit_agent = _chat_agent_from_payload(
+                resubmit_payload,
+                context=request_context,
+                ui=ui,
+            )
+            resubmit_message = _chat_message_from_payload(
+                resubmit_payload,
+                context=request_context,
+            )
+            task_payload = _task_payload_from_chat_payload(
+                resubmit_payload,
+                agent=resubmit_agent or agent,
+                message=resubmit_message or message,
+                context=request_context or context,
+            )
+            task_payload.setdefault("context", {})
+            task_payload["context"]["conversation_id"] = conversation_id
+            if action_memory is not None:
+                task_payload["context"]["chat_memory"] = action_memory
+            if approved_skills:
+                task_payload["approved_skills"] = approved_skills
+            if rejected_skills:
+                task_payload["rejected_skills"] = rejected_skills
+            task_request = _task_request_from_payload(
+                task_payload,
+                tenant_config=runtime.tenant_config,
+                ui=ui,
+                allowed_agents=allowed_agents,
+                allow_approval_context=True,
+            )
+
+            def run_resubmit() -> dict[str, Any]:
+                response = runtime.gateway.handle(task_request).to_dict()
+                return record_action_result(response, user_message=message)
+
+            return run_resubmit
+    else:
+        task_request = _task_request_from_payload(
+            task_payload,
+            tenant_config=runtime.tenant_config,
+            ui=ui,
+            allowed_agents=allowed_agents,
+        )
+
+        def run_task() -> dict[str, Any]:
+            response = runtime.gateway.handle(task_request).to_dict()
+            return record_action_result(response, user_message=message)
+
+        return run_task
+
+
+def _action_chat_result(
+    *,
+    payload: dict[str, Any],
+    runtime: Any,
+    ui: dict[str, Any],
+    agent: str,
+    message: str,
+    context: dict[str, Any],
+    approval: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    runner = _action_chat_runner(
+        payload=payload,
+        runtime=runtime,
+        ui=ui,
+        agent=agent,
+        message=message,
+        context=context,
+        approval=approval,
+    )
+    return runner()
+
+
+def _action_chat_response(
+    *,
+    payload: dict[str, Any],
+    runtime: Any,
+    ui: dict[str, Any],
+    agent: str,
+    message: str,
+    context: dict[str, Any],
+    approval: dict[str, Any] | None = None,
+):
+    denied = _permission_denied(TASK_APPROVE if approval else TASK_RUN)
+    if denied is not None:
+        return denied
+    try:
+        result = _action_chat_result(
+            payload=payload,
+            runtime=runtime,
+            ui=ui,
+            agent=agent,
+            message=message,
+            context=context,
+            approval=approval,
+        )
+    except KeyError:
+        return jsonify({"error": "This approval session expired. Please resubmit the task."}), 409
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(result)
+
+
 @app.post("/api/tasks")
 @require_permission(TASK_RUN)
 def create_task():
@@ -383,7 +858,12 @@ def create_task():
     runtime = get_runtime()
     ui = get_ui_config(runtime.tenant_config)
     try:
-        task_request = _task_request_from_payload(payload, ui)
+        task_request = _task_request_from_payload(
+            payload,
+            tenant_config=runtime.tenant_config,
+            ui=ui,
+            allowed_agents=_action_agent_names(runtime),
+        )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -403,7 +883,12 @@ def create_task_stream():
     runtime = get_runtime()
     ui = get_ui_config(runtime.tenant_config)
     try:
-        task_request = _task_request_from_payload(payload, ui)
+        task_request = _task_request_from_payload(
+            payload,
+            tenant_config=runtime.tenant_config,
+            ui=ui,
+            allowed_agents=_action_agent_names(runtime),
+        )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -414,7 +899,80 @@ def create_task_stream():
             "response": response,
         }
 
-    return _sse(stream_response(produce))
+    return _sse(
+        stream_response(
+            produce,
+            stream_tokens=_task_stream_tokens_enabled(runtime.tenant_config),
+        )
+    )
+
+
+@app.post("/api/tasks/approve")
+@require_permission(TASK_APPROVE)
+def approve_task_resubmit():
+    """Approve/reject by resubmitting a full task; requires explicit approve RBAC.
+
+    This is only for deployments that disabled approval checkpointing. Normal
+    approval should use /api/tasks/resume so planning is not recomputed.
+    """
+    payload = request.get_json(silent=True) or {}
+    runtime = get_runtime()
+    ui = get_ui_config(runtime.tenant_config)
+    if not payload.get("approved_skills") and not payload.get("rejected_skills"):
+        return jsonify({"error": "approved_skills or rejected_skills is required."}), 400
+    try:
+        task_request = _task_request_from_payload(
+            payload,
+            tenant_config=runtime.tenant_config,
+            ui=ui,
+            allowed_agents=_action_agent_names(runtime),
+            allow_approval_context=True,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    response = runtime.gateway.handle(task_request).to_dict()
+    return jsonify(
+        {
+            "assistant_text": format_chat_response(response),
+            "response": response,
+        }
+    )
+
+
+@app.post("/api/tasks/approve/stream")
+@require_permission(TASK_APPROVE)
+def approve_task_resubmit_stream():
+    """Streaming approve/reject full resubmit for no-checkpointer deployments."""
+    payload = request.get_json(silent=True) or {}
+    runtime = get_runtime()
+    ui = get_ui_config(runtime.tenant_config)
+    if not payload.get("approved_skills") and not payload.get("rejected_skills"):
+        return jsonify({"error": "approved_skills or rejected_skills is required."}), 400
+    try:
+        task_request = _task_request_from_payload(
+            payload,
+            tenant_config=runtime.tenant_config,
+            ui=ui,
+            allowed_agents=_action_agent_names(runtime),
+            allow_approval_context=True,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    def produce() -> dict[str, Any]:
+        response = runtime.gateway.handle(task_request).to_dict()
+        return {
+            "assistant_text": format_chat_response(response),
+            "response": response,
+        }
+
+    return _sse(
+        stream_response(
+            produce,
+            stream_tokens=_task_stream_tokens_enabled(runtime.tenant_config),
+        )
+    )
 
 
 @app.post("/api/tasks/resume")
@@ -426,12 +984,20 @@ def resume_task():
         return jsonify({"error": "thread_id is required."}), 400
     approved_skills = _list_or_default(payload.get("approved_skills"), [])
     rejected_skills = _list_or_default(payload.get("rejected_skills"), [])
+    if not approved_skills and not rejected_skills:
+        return jsonify({"error": "approved_skills or rejected_skills is required."}), 400
     runtime = get_runtime()
+    decision_context = _approval_decision_context(
+        approved_skills=approved_skills,
+        rejected_skills=rejected_skills,
+        source="web-resume",
+    )
     try:
         response = runtime.gateway.resume(
             thread_id,
             approved_skills=approved_skills,
             rejected_skills=rejected_skills,
+            decision_context=decision_context,
         ).to_dict()
     except KeyError:
         # Thread expired/unknown (e.g. server restart with in-memory checkpointer).
@@ -455,7 +1021,14 @@ def resume_task_stream():
         return jsonify({"error": "thread_id is required."}), 400
     approved_skills = _list_or_default(payload.get("approved_skills"), [])
     rejected_skills = _list_or_default(payload.get("rejected_skills"), [])
+    if not approved_skills and not rejected_skills:
+        return jsonify({"error": "approved_skills or rejected_skills is required."}), 400
     runtime = get_runtime()
+    decision_context = _approval_decision_context(
+        approved_skills=approved_skills,
+        rejected_skills=rejected_skills,
+        source="web-resume",
+    )
 
     def produce() -> dict[str, Any]:
         try:
@@ -463,6 +1036,7 @@ def resume_task_stream():
                 thread_id,
                 approved_skills=approved_skills,
                 rejected_skills=rejected_skills,
+                decision_context=decision_context,
             ).to_dict()
         except KeyError as exc:
             raise ValueError("This approval session expired. Please resubmit the task.") from exc
@@ -471,7 +1045,12 @@ def resume_task_stream():
             "response": response,
         }
 
-    return _sse(stream_response(produce))
+    return _sse(
+        stream_response(
+            produce,
+            stream_tokens=_task_stream_tokens_enabled(runtime.tenant_config),
+        )
+    )
 
 
 @app.post("/api/chat")
@@ -479,33 +1058,50 @@ def resume_task_stream():
 def api_chat():
     payload = request.get_json(silent=True) or {}
     runtime = get_runtime()
-    chat_service = getattr(runtime, "chat_service", None)
-    if chat_service is None:
-        return jsonify({"error": "Conversational memory is not available."}), 503
-
     ui = get_ui_config(runtime.tenant_config)
-    agent = str(payload.get("agent") or ui.get("default_agent") or "")
-    if not chat_service.is_chat_agent(agent):
-        return jsonify(
-            {"error": f"Agent '{agent}' is not a chat-mode agent. Use /api/tasks instead."}
-        ), 400
-
-    message = str(payload.get("message") or payload.get("text") or "").strip()
-    if not message:
-        return jsonify({"error": "message is required."}), 400
-    user_id = _effective_user_id(payload, ui)
-    conversation_id = payload.get("conversation_id") or None
-
+    context = _payload_context(payload)
+    agent = _chat_agent_from_payload(payload, context=context, ui=ui)
     try:
-        result = chat_service.chat(
-            agent=agent,
-            user_id=user_id,
-            message=message,
-            conversation_id=str(conversation_id) if conversation_id else None,
-        )
+        approval = _chat_approval_from_payload(payload, context=context)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
-    return jsonify(result)
+    message = _chat_message_from_payload(payload, context=context)
+    if not message and not approval:
+        return jsonify({"error": "message is required."}), 400
+
+    chat_service = getattr(runtime, "chat_service", None)
+    if chat_service is not None and chat_service.is_answer_agent(agent):
+        if approval:
+            return jsonify({"error": "context.approval is only valid for action agents."}), 400
+        user_id = _effective_user_id(payload, ui)
+        conversation_id = _chat_conversation_id(payload, context=context)
+
+        try:
+            result = chat_service.chat(
+                agent=agent,
+                user_id=user_id,
+                message=message,
+                conversation_id=conversation_id,
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"mode": "answer", **result})
+
+    if agent in _action_agent_names(runtime):
+        return _action_chat_response(
+            payload=payload,
+            runtime=runtime,
+            ui=ui,
+            agent=agent,
+            message=message,
+            context=context,
+            approval=approval,
+        )
+
+    enabled = ", ".join(sorted(row["name"] for row in get_chat_agents(runtime))) or "(none)"
+    if chat_service is None:
+        return jsonify({"error": "Conversational memory is not available."}), 503
+    return jsonify({"error": f"Agent '{agent}' is not enabled. Allowed: {enabled}."}), 400
 
 
 @app.post("/api/chat/stream")
@@ -513,32 +1109,68 @@ def api_chat():
 def api_chat_stream():
     payload = request.get_json(silent=True) or {}
     runtime = get_runtime()
-    chat_service = getattr(runtime, "chat_service", None)
-    if chat_service is None:
-        return jsonify({"error": "Conversational memory is not available."}), 503
-
     ui = get_ui_config(runtime.tenant_config)
-    agent = str(payload.get("agent") or ui.get("default_agent") or "")
-    if not chat_service.is_chat_agent(agent):
-        return jsonify(
-            {"error": f"Agent '{agent}' is not a chat-mode agent. Use /api/tasks instead."}
-        ), 400
-
-    message = str(payload.get("message") or payload.get("text") or "").strip()
-    if not message:
+    context = _payload_context(payload)
+    agent = _chat_agent_from_payload(payload, context=context, ui=ui)
+    try:
+        approval = _chat_approval_from_payload(payload, context=context)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    message = _chat_message_from_payload(payload, context=context)
+    if not message and not approval:
         return jsonify({"error": "message is required."}), 400
-    user_id = _effective_user_id(payload, ui)
-    conversation_id = payload.get("conversation_id") or None
 
-    def produce() -> dict[str, Any]:
-        return chat_service.chat(
-            agent=agent,
-            user_id=user_id,
-            message=message,
-            conversation_id=str(conversation_id) if conversation_id else None,
+    chat_service = getattr(runtime, "chat_service", None)
+    if chat_service is not None and chat_service.is_answer_agent(agent):
+        if approval:
+            return jsonify({"error": "context.approval is only valid for action agents."}), 400
+        user_id = _effective_user_id(payload, ui)
+        conversation_id = _chat_conversation_id(payload, context=context)
+
+        def produce_chat() -> dict[str, Any]:
+            return {
+                "mode": "answer",
+                **chat_service.chat(
+                    agent=agent,
+                    user_id=user_id,
+                    message=message,
+                    conversation_id=conversation_id,
+                ),
+            }
+
+        return _sse(stream_response(produce_chat))
+
+    if agent in _action_agent_names(runtime):
+        denied = _permission_denied(TASK_APPROVE if approval else TASK_RUN)
+        if denied is not None:
+            return denied
+        try:
+            action_runner = _action_chat_runner(
+                payload=payload,
+                runtime=runtime,
+                ui=ui,
+                agent=agent,
+                message=message,
+                context=context,
+                approval=approval,
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        def produce_action() -> dict[str, Any]:
+            return action_runner()
+
+        return _sse(
+            stream_response(
+                produce_action,
+                stream_tokens=_task_stream_tokens_enabled(runtime.tenant_config),
+            )
         )
 
-    return _sse(stream_response(produce))
+    enabled = ", ".join(sorted(row["name"] for row in get_chat_agents(runtime))) or "(none)"
+    if chat_service is None:
+        return jsonify({"error": "Conversational memory is not available."}), 503
+    return jsonify({"error": f"Agent '{agent}' is not enabled. Allowed: {enabled}."}), 400
 
 
 @app.get("/api/conversations")
@@ -565,7 +1197,7 @@ def api_create_conversation():
     ui = get_ui_config(runtime.tenant_config)
     agent = str(payload.get("agent") or ui.get("default_agent") or "")
     if not chat_service.is_chat_agent(agent):
-        return jsonify({"error": f"Agent '{agent}' is not a chat-mode agent."}), 400
+        return jsonify({"error": f"Agent '{agent}' is not a configured chat agent."}), 400
     user_id = _effective_user_id(payload, ui)
     title = payload.get("title")
     conversation_id = chat_service.new_conversation(
@@ -604,6 +1236,7 @@ def api_run_events(run_id: str):
 
 
 @app.get("/api/registry")
+@require_permission(GOVERNANCE_VIEW)
 def api_registry():
     gateway = get_runtime().gateway
     return jsonify(
@@ -709,6 +1342,10 @@ def get_chat_agents(runtime) -> list[dict[str, Any]]:
         if profile.domain not in enabled_domains:
             continue
         config = configured.get(name, {})
+        interaction_mode = str(config.get("mode") or "chat").lower()
+        if interaction_mode != "chat":
+            interaction_mode = "chat"
+        actions_enabled = bool(config.get("actions_enabled", False))
         rows.append(
             {
                 "name": profile.name,
@@ -719,16 +1356,26 @@ def get_chat_agents(runtime) -> list[dict[str, Any]]:
                 "allowed_skills": profile.allowed_skills,
                 "allowed_tools": profile.allowed_tools,
                 "fields": config.get("fields") or AGENT_CONTEXT_FIELDS.get(name, []),
-                "mode": str(config.get("mode") or "command").lower(),
+                "mode": interaction_mode,
+                "actions_enabled": actions_enabled,
             }
         )
     return rows
 
 
+def _action_agent_names(runtime) -> set[str]:
+    return {row["name"] for row in get_chat_agents(runtime) if row.get("actions_enabled")}
+
+
+def _task_stream_tokens_enabled(tenant_config: dict[str, Any]) -> bool:
+    policy = str(tenant_config.get("output_review_policy", "warn")).lower()
+    return policy not in {"block", "block_on_failed", "fail_closed"}
+
+
 def display_path(path: str | Path) -> str:
     resolved = Path(path).resolve()
     try:
-        display = resolved.relative_to(DEMO_ROOT)
+        display = resolved.relative_to(AGENTKIT_ROOT)
     except ValueError:
         display = resolved
     return str(display).replace("\\", "/")
@@ -760,7 +1407,9 @@ def _list_or_default(value: Any, default: list[str]) -> list[str]:
         return list(default)
     if isinstance(value, str):
         return [value]
-    return [str(item) for item in value]
+    if isinstance(value, list | tuple | set):
+        return [str(item) for item in value]
+    return [str(value)]
 
 
 if __name__ == "__main__":

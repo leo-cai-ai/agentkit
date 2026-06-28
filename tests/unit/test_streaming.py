@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import agentkit.core.llm_client as llm_client
 from agentkit.llm.fake import FakeProvider
+from agentkit.web.streaming import stream_response
 
 
 def test_fake_provider_stream_chunks_concatenate_to_complete():
@@ -65,3 +66,31 @@ def test_stream_sink_resets_after_context(monkeypatch):
     seen.clear()
     llm_client.require_chat_streaming("s", "u")
     assert seen == []
+
+
+def test_stream_response_emits_token_and_final_frames(monkeypatch):
+    provider = FakeProvider(responses=["abc"])
+    monkeypatch.setattr(llm_client, "require_model", lambda: provider)
+
+    def produce() -> dict:
+        text = llm_client.require_chat_streaming("s", "u")
+        return {"text": text}
+
+    raw = "".join(stream_response(produce, max_queue_size=1))
+    assert "event: token" in raw
+    assert 'data: {"text": "abc"}' in raw
+    assert raw.rstrip().endswith('data: {"text": "abc"}')
+
+
+def test_stream_response_can_suppress_token_frames(monkeypatch):
+    provider = FakeProvider(responses=["sensitive draft"])
+    monkeypatch.setattr(llm_client, "require_model", lambda: provider)
+
+    def produce() -> dict:
+        text = llm_client.require_chat_streaming("s", "u")
+        return {"text": text}
+
+    raw = "".join(stream_response(produce, max_queue_size=1, stream_tokens=False))
+    assert "event: token" not in raw
+    assert 'data: {"text": "sensitive draft"}' in raw
+    assert raw.rstrip().endswith('data: {"text": "sensitive draft"}')

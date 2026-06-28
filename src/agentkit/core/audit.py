@@ -1,7 +1,7 @@
-"""Audit logs for demos and tests.
+"""Audit logs for local runtime persistence and tests.
 
-`InMemoryAuditLog` is useful for tests. `SQLiteAuditLog` is the demo's
-durable store and persists runs plus all LangGraph node events.
+`InMemoryAuditLog` is useful for tests. `SQLiteAuditLog` is the default durable
+store for local deployments and persists runs plus all LangGraph node events.
 """
 
 from __future__ import annotations
@@ -96,6 +96,24 @@ class SQLiteAuditLog:
                     WHERE run_id = ?
                     """,
                     (status, now, run_id),
+                )
+            elif event_type == "run_paused":
+                conn.execute(
+                    """
+                    UPDATE task_runs
+                    SET status = ?, finished_at = NULL
+                    WHERE run_id = ?
+                    """,
+                    (payload.get("status") or "waiting_for_approval", run_id),
+                )
+            elif event_type == "run_resumed":
+                conn.execute(
+                    """
+                    UPDATE task_runs
+                    SET status = ?, finished_at = NULL
+                    WHERE run_id = ?
+                    """,
+                    ("running", run_id),
                 )
 
     def events_for(self, run_id: str) -> list[dict[str, Any]]:

@@ -1,6 +1,6 @@
 # HR Agent 架构通读指南
 
-这份文档按 HR 招聘例子带你从入口一路读到 Skill 执行。目标不是解释每一行代码，而是帮你建立代码地图：每个文件负责什么，运行时如何串起来，后续新增业务 Agent 时应该改哪里。
+这份文档按 HR 招聘例子带你从 Web/CLI 入口读到 `candidate.rank` 的执行。目标不是解释每一行代码，而是建立当前代码地图：哪些文件属于平台层，哪些文件属于 HR 业务包，运行时如何把 tenant、agent、skill、tool、LLM、审批、审计串起来。
 
 示例请求：
 
@@ -8,48 +8,101 @@
 Rank the top 3 candidates for JOB-001 and explain why.
 ```
 
-在页面上选择：
+默认租户 `company_alpha` 会把它交给 `hr_recruiter`，最终执行 `candidate.rank`，候选人来自 mock ATS：
 
 ```text
-Active Agent = hr_recruiter
-Role = recruiter
-Candidate pool = C-100, C-101, C-102, C-103, C-104
-Shortlist size = 3
+JOB-001
+C-100, C-101, C-102, C-103, C-104
+top_n = 3
 ```
 
 ## 0. 先看整体目录
 
-建议先扫这些目录：
+当前项目是 installable package，不再是早期的 `demo/` 目录结构。先扫这些位置：
 
 ```text
-demo/
-  bootstrap.py
+src/agentkit/
+  cli.py                         # run-demo / web / init-db / doctor / new-pack / validate-packs / eval
+  config.py                      # AGENTKIT_* 运行期配置
+  runtime/
+    bootstrap.py                 # 构建一个 tenant runtime
+    pack_registry.py             # 发现 domain packs
+    chat_service.py              # chat-first agent + memory stack
   core/
-  domain_packs/hr_recruitment/
+    contracts.py                 # TaskRequest / SkillDefinition / TaskResponse 等协议
+    gateway.py                   # 对外统一入口 + safety/cost/checkpointer
+    langgraph_agent.py           # LangGraph 主流程
+    intent.py                    # intent 结构化
+    router.py                    # skill 路由
+    planner.py                   # plan 生成与 batch 约束
+    governance.py                # plan review / approval / output review
+    policy.py                    # 角色权限与审批策略
+    executor.py                  # skill 执行、batch、tool 调用
+    audit.py                     # SQLite audit/run history
+    memory/                      # 会话记忆、向量检索、pgvector 后端
+  domain_packs/
+    hr_recruitment/pack.py       # HR agent / skill / tool 注册
+    hr_recruitment/scoring.py    # 候选人确定性打分
   connectors/
-  tenants/company_alpha.json
-  skills/candidate-rank/
-  prompts/agents/
-  web_flask/
+    mock_ats.py                  # mock ATS 数据源
+  web/
+    app.py                       # Flask API + 页面路由
+    templates/chat.html          # 单一聊天控制台
+    static/js/app.js             # 统一 /api/chat SSE、审批、会话交互
+  llm/
+    factory.py                   # provider 构建
+    openai_compatible.py         # OpenAI-compatible / Ollama
+
+tenants/company_alpha.json       # tenant 配置
+prompts/agents/*.md              # persona / system prompt 文件
+skills/candidate-rank/           # Codex/Cursor 风格 skill 包
+data/                            # 运行期 SQLite / checkpoint 文件
+docker-compose.yml               # web + pgvector
 ```
 
 核心边界：
 
 ```text
-core/                      平台层，不应该写具体 HR 业务
-domain_packs/hr_recruitment HR 业务能力包
-connectors/                企业系统连接器，这里是 mock ATS
-tenants/                   租户配置，权限、路由 hints、审批策略
-skills/                    Codex/Cursor 风格 Skill 文件夹
-web_flask/                 管理层操作台
+core/                  平台层，不写 HR 业务规则
+domain_packs/...       业务能力包，注册 agents/skills/tools
+connectors/            企业系统连接器，这里是 mock ATS
+tenants/               租户开关、权限、审批、routing hints、UI 默认值
+prompts/               prompt 文件，由 PromptLibrary 注入 LLM 节点
+skills/                skill 文档化/打包格式，运行时会附到 SkillDefinition
+web/                   Flask 控制台和 JSON/SSE API
+llm/                   LLM provider 抽象与实现
 ```
 
-## 1. 从数据契约开始
+## 1. 先确认运行配置
+
+本地开发常用：
+
+```bash
+uv sync --extra dev
+uv pip install -e .
+agentkit --tenant company_alpha run-demo
+agentkit web
+```
+
+真实 LLM 通过 `.env` 配置。HR 任务路径有多个 LLM 节点，除非命中 `AGENTKIT_DETERMINISTIC_FASTPATH=true` 的高置信规则路径，否则需要可用 provider：
+
+```env
+AGENTKIT_LLM_PROVIDER=openai
+AGENTKIT_OPENAI_BASE_URL=http://localhost:11434/v1
+AGENTKIT_OPENAI_API_KEY=ollama
+AGENTKIT_OPENAI_MODEL=<你的 ollama 模型名>
+AGENTKIT_LLM_TIMEOUT_SECONDS=120
+AGENTKIT_LLM_MAX_TOKENS=4096
+```
+
+如果 Web 在 Docker Desktop 里跑，而 Ollama 在 Windows 的 Ubuntu/WSL 里跑，容器里的 `localhost` 不是 WSL；README 的 “Docker 访问本机 / WSL Ollama” 段落给了 `host.docker.internal:11435` + `netsh portproxy` 的配置方式。
+
+## 2. 从数据契约开始
 
 先读：
 
 ```text
-demo/core/contracts.py
+src/agentkit/core/contracts.py
 ```
 
 重点看这些 dataclass：
@@ -60,48 +113,169 @@ IntentFrame
 AgentProfile
 SkillDefinition
 ToolDefinition
+SkillContext
 RouteDecision
 PlanStep
 TaskPlan
 TaskResponse
 ```
 
-它们是整套架构的核心协议。
+它们是整套 runtime 的核心协议：
 
-重点理解：
+- `TaskRequest`: 用户、角色、自然语言文本、上下文字段。
+- `IntentFrame`: LLM/规则产出的结构化意图。
+- `AgentProfile`: 一个 agent 可用哪些 skills/tools。
+- `SkillDefinition`: 一个业务能力的稳定 contract、schema、权限、handler。
+- `ToolDefinition`: 一个可调用企业工具，比如 ATS 查询。
+- `SkillContext`: skill handler 调 tool 的上下文。
+- `TaskPlan`: route 后的执行步骤。
+- `TaskResponse`: 返回 UI/API 的结构化结果。
 
-- `TaskRequest`: 用户输入、角色、上下文。
-- `AgentProfile`: 一个 Agent 能用哪些 skills/tools。
-- `SkillDefinition`: 一个业务能力的注册信息和 handler。
-- `ToolDefinition`: 一个可调用工具，比如 ATS 查询。
-- `IntentFrame`: 意图拆解结果。
-- `TaskPlan`: route 后生成的执行计划。
-- `TaskResponse`: 最终返回给 UI 的结构。
-
-读到这里先记住一句话：
-
-```text
-Agent 不直接写业务逻辑。Agent 绑定 Skills，Skill 调 Tools。
-```
-
-## 2. 看启动装配
-
-接着读：
+一句话：
 
 ```text
-demo/bootstrap.py
+Agent 不直接写业务逻辑。Agent 绑定 Skills，Skill 通过 SkillContext 调 Tools。
 ```
 
-这里完成运行时装配：
+## 3. 看启动装配
+
+读：
+
+```text
+src/agentkit/runtime/bootstrap.py
+```
+
+入口是 `build_runtime()`，它完成这些事：
+
+```text
+解析 tenant id
+加载 tenants/<id>.json
+加载 prompt_files
+创建 AgentRegistry / SkillRegistry / ToolRegistry
+创建 SQLiteAuditLog(data/<tenant>.sqlite)
+通过 pack_registry 发现并加载启用的 domain packs
+注册平台 agents(router/general)
+把 skills/<folder>/SKILL.md 附到 SkillDefinition
+按 AGENTKIT_APPROVAL_CHECKPOINTER 创建 checkpointer
+创建 AgentGateway
+创建 ChatService(memory stack)
+```
+
+注意两点：
+
+1. `hr_recruiter` 不再在 `bootstrap.py` 里硬编码注册，而是在 HR pack 自己的 `register()` 里注册。
+2. Docker 镜像里包安装到了 venv，所以 `AGENTKIT_ROOT=/app` 用来定位 `tenants/`、`prompts/`、`skills/`、`data/`。
+
+## 4. 看 domain pack 发现机制
+
+读：
+
+```text
+src/agentkit/runtime/pack_registry.py
+```
+
+一个业务包只需要暴露：
 
 ```python
-agents = AgentRegistry()
-skills = SkillRegistry()
-tools = ToolRegistry()
-audit = SQLiteAuditLog(db_path)
+DOMAIN = "hr.recruitment"
+
+def register(*, agents, skills, tools, tenant_config) -> None:
+    ...
 ```
 
-HR Agent 在这里注册：
+runtime 会通过两种方式发现 packs：
+
+```text
+1. 扫描 agentkit.domain_packs.*.pack
+2. 加载安装包声明的 agentkit.domain_packs entry point
+```
+
+`bootstrap.py` 只加载 tenant 的 `enabled_domains` 中列出的 domain。新增业务时通常不改 core，也不改 bootstrap；新建 pack，然后把 domain 加进 tenant 配置。
+
+## 5. 看租户配置
+
+读：
+
+```text
+tenants/company_alpha.json
+```
+
+HR 相关重点：
+
+```json
+"enabled_domains": ["hr.recruitment", "marketing.social_growth", "support.customer_service"]
+```
+
+只有启用 domain 的 agent/skill 会出现在当前 runtime 和控制台里。
+
+```json
+"chat_agents": [
+  { "name": "hr_recruiter", "mode": "chat", "actions_enabled": true },
+  { "name": "xhs_growth", "mode": "chat", "actions_enabled": true },
+  { "name": "customer_service", "mode": "chat", "actions_enabled": false }
+]
+```
+
+前端对所有 agent 都统一调用 `/api/chat` / `/api/chat/stream`。后端按
+`actions_enabled` 分流：`true` 进入 LangGraph 任务图（仍要求 `task:run`），
+`false` 只走 memory answer path。`/api/tasks*` 是脚本和系统自动化使用的
+直接 action API。HR 是行动型 chat agent。
+
+```json
+"role_permissions": {
+  "recruiter": ["hr.job.read", "hr.candidate.read"]
+}
+```
+
+`candidate.rank` 需要这些权限，`PolicyGuard` 会用它判断是否可执行。Web/API
+入口不会信任浏览器 payload 里的 `roles`；业务角色来自受信 SSO business-role
+header、tenant 的 `principal_business_roles` 映射，或本地/共享令牌部署的默认角色。
+被忽略的 payload roles 会进入 `context.ignored_payload_roles` 供审计。
+
+```json
+"principal_business_roles": {
+  "operator": ["recruiter"],
+  "hr_admin": ["hr_admin"]
+}
+```
+
+```json
+"approval_required_skills": ["xhs.growth.campaign", "candidate.rank"]
+```
+
+HR 排名默认需要人工审批，所以可以在控制台测试 checkpoint/resume。
+
+```json
+"routing_hints": {
+  "candidate.rank": ["筛选", "候选人", "简历", "rank", "candidate"]
+}
+```
+
+这些 hints 会进入 intent/router 的确定性提示，也会传给 LLM。
+
+`ui` 里还有 HR 默认参数：
+
+```json
+"default_job_id": "JOB-001",
+"default_candidate_ids": ["C-100", "C-101", "C-102", "C-103", "C-104"],
+"default_top_n": 3
+```
+
+当前前端是统一聊天窗口，标准 payload 是 `{user_id, context:{agent, message, ...}}`；
+`src/agentkit/web/app.py` 会把行动型 agent 转成 `TaskRequest`，从 tenant UI 默认值补齐
+`job_id`、`candidate_ids`、`top_n`，并把插件自定义业务字段保留在 `TaskRequest.context`。
+自然语言里显式写出的 `JOB-001`、`C-100` 等也会被 intent 层抽取。
+
+## 6. 看 HR 业务包
+
+读：
+
+```text
+src/agentkit/domain_packs/hr_recruitment/pack.py
+src/agentkit/domain_packs/hr_recruitment/scoring.py
+```
+
+HR pack 的 `register()` 注册一个 agent：
 
 ```python
 AgentProfile(
@@ -112,260 +286,147 @@ AgentProfile(
 )
 ```
 
-这就是 Agent 和 Skill 的绑定点：
+这就是绑定关系：
 
 ```text
-hr_recruiter -> candidate.rank
+hr_recruiter -> candidate.rank -> ats.get_job / ats.get_candidates
 ```
 
-然后加载 HR 业务包：
+它还注册两个 tools：
 
 ```python
-register_hr_recruitment(skills=skills, tools=tools)
+ToolDefinition(name="ats.get_job", handler=get_job_tool)
+ToolDefinition(name="ats.get_candidates", handler=get_candidates_tool, supports_batch=True)
 ```
 
-最后创建统一入口：
+以及一个 skill：
 
 ```python
-gateway = AgentGateway(...)
-```
-
-你可以把 `bootstrap.py` 理解成：
-
-```text
-注册 Agent
-注册 Skill Pack
-注册 Tool
-加载租户配置
-创建 LangGraph runtime
-```
-
-## 3. 看租户配置
-
-读：
-
-```text
-demo/tenants/company_alpha.json
-```
-
-HR 相关配置主要有：
-
-```json
-"enabled_domains": ["hr.recruitment", "..."]
-```
-
-表示当前租户启用了 HR domain。
-
-```json
-"chat_agents": [
-  {
-    "name": "hr_recruiter",
-    "label": "HR Recruiter Agent"
-  }
-]
-```
-
-表示页面可以选择这个 Agent。
-
-```json
-"role_permissions": {
-  "recruiter": ["hr.job.read", "hr.candidate.read"]
-}
-```
-
-表示 recruiter 拥有什么权限。
-
-```json
-"approval_required_skills": ["candidate.rank"]
-```
-
-表示执行 `candidate.rank` 前需要人工审批。
-
-```json
-"routing_hints": {
-  "candidate.rank": ["筛选", "候选人", "简历", "rank", "candidate"]
-}
-```
-
-表示哪些关键词可以帮助 router 选择 `candidate.rank`。
-
-读这个文件时要注意：
-
-```text
-租户配置决定这个企业启用哪些 domain、哪些角色有权限、哪些 skill 要审批。
-```
-
-## 4. 看 HR 业务包
-
-读：
-
-```text
-demo/domain_packs/hr_recruitment/pack.py
-```
-
-这个文件是 HR 业务逻辑的核心。
-
-先看 tools：
-
-```python
-tools.register(
-    ToolDefinition(
-        name="ats.get_job",
-        domain="hr.recruitment",
-        handler=get_job_tool,
-    )
-)
-
-tools.register(
-    ToolDefinition(
-        name="ats.get_candidates",
-        domain="hr.recruitment",
-        handler=get_candidates_tool,
-        supports_batch=True,
-    )
+SkillDefinition(
+    name="candidate.rank",
+    domain="hr.recruitment",
+    input_schema={...},
+    output_schema={...},
+    permissions=["hr.job.read", "hr.candidate.read"],
+    execution_mode="plan_execute",
+    tools=["ats.get_job", "ats.get_candidates"],
+    handler=rank_candidates,
+    batch_key="candidate_ids",
+    keywords=["筛选", "候选人", "简历", "candidate", "rank", "resume"],
 )
 ```
 
-这两个 tool 调的是 mock ATS。
-
-再看 skill：
-
-```python
-skills.register(
-    SkillDefinition(
-        name="candidate.rank",
-        domain="hr.recruitment",
-        permissions=["hr.job.read", "hr.candidate.read"],
-        execution_mode="plan_execute",
-        tools=["ats.get_job", "ats.get_candidates"],
-        handler=rank_candidates,
-        batch_key="candidate_ids",
-    )
-)
-```
-
-这里定义：
-
-```text
-Skill 名称: candidate.rank
-所需权限: hr.job.read, hr.candidate.read
-可用工具: ats.get_job, ats.get_candidates
-执行函数: rank_candidates
-批处理 key: candidate_ids
-```
-
-再读 `rank_candidates()`：
+`rank_candidates()` 里才有 HR 业务逻辑：
 
 ```python
 job = ctx.call_tool("ats.get_job", {"job_id": args["job_id"]})
-candidate_payload = ctx.call_tool("ats.get_candidates", ...)
+candidate_payload = ctx.call_tool("ats.get_candidates", {"candidate_ids": args["candidate_ids"]})
+ranked = [score_candidate(...)]
 ```
 
-然后根据 required skills 计算候选人得分。
+`scoring.py` 做确定性打分；最终 shortlist 说明由 `_ranking_summary()` 调 `require_chat_streaming()` 生成，所以用户可在 SSE 中看到最终推荐说明逐步输出。batch shard 会跳过每片 summary，只在 merge 后生成一次总说明。
 
-这个文件要重点理解：
-
-```text
-业务逻辑全部在 domain pack 里，core runtime 不知道什么是 candidate/job/resume。
-```
-
-## 5. 看 mock ATS
+## 7. 看 mock ATS
 
 读：
 
 ```text
-demo/connectors/mock_ats.py
+src/agentkit/connectors/mock_ats.py
 ```
 
-这里模拟企业系统：
-
-- job requisition
-- candidate profiles
-- required skills
-- candidate skills
-- years experience
-
-真实项目里，这个文件会替换成：
+这里模拟企业 ATS：
 
 ```text
-ATS API
-HRIS API
-数据库
-MCP tool
-内部服务 SDK
+job requisition
+candidate profiles
+required skills
+candidate skills
+years experience
 ```
 
-## 6. 看 Skill 文件夹
+真实项目里，这一层替换成 ATS API、HRIS API、数据库、MCP tool 或内部 SDK。core runtime 不需要知道这些系统细节。
+
+## 8. 看 Skill 文件夹
 
 读：
 
 ```text
-demo/skills/candidate-rank/SKILL.md
-demo/skills/candidate-rank/references/scoring.md
-demo/skills/candidate-rank/scripts/score_candidates.py
+skills/candidate-rank/SKILL.md
+skills/candidate-rank/references/scoring.md
+skills/candidate-rank/scripts/score_candidates.py
+src/agentkit/core/skill_store.py
 ```
 
-这里是 Codex/Cursor 风格的 Skill 文件。
+`SkillDefinition` 是可执行 contract，`SKILL.md` 是文档化和打包格式。`bootstrap.py` 通过 `attach_skill_packages()` 把 skill 文件路径、instructions、references、scripts 附到 registry 里的 `SkillDefinition`。
 
-当前 runtime 里，`SkillDefinition` 是可执行 contract，`SKILL.md` 是文档化和打包格式。
-
-它们的关系：
+关系是：
 
 ```text
-domain_packs/hr_recruitment/pack.py 负责注册可执行 skill
-skills/candidate-rank/SKILL.md      负责描述 skill 能力、规则、参考资料
+domain_packs/hr_recruitment/pack.py   注册可执行 skill
+skills/candidate-rank/SKILL.md        描述 skill 能力、规则、参考资料
+src/agentkit/core/skill_store.py      把文件系统 skill 包挂到 runtime registry
 ```
 
-后续做真正企业级系统时，可以让 runtime 动态读取 `SKILL.md`，再和 registry 里的 skill contract 对齐。
-
-## 7. 看 Gateway
+## 9. 看 Gateway
 
 读：
 
 ```text
-demo/core/gateway.py
+src/agentkit/core/gateway.py
 ```
 
-它是后端统一入口：
+`AgentGateway` 是任务图的对外入口：
 
 ```python
 runtime.gateway.handle(TaskRequest(...))
+runtime.gateway.resume(thread_id, approved_skills=[...])
 ```
 
-里面创建这些平台组件：
+它创建并连接这些平台组件：
 
-```python
+```text
 IntentDecomposer
 IntentRouter
 Planner
+PlanReviewer
+HumanApprovalGate
+OutputReviewer
 PlanExecutor
-PolicyGuard
 EnterpriseAgentGraph
 ```
 
-你可以把 `AgentGateway` 理解成：
+`handle()` 还会先做两件平台级治理：
 
 ```text
-外部系统只调用 Gateway，不直接碰 graph/router/executor。
+Content safety guard：高风险 prompt injection 可在 LLM 前拒绝
+cost_tracking：把 LLM usage 汇总进 audit
 ```
 
-## 8. 看 LangGraph 主流程
+审批 checkpointer 也在这里构建：
+
+```text
+AGENTKIT_APPROVAL_CHECKPOINTER=memory  # 默认，单进程开发
+AGENTKIT_APPROVAL_CHECKPOINTER=sqlite  # data/<tenant>_checkpoints.sqlite，适合多 worker/重启恢复
+AGENTKIT_APPROVAL_CHECKPOINTER=none    # 等待输出 + approval-protected 整体重提交流程
+```
+
+## 10. 看 LangGraph 主流程
 
 读：
 
 ```text
-demo/core/langgraph_agent.py
+src/agentkit/core/langgraph_agent.py
 ```
 
-主图结构：
+当前图节点：
 
 ```text
 START
   -> start_run
   -> prepare_context
   -> understand_intent
-  -> route
-  -> plan
+  -> route_request
+  -> plan_step
   -> review_plan
   -> human_approval
   -> execute
@@ -374,130 +435,118 @@ START
   -> END
 ```
 
-重点读这些节点：
+审计里仍保留稳定标签 `route`、`plan`，所以你会看到 node id 和 audit label 略有不同。
 
-```python
-_understand_intent_node()
-_route_node()
-_plan_node()
-_human_approval_node()
-_execute_node()
-_finalize_node()
-```
-
-HR 请求会经过：
+HR 请求通常经过：
 
 ```text
-理解意图 -> 选择 candidate.rank -> 生成计划 -> 检查审批 -> 执行或等待审批
+start_run
+prepare_context
+understand_intent       # 识别 business_task、job_id、candidate_ids、top_n
+route_request           # 选 candidate.rank
+plan_step               # 单步 plan；候选人数达到阈值则 mode=batch
+review_plan             # LLM 或 fast-path deterministic review
+human_approval          # candidate.rank 需要审批，可能 NodeInterrupt
+execute                 # 审批后执行 skill/tool
+review_output
+finalize
 ```
 
-如果 `candidate.rank` 在 `approval_required_skills` 中，就会在 `human_approval` 节点暂停。
+两个延迟优化开关：
 
-## 9. 看意图拆解
+```text
+AGENTKIT_DETERMINISTIC_FASTPATH=true
+```
+
+当规则能高置信命中 skill 时，跳过 intent/route/plan/plan_review/approval-assessment 的 LLM 往返，直接进入审批 gate。
+
+```text
+AGENTKIT_COMBINED_INTENT_ROUTE=true
+```
+
+当必须走 LLM 时，把 intent 和 route 合并到一次 LLM 调用；route 节点只做 deterministic validation。
+
+## 11. 看意图拆解
 
 读：
 
 ```text
-demo/core/intent.py
+src/agentkit/core/intent.py
 ```
 
-HR 例子会被拆成：
+HR 示例会先经过确定性提取：
 
 ```text
-intent_type = business_task
 entities.job_id = JOB-001
 entities.candidate_ids = [...]
 entities.top_n = 3
 signals = tenant_routing_hint:candidate.rank
 ```
 
-重点看：
+主要函数：
 
 ```python
+extract_entities()
 tenant_routing_signals()
 looks_like_business_task()
-extract_entities()
+detect_platform_handler()
+detect_skill_explanation_request()
 ```
 
-当前设计是：
+默认完整路径会把这些确定性结果交给 LLM 生成最终 `IntentFrame`。fast-path 使用 `deterministic_intent()`，不调用 LLM。
 
-```text
-通用规则 + tenant routing_hints + 可选 LLM fallback
-```
-
-这比在核心代码里硬编码大量业务意图更可扩展。
-
-## 10. 看 Router
+## 12. 看 Router
 
 读：
 
 ```text
-demo/core/router.py
+src/agentkit/core/router.py
 ```
 
-关键逻辑：
+关键边界：
 
 ```python
 agent_name = request.context.get("agent")
 allowed_skill_names = self._allowed_skills_for_agent(agent_name)
+enabled_domains = tenant_config["enabled_domains"]
 ```
 
-如果页面选择了：
+如果当前选中：
 
 ```text
 agent = hr_recruiter
 ```
 
-router 只允许选择：
+router 只会给 LLM/规则暴露这个 agent 允许的 skill：
 
 ```text
 candidate.rank
 ```
 
-不会把 HR Agent 的请求路由到 `xhs.growth.campaign`。
+不会把 HR 请求静默路由到 `xhs.growth.campaign`。如果用户问 `who are you` 或 “candidate.rank 是什么”，router 会返回 `skill_name=None`，后续进入平台/对话 fallback，而不是误执行业务 skill。
 
-然后 router 根据：
-
-- intent target
-- skill keywords
-- tenant routing_hints
-- enabled_domains
-- selected agent allowed_skills
-
-选出：
-
-```text
-RouteDecision(skill_name="candidate.rank")
-```
-
-## 11. 看 Planner
+## 13. 看 Planner
 
 读：
 
 ```text
-demo/core/planner.py
+src/agentkit/core/planner.py
 ```
 
-HR skill 定义了：
+HR skill 配了：
 
 ```python
 batch_key="candidate_ids"
 ```
 
-租户配置里有：
+tenant 配了：
 
 ```json
 "batch_threshold": 2,
 "batch_size": 2
 ```
 
-所以当候选人数量 >= 2 时，planner 会把执行模式改成：
-
-```text
-batch
-```
-
-生成计划大概是：
+所以候选人数 `>= 2` 时，planner 会强制保留 batch 约束：
 
 ```text
 Step 1:
@@ -506,280 +555,293 @@ Step 1:
   args = job_id, candidate_ids, top_n
 ```
 
-## 12. 看审批和权限
+即使 LLM 生成 plan，`_validated_mode()` 也会把达到阈值的 HR 计划拉回 `batch`。
+
+## 14. 看审批、权限和恢复
 
 读：
 
 ```text
-demo/core/governance.py
-demo/core/policy.py
+src/agentkit/core/governance.py
+src/agentkit/core/policy.py
+src/agentkit/core/approvals.py
 ```
 
-`governance.py` 负责：
+`PlanReviewer`、`HumanApprovalGate`、`OutputReviewer` 属于治理层；`PolicyGuard` 属于 deterministic policy enforcement。
 
-- plan review
-- human approval
-- output review
-
-`policy.py` 负责：
-
-- 角色权限检查
-- skill 是否需要 approval
-
-HR skill 需要权限：
+HR skill 所需权限：
 
 ```python
 permissions=["hr.job.read", "hr.candidate.read"]
 ```
 
-如果用户角色是：
-
-```text
-recruiter
-```
-
-tenant config 给了：
+默认角色：
 
 ```json
 "recruiter": ["hr.job.read", "hr.candidate.read"]
 ```
 
-所以权限通过。
-
-但因为：
+所以权限通过。但 `candidate.rank` 在 `approval_required_skills` 里，第一次请求会在 `human_approval` 暂停：
 
 ```json
-"approval_required_skills": ["candidate.rank"]
+{
+  "status": "waiting_for_approval",
+  "thread_id": "...",
+  "approval": {
+    "skills": ["candidate.rank"],
+    "status": "waiting_for_approval"
+  }
+}
 ```
 
-第一次执行会返回：
+前端 approve 后仍调用统一入口：
 
 ```text
-waiting_for_approval
+POST /api/chat
+POST /api/chat/stream
+
+context.approval = {
+  "action": "approve",
+  "thread_id": "...",
+  "skills": ["candidate.rank"],
+  "request": { "user_id": "...", "context": {"agent": "hr_recruiter", "message": "..."} }
+}
 ```
 
-页面点击 approve 后，会重新提交：
+脚本/系统自动化也可以直接调用 action API：
 
-```json
-"approved_skills": ["candidate.rank"]
+```text
+POST /api/tasks/resume
+POST /api/tasks/resume/stream
 ```
 
-然后才能执行。
+后端通过 `gateway.resume()` 把 `approved_skills` 和审批人 `decision_context`
+注入原始 `TaskRequest.context`，从暂停的 `human_approval` 节点继续执行，不重新计算
+intent/route/plan。审计会记录 `run_resumed`，最终完成时才记录 `run_finished`。
+恢复前会校验 thread 仍停在审批点、决策非空、批准/拒绝集合不重叠，并且所有决策
+skill 都属于当前等待审批的 skill；过期 checkpoint 返回 409，非法决策返回 400。
 
-## 13. 看 Executor
+## 15. 看 Executor
 
 读：
 
 ```text
-demo/core/executor.py
+src/agentkit/core/executor.py
+src/agentkit/core/tool_executor.py
+src/agentkit/core/schema_validation.py
 ```
 
 执行顺序：
 
 ```text
-检查 policy
-记录 audit
+调用 LLM 生成 execution_brief
+构建 ToolExecutor(timeout/retry/idempotency/audit)
+如果无 plan.steps，走 ConversationFallback
+逐步检查 PolicyGuard
+校验 skill input schema
 创建 SkillContext
-如果 mode=batch，切分 candidate_ids
-调用 skill.handler
-合并 batch 结果
+普通执行或 batch 执行
+校验 skill output schema
+记录 audit
 返回 final output
 ```
 
-HR batch 逻辑：
+HR batch 时：
 
 ```python
 _execute_batch()
 ```
 
-会把候选人列表按 `batch_size` 分片，然后调用：
-
-```python
-rank_candidates()
-```
-
-如果 handler 有：
-
-```python
-merge_batch
-```
-
-就合并结果。
-
-HR 里是：
+会按 `tenant_config["batch_size"]` 切分 `candidate_ids`，每片调用 `rank_candidates()`，最后调用：
 
 ```python
 rank_candidates.merge_batch = merge_candidate_rank_results
 ```
 
-## 14. 看审计和 SQLite
+合并后排序并生成一次最终 summary。
+
+## 16. 看审计和持久化
 
 读：
 
 ```text
-demo/core/audit.py
+src/agentkit/core/audit.py
 ```
 
-它会记录：
-
-- run_started
-- intent_understood
-- route_selected
-- plan_created
-- human_approval_checked
-- policy_checked
-- step_started
-- step_finished
-- output_reviewed
-- run_finished
-
-SQLite 文件位置：
+默认 tenant selector 是 `company_alpha`，所以本地 SQLite 位置是：
 
 ```text
-demo/data/agent_demo.sqlite
+data/company_alpha.sqlite
 ```
 
-页面 Operations 读取的就是这些 run 和 audit events。
+注意 tenant 配置里的逻辑 tenant id 是：
 
-## 15. 看 Flask API
+```json
+"tenant_id": "AI-ABC"
+```
+
+文件名 selector 和业务 tenant id 是两个概念。审计会记录：
+
+`context_prepared` 还包含 `runtime_manifest`：tenant JSON SHA-256、prompt 文件
+SHA-256、启用 domain 与 `AGENTKIT_ROOT`，用于复现某次运行的配置版本。
+
+```text
+run_started
+context_prepared
+intent_understood
+route_selected
+plan_created
+plan_reviewed
+human_approval_checked
+run_paused / run_resumed
+execution_llm_briefed
+policy_checked
+tool_call_started / tool_call_finished
+step_started / step_finished
+output_reviewed
+run_finished
+node_timing
+llm_usage / run_cost
+```
+
+如果开启：
+
+```env
+AGENTKIT_APPROVAL_CHECKPOINTER=sqlite
+```
+
+审批 checkpoint 写到：
+
+```text
+data/company_alpha_checkpoints.sqlite
+```
+
+## 17. 看 Flask API 和前端
 
 读：
 
 ```text
-demo/web_flask/app.py
+src/agentkit/web/app.py
+src/agentkit/web/templates/chat.html
+src/agentkit/web/static/js/app.js
+src/agentkit/web/streaming.py
 ```
 
-重点看：
-
-```python
-@app.post("/api/tasks")
-def create_task():
-```
-
-它把页面表单转成：
-
-```python
-TaskRequest(
-    user_id=user_id,
-    roles=roles,
-    text=text,
-    context={
-        "agent": agent,
-        "job_id": job_id,
-        "candidate_ids": candidate_ids,
-        "top_n": top_n,
-        "approved_skills": ...
-    }
-)
-```
-
-然后调用：
-
-```python
-runtime.gateway.handle(...)
-```
-
-注意：
+主要 API：
 
 ```text
-页面选择 Agent 后，agent 会放进 request.context.agent。
-Router 用这个字段限制 allowed_skills。
+GET  /healthz
+POST /api/tasks
+POST /api/tasks/stream
+POST /api/tasks/approve
+POST /api/tasks/approve/stream
+POST /api/tasks/resume
+POST /api/tasks/resume/stream
+POST /api/chat
+POST /api/chat/stream
+GET  /api/conversations
+POST /api/conversations
+GET  /api/conversations/<id>/messages
+GET  /api/runs
+GET  /api/registry
+POST /api/admin/reload
 ```
 
-## 16. 看页面模板
-
-读：
+`chat.html` 是统一聊天窗口，不再是早期固定 HR 表单。`app.js` 不再根据 agent mode
+选择不同 API，而是固定调用统一 chat 协议：
 
 ```text
-demo/web_flask/templates/command.html
+POST /api/chat/stream
+fallback: POST /api/chat
+
+payload:
+{
+  "user_id": "u-001",
+  "context": {
+    "agent": "hr_recruiter",
+    "message": "Rank the top 3 candidates for JOB-001 and explain why."
+  }
+}
 ```
 
-重点看：
+后端 `/api/chat*` 根据 tenant `chat_agents[].actions_enabled` 分流：回答型 agent 走
+`ConversationManager`，行动型 agent 走 `AgentGateway.handle()` 和通用
+`EnterpriseAgentGraph`。行动型 agent 除 `chat:use` 外还要求 `task:run`；
+审批上下文 `context.approval` 还要求 `task:approve`。`/api/tasks*` 仍只接受
+行动型 agent，作为脚本和系统自动化入口。`/api/registry` 要求
+`governance:view`，`/api/admin/reload` 要求 `runtime:admin`。
 
-```html
-Active Agent
-Access role
-Candidate pool
-Job requisition
-Shortlist size
-```
-
-Agent 卡片来自：
-
-```python
-chat_agents=get_chat_agents(runtime)
-```
-
-页面里 radio 的值：
-
-```html
-<input type="radio" name="agent" value="hr_recruiter">
-```
-
-最终会被 JS 收集进 API payload。
-
-## 17. 看前端 JS
-
-读：
+审批交互：
 
 ```text
-demo/web_flask/static/js/app.js
+第一次 HR 请求返回 waiting_for_approval + thread_id
+前端展示 Approve / Reject
+Approve 后调用 /api/chat/stream，并在 context.approval 携带 action/thread_id/skills/request
+如果没有 thread_id，后端使用 context.approval.request 做受保护全量重提（仍要求 task:approve）
 ```
 
-重点函数：
-
-```javascript
-collectPayload()
-bindAgentSelector()
-bindChatForm()
-approvePendingTask()
-renderResult()
-renderBusinessOutput()
-```
-
-HR 任务流：
+SSE 帧格式由 `stream_response()` 输出：
 
 ```text
-选择 hr_recruiter
-点击 Use Demo Prompt 或输入任务
-collectPayload 收集 agent, roles, job_id, candidate_ids, top_n
-post /api/tasks
-如果 waiting_for_approval，聊天窗口显示审批按钮
-Approve 后重新提交 approved_skills
-renderResult 显示候选人排名表
+event: token
+data: {"delta": "..."}
+
+event: final
+data: {...}
+
+event: error
+data: {"error": "..."}
 ```
 
-## 18. 用一条请求串起来
+默认输出复核策略为 `warn` 时，行动型 agent 的最终说明会以 token 帧逐步下发。
+如果租户把 `output_review_policy` 设为 `block` / `block_on_failed` /
+`fail_closed`，行动型 agent 的 `/api/chat/stream`（以及脚本 `/api/tasks*/stream`）
+会丢弃 token 帧，只在 output review 完成后发送 `final`，避免最终被治理拦截的内容提前泄露。
+
+## 18. 用一条 HR 请求串起来
 
 完整链路：
 
 ```text
-command.html
-  -> app.js collectPayload()
-  -> POST /api/tasks
-  -> app.py create_task()
-  -> TaskRequest
+chat.html
+  -> app.js collectChatPayload()
+  -> POST /api/chat/stream
+  -> app.py api_chat_stream()
+  -> action agent branch
+  -> prepare_action_turn() 读取 conversation summary/recent/memories
+  -> TaskRequest(text, trusted_business_roles, context.agent/job_id/candidate_ids/top_n/chat_memory)
   -> AgentGateway.handle()
-  -> EnterpriseAgentGraph
+  -> content safety guard
+  -> EnterpriseAgentGraph.run(thread_id)
   -> understand_intent
-  -> route
-  -> plan
+  -> route_request
+  -> plan_step
   -> review_plan
   -> human_approval
+  -> waiting_for_approval + thread_id
+  -> app.js approvePendingTask()
+  -> POST /api/chat/stream with context.approval
+  -> AgentGateway.resume()
   -> execute
+  -> PlanExecutor._execute_batch()
+  -> rank_candidates()
+  -> ats.get_job / ats.get_candidates
+  -> merge_candidate_rank_results()
   -> review_output
   -> finalize
-  -> app.py format_chat_response()
+  -> record_action_turn() 写回 conversation memory
   -> app.js renderResult()
 ```
 
-HR 例子最终输出：
+最终 business output 形态：
 
 ```text
-ranked_candidates:
-  C-102 Chloe Wang
-  C-104 Eva Sun
-  C-100 Alice Zhang
+final:
+  job_id: JOB-001
+  job_title: ...
+  evaluated_count: 5
+  ranked_candidates: [...]
+  summary: LLM-generated hiring recommendation
 ```
 
 ## 19. 推荐通读顺序
@@ -787,94 +849,100 @@ ranked_candidates:
 第一次通读按这个顺序：
 
 ```text
-1. demo/core/contracts.py
-2. demo/bootstrap.py
-3. demo/tenants/company_alpha.json
-4. demo/domain_packs/hr_recruitment/pack.py
-5. demo/connectors/mock_ats.py
-6. demo/core/gateway.py
-7. demo/core/langgraph_agent.py
-8. demo/core/intent.py
-9. demo/core/router.py
-10. demo/core/planner.py
-11. demo/core/governance.py
-12. demo/core/policy.py
-13. demo/core/executor.py
-14. demo/core/audit.py
-15. demo/web_flask/app.py
-16. demo/web_flask/templates/command.html
-17. demo/web_flask/static/js/app.js
-18. demo/skills/candidate-rank/SKILL.md
+1. src/agentkit/core/contracts.py
+2. src/agentkit/runtime/bootstrap.py
+3. src/agentkit/runtime/pack_registry.py
+4. tenants/company_alpha.json
+5. src/agentkit/domain_packs/hr_recruitment/pack.py
+6. src/agentkit/domain_packs/hr_recruitment/scoring.py
+7. src/agentkit/connectors/mock_ats.py
+8. src/agentkit/core/gateway.py
+9. src/agentkit/core/langgraph_agent.py
+10. src/agentkit/core/intent.py
+11. src/agentkit/core/router.py
+12. src/agentkit/core/planner.py
+13. src/agentkit/core/governance.py
+14. src/agentkit/core/policy.py
+15. src/agentkit/core/executor.py
+16. src/agentkit/core/tool_executor.py
+17. src/agentkit/core/audit.py
+18. src/agentkit/web/app.py
+19. src/agentkit/web/templates/chat.html
+20. src/agentkit/web/static/js/app.js
+21. skills/candidate-rank/SKILL.md
 ```
 
-第二次通读时，建议边跑边看 SQLite audit：
+边跑边看：
 
-```powershell
-cd demo
-python web_flask\app.py
+```bash
+agentkit web
 ```
 
 打开：
 
 ```text
-http://127.0.0.1:8501/command
+http://127.0.0.1:8501/chat
 http://127.0.0.1:8501/operations
 http://127.0.0.1:8501/governance
 ```
 
 ## 20. 你应该形成的架构理解
 
-读完后应该能回答这些问题：
+读完后应该能回答：
 
-1. Agent 和 Skill 在哪里绑定？
-   - `bootstrap.py` 里的 `AgentProfile.allowed_skills`
+1. HR agent 在哪里注册？
+   - `src/agentkit/domain_packs/hr_recruitment/pack.py` 的 `register()`。
 
-2. Skill 在哪里注册？
-   - `domain_packs/hr_recruitment/pack.py`
+2. Agent 和 Skill 在哪里绑定？
+   - `AgentProfile.allowed_skills=["candidate.rank"]`。
 
-3. Tool 在哪里注册？
-   - 同一个 `pack.py` 里注册 `ToolDefinition`
+3. Skill 和 Tool 在哪里注册？
+   - 同一个 HR pack 里注册 `SkillDefinition` 和 `ToolDefinition`。
 
 4. 外部系统在哪里接？
-   - `connectors/mock_ats.py`
+   - `src/agentkit/connectors/mock_ats.py`，真实项目替换这一层。
 
-5. 权限在哪里配？
-   - `tenants/company_alpha.json` 的 `role_permissions`
+5. 哪些 domain 会被加载？
+   - `tenants/company_alpha.json` 的 `enabled_domains`。
 
-6. 审批在哪里配？
-   - `tenants/company_alpha.json` 的 `approval_required_skills`
+6. 权限和审批在哪里配？
+   - `role_permissions` 与 `approval_required_skills`。
 
 7. 路由关键词在哪里配？
-   - `tenants/company_alpha.json` 的 `routing_hints`
+   - tenant 的 `routing_hints` 加 skill 自身的 `keywords`。
 
 8. Agent 选择在哪里传入后端？
-   - `app.js collectPayload()` -> `app.py create_task()` -> `request.context.agent`
+   - `app.js collectChatPayload()` -> `POST /api/chat*` -> `app.py _task_payload_from_chat_payload()` -> `TaskRequest.context["agent"]`。
 
-9. LangGraph 节点在哪里？
-   - `core/langgraph_agent.py`
+9. 审批恢复为什么不重跑整图？
+   - LangGraph checkpointer 暂停在 `human_approval`，`gateway.resume()` 校验暂停状态和待审批 skill 后更新 state 继续。
 
-10. 执行业务逻辑在哪里？
-    - `core/executor.py` 调用 `SkillDefinition.handler`
+10. 业务逻辑在哪里执行？
+    - `PlanExecutor` 调用 `SkillDefinition.handler`，HR handler 是 `rank_candidates()`。
 
 ## 21. 新增一个类似 HR 的 Agent 要做什么
 
-按 HR 模式新增一个 Agent，通常做：
+按当前架构新增业务，一般做：
 
 ```text
-1. 新建 connector
-2. 新建 domain_packs/<domain>/pack.py
-3. 注册 ToolDefinition
-4. 注册 SkillDefinition
-5. 在 bootstrap.py 注册 AgentProfile.allowed_skills
-6. 在 tenant config 加 enabled_domains/chat_agents/role_permissions/routing_hints/approval_required_skills
-7. 新增 prompts/agents/<agent>.md
-8. 新增 skills/<skill-folder>/SKILL.md
-9. 如果输出结构不同，扩展 app.js renderBusinessOutput()
+1. 新建 connector 或接入真实企业 API
+2. 新建 src/agentkit/domain_packs/<domain_package>/pack.py
+3. 暴露 DOMAIN 和 register(*, agents, skills, tools, tenant_config)
+4. 在 register() 中注册 AgentProfile
+5. 注册 ToolDefinition
+6. 注册 SkillDefinition(input_schema/output_schema/permissions/tools/handler/keywords)
+7. 在 tenants/<id>.json 加 enabled_domains/chat_agents/role_permissions/routing_hints/approval_required_skills
+8. 新增 prompts/agents/<agent>.md，并在 prompt_files / domain_personas 中引用
+9. 新增 skills/<skill-folder>/SKILL.md 和 references/scripts
+10. 如果输出结构不同，扩展 app.js renderBusinessOutput()
+11. 运行 `agentkit validate-packs <domain>` 校验 pack contract
+12. 运行 `agentkit --tenant <id> doctor` 校验 tenant/runtime wiring
+13. 如果作为外部包发布，声明 agentkit.domain_packs entry point
 ```
 
 平台层原则：
 
 ```text
 新增业务时尽量不改 core/。
-只有平台能力变化时才改 core/，比如新增 A2A、长期记忆、队列、调度器、LangGraph checkpoint。
+只有平台能力变化时才改 core/，比如新的 checkpoint 后端、分布式队列、跨 agent 消息协议、统一工具沙箱、观测性协议等。
 ```

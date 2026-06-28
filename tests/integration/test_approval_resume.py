@@ -127,6 +127,9 @@ def test_resume_does_not_recompute_planning(monkeypatch, tmp_path):
     assert waiting["output"]["status"] == "waiting_for_approval"
     thread_id = waiting["output"]["thread_id"]
     assert thread_id
+    waiting_events = [event["type"] for event in waiting["audit_events"]]
+    assert "run_paused" in waiting_events
+    assert "run_finished" not in waiting_events
     phase1 = list(calls)
     assert {"intent", "route", "plan", "plan_review"} <= set(phase1)
 
@@ -134,6 +137,9 @@ def test_resume_does_not_recompute_planning(monkeypatch, tmp_path):
     calls.clear()
     resumed = gateway.resume(thread_id, approved_skills=["candidate.rank"]).to_dict()
     phase2 = set(calls)
+    resumed_events = [event["type"] for event in resumed["audit_events"]]
+    assert "run_resumed" in resumed_events
+    assert "run_finished" in resumed_events
 
     assert not (
         {"intent", "route", "plan", "plan_review"} & phase2
@@ -168,6 +174,40 @@ def test_reject_resume_stops_execution(monkeypatch, tmp_path):
     assert rejected["output"]["status"] == "rejected"
     final = rejected["output"].get("final") or {}
     assert not (final.get("ranked_candidates") or rejected["output"].get("ranked_candidates"))
+
+
+def test_resume_rejects_invalid_empty_and_completed_decisions(monkeypatch, tmp_path):
+    def responder(system: str, user: str) -> str:
+        return _payload(_label(system))
+
+    monkeypatch.setattr(llm_client, "_get_provider", lambda: FakeProvider(responder=responder))
+    runtime = build_runtime(db_path=tmp_path / "audit-invalid.sqlite")
+    gateway = runtime.gateway
+
+    request = TaskRequest(
+        user_id="u-1",
+        roles=["recruiter"],
+        text="Rank the top candidate for JOB-001.",
+        context={"agent": "hr_recruiter", "job_id": "JOB-001", "candidate_ids": ["C-100"]},
+    )
+    waiting = gateway.handle(request).to_dict()
+    thread_id = waiting["output"]["thread_id"]
+
+    with pytest.raises(RuntimeError, match="required"):
+        gateway.resume(thread_id)
+    with pytest.raises(RuntimeError, match="not pending"):
+        gateway.resume(thread_id, approved_skills=["xhs.growth.campaign"])
+    with pytest.raises(RuntimeError, match="both approved and rejected"):
+        gateway.resume(
+            thread_id,
+            approved_skills=["candidate.rank"],
+            rejected_skills=["candidate.rank"],
+        )
+
+    resumed = gateway.resume(thread_id, approved_skills=["candidate.rank"]).to_dict()
+    assert resumed["output"]["governance"]["approval"]["status"] == "approved"
+    with pytest.raises(RuntimeError, match="not waiting"):
+        gateway.resume(thread_id, approved_skills=["candidate.rank"])
 
 
 def test_sqlite_checkpointer_resumes_across_restart(monkeypatch, tmp_path):

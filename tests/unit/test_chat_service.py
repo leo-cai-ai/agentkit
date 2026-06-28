@@ -4,7 +4,7 @@ from agentkit.core.audit import InMemoryAuditLog
 from agentkit.core.contracts import AgentProfile
 from agentkit.core.memory.embeddings import FakeEmbeddingProvider
 from agentkit.core.registry import AgentRegistry
-from agentkit.runtime.chat_service import ChatService, agent_mode
+from agentkit.runtime.chat_service import ChatService, agent_actions_enabled
 
 
 def _settings():
@@ -24,8 +24,8 @@ def _tenant_config():
     return {
         "tenant_id": "AI-ABC",
         "chat_agents": [
-            {"name": "hr_recruiter", "mode": "command"},
-            {"name": "customer_service", "mode": "chat"},
+            {"name": "hr_recruiter", "mode": "chat", "actions_enabled": True},
+            {"name": "customer_service", "mode": "chat", "actions_enabled": False},
         ],
         "domain_personas": {"support.customer_service": "customer_service"},
         "prompts": {"agents.customer_service": "You are support."},
@@ -35,6 +35,15 @@ def _tenant_config():
 
 def _agents():
     reg = AgentRegistry()
+    reg.register(
+        AgentProfile(
+            name="hr_recruiter",
+            domain="hr.recruitment",
+            description="recruiting agent",
+            allowed_skills=["candidate.rank"],
+            allowed_tools=["ats.get_job"],
+        )
+    )
     reg.register(
         AgentProfile(
             name="customer_service",
@@ -64,22 +73,20 @@ def _service(tmp_path, captured):
     )
 
 
-def test_agent_mode_resolution():
+def test_agent_action_capability_resolution():
     tc = _tenant_config()
-    assert agent_mode(tc, "customer_service") == "chat"
-    assert agent_mode(tc, "hr_recruiter") == "command"
-    assert agent_mode(tc, "unknown") == "command"  # default
-
-
-def test_agent_mode_invalid_falls_back():
-    tc = {"chat_agents": [{"name": "x", "mode": "bogus"}]}
-    assert agent_mode(tc, "x") == "command"
+    assert agent_actions_enabled(tc, "hr_recruiter") is True
+    assert agent_actions_enabled(tc, "customer_service") is False
+    assert agent_actions_enabled(tc, "unknown") is False
+    assert agent_actions_enabled({"chat_agents": [{"name": "x"}]}, "x") is False
 
 
 def test_is_chat_agent(tmp_path):
     svc = _service(tmp_path, {})
     assert svc.is_chat_agent("customer_service") is True
-    assert svc.is_chat_agent("hr_recruiter") is False
+    assert svc.is_chat_agent("hr_recruiter") is True
+    assert svc.is_answer_agent("customer_service") is True
+    assert svc.is_action_agent("hr_recruiter") is True
 
 
 def test_chat_persists_and_uses_persona(tmp_path):
@@ -130,6 +137,32 @@ def test_list_and_new_conversation(tmp_path):
     cid = svc.new_conversation(agent="customer_service", user_id="u1", title="First")
     convs = svc.list_conversations(agent="customer_service", user_id="u1")
     assert any(c["id"] == cid for c in convs)
+
+
+def test_action_turn_uses_same_conversation_memory(tmp_path):
+    captured: dict = {}
+    svc = _service(tmp_path, captured)
+    prepared = svc.prepare_action_turn(agent="hr_recruiter", user_id="u1", message="rank")
+    cid = prepared["conversation_id"]
+    svc.record_action_turn(
+        agent="hr_recruiter",
+        user_id="u1",
+        conversation_id=cid,
+        user_message="rank",
+        assistant_text="waiting for approval",
+        run_id="run-1",
+    )
+
+    prepared_again = svc.prepare_action_turn(
+        agent="hr_recruiter",
+        user_id="u1",
+        message="continue",
+        conversation_id=cid,
+    )
+
+    recent = prepared_again["memory"]["recent_messages"]
+    assert [m["role"] for m in recent] == ["user", "assistant"]
+    assert recent[0]["content"] == "rank"
 
 
 def test_unknown_agent_degrades_to_empty_persona(tmp_path):

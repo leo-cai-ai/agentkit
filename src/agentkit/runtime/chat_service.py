@@ -1,4 +1,4 @@
-"""Conversational-agent service for ``mode: "chat"`` agents.
+"""Conversational memory service for all chat-first agents.
 
 Wraps the memory stack (``ConversationManager`` + store + retriever + extractor)
 for the web/CLI layers. One ``ConversationStore`` and embedding provider are
@@ -22,16 +22,18 @@ from agentkit.core.memory.tokenizer import HeuristicTokenEstimator
 from agentkit.core.memory.vector_store import build_vector_store
 from agentkit.core.prompt_library import PromptLibrary
 
-_VALID_MODES = {"command", "chat"}
 
+def agent_actions_enabled(tenant_config: dict, agent_name: str) -> bool:
+    """Whether this chat agent may execute governed skills/tools.
 
-def agent_mode(tenant_config: dict, agent_name: str) -> str:
-    """Return the configured interaction mode for an agent (default ``command``)."""
+    ``actions_enabled`` is the only source of truth for action capability.
+    Missing values are treated as ``False`` so new agents start answer-only
+    until explicitly granted tool/process access.
+    """
     for item in tenant_config.get("chat_agents", []):
         if isinstance(item, dict) and str(item.get("name")) == agent_name:
-            mode = str(item.get("mode") or "command").lower()
-            return mode if mode in _VALID_MODES else "command"
-    return "command"
+            return bool(item.get("actions_enabled", False))
+    return False
 
 
 class ChatService:
@@ -67,7 +69,13 @@ class ChatService:
     # -- public API -----------------------------------------------------------
 
     def is_chat_agent(self, agent_name: str) -> bool:
-        return agent_mode(self._tenant_config, agent_name) == "chat"
+        return str(agent_name) in self._chat_agents
+
+    def is_action_agent(self, agent_name: str) -> bool:
+        return agent_actions_enabled(self._tenant_config, agent_name)
+
+    def is_answer_agent(self, agent_name: str) -> bool:
+        return self.is_chat_agent(agent_name) and not self.is_action_agent(agent_name)
 
     def chat(
         self,
@@ -88,6 +96,8 @@ class ChatService:
             tool_catalog=self._tool_catalog(agent),
         )
         return {
+            "interaction_mode": "chat",
+            "agent_kind": "answer",
             "assistant_text": reply.reply,
             "conversation_id": reply.conversation_id,
             "run_id": reply.run_id,
@@ -113,6 +123,74 @@ class ChatService:
             {"role": m["role"], "content": m["content"], "created_at": m["created_at"]}
             for m in self._store.all_messages(conversation_id)
         ]
+
+    def prepare_action_turn(
+        self,
+        *,
+        agent: str,
+        user_id: str,
+        message: str,
+        conversation_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Prepare bounded memory context for an action-capable chat turn.
+
+        This does not call the LLM or write messages. The governed graph still
+        owns safety, routing, planning, approval, execution, and output review.
+        """
+        conversation_id = self._resolve_conversation_id(
+            agent=agent,
+            user_id=user_id,
+            message=message,
+            conversation_id=conversation_id,
+        )
+        manager = self._manager_for(agent)
+        cfg = self._memory_config(agent)
+        recent = self._store.recent_messages(
+            conversation_id=conversation_id,
+            limit=int(cfg["window_turns"]) * 2,
+        )
+        summary_row = self._store.get_summary(conversation_id)
+        summary = str(summary_row["summary_text"]) if summary_row else ""
+        memories = manager.retrieve_memories(
+            tenant_id=self._tenant_id,
+            agent=agent,
+            user_id=user_id,
+            query=message,
+        )
+        return {
+            "conversation_id": conversation_id,
+            "memory": {
+                "summary": summary,
+                "recent_messages": [
+                    {"role": row["role"], "content": row["content"]}
+                    for row in recent
+                    if row.get("content")
+                ],
+                "retrieved_memories": memories,
+            },
+        }
+
+    def record_action_turn(
+        self,
+        *,
+        agent: str,
+        user_id: str,
+        conversation_id: str,
+        user_message: str | None,
+        assistant_text: str,
+        run_id: str | None = None,
+    ) -> None:
+        """Persist an action-capable graph turn into the same conversation store."""
+        manager = self._manager_for(agent)
+        manager.record_external_turn(
+            tenant_id=self._tenant_id,
+            agent=agent,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            user_text=user_message,
+            assistant_text=assistant_text,
+            run_id=run_id,
+        )
 
     # -- internals ------------------------------------------------------------
 
@@ -164,6 +242,32 @@ class ChatService:
         )
         self._managers[agent_name] = manager
         return manager
+
+    def _resolve_conversation_id(
+        self,
+        *,
+        agent: str,
+        user_id: str,
+        message: str,
+        conversation_id: str | None,
+    ) -> str:
+        if conversation_id is None:
+            return self._store.create_conversation(
+                tenant_id=self._tenant_id,
+                agent=agent,
+                user_id=user_id,
+                title=message[:60] if message else "New conversation",
+            )
+        conv = self._store.get_conversation(conversation_id)
+        if conv is None:
+            raise ValueError(f"Unknown conversation_id: {conversation_id}")
+        if (
+            conv["tenant_id"] != self._tenant_id
+            or conv["agent"] != agent
+            or conv["user_id"] != user_id
+        ):
+            raise ValueError("Conversation does not belong to this user/agent.")
+        return conversation_id
 
     def _persona(self, agent_name: str) -> str:
         try:

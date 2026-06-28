@@ -8,6 +8,7 @@ publishing package.
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from agentkit.connectors.mock_xhs import MockXhsConnector
 from agentkit.core.contracts import AgentProfile, SkillContext, SkillDefinition, ToolDefinition
@@ -20,10 +21,12 @@ xhs = MockXhsConnector()
 
 
 def get_top_notes_tool(args: dict) -> dict:
-    return xhs.get_top_notes(
-        topic=str(args.get("topic") or "enterprise AI agents"),
-        limit=int(args.get("limit") or 5),
-    )
+    return {
+        "notes": xhs.get_top_notes(
+            topic=str(args.get("topic") or "enterprise AI agents"),
+            limit=int(args.get("limit") or 5),
+        )
+    }
 
 
 def publish_note_tool(args: dict) -> dict:
@@ -34,7 +37,7 @@ def publish_note_tool(args: dict) -> dict:
 
 
 def run_growth_campaign(ctx: SkillContext, args: dict) -> dict:
-    config = ctx.tenant_config.get("social_growth", {})
+    config: dict[str, Any] = ctx.tenant_config.get("social_growth", {})
     text = ctx.request.text
     top_n = extract_top_n(text=text, fallback=args.get("top_n") or config.get("default_top_n", 5))
     goal = extract_growth_goal(text=text, config=config)
@@ -45,10 +48,11 @@ def run_growth_campaign(ctx: SkillContext, args: dict) -> dict:
         else config.get("cadence", "daily")
     )
 
-    top_cases = ctx.call_tool(
+    top_cases_payload = ctx.call_tool(
         "xhs.get_top_notes",
         {"topic": topic, "limit": top_n},
     )
+    top_cases = list(top_cases_payload.get("notes", []))
     comparison = compare_cases(top_cases)
     article = draft_article(
         topic=topic,
@@ -108,7 +112,8 @@ def extract_top_n(*, text: str, fallback: object) -> int:
         match = re.search(r"(\d+)\s*(?:articles|cases|notes)", text, flags=re.IGNORECASE)
     if match:
         return max(1, min(20, int(match.group(1))))
-    return max(1, min(20, int(fallback or 5)))
+    fallback_value = fallback if isinstance(fallback, int | str | float) else 5
+    return max(1, min(20, int(fallback_value or 5)))
 
 
 def extract_growth_goal(*, text: str, config: dict) -> dict:

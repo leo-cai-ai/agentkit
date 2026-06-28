@@ -205,7 +205,8 @@ class HumanApprovalGate:
         human_decided = bool(
             request.context.get("approved_skills") or request.context.get("rejected_skills")
         )
-        if human_decided or skip_llm_assessment:
+        llm_used = not (human_decided or skip_llm_assessment)
+        if not llm_used:
             summary = (
                 "human decision provided; LLM assessment skipped"
                 if human_decided
@@ -224,7 +225,8 @@ class HumanApprovalGate:
                 plan_review=plan_review,
                 deterministic_decision=decision,
             )
-        decision["llm_required"] = True
+        decision["llm_required"] = llm_used
+        decision["llm_assessment_used"] = llm_used
         return decision
 
     def _deterministic_decision(
@@ -422,6 +424,21 @@ class OutputReviewer:
         if deterministic.get("findings"):
             findings.extend(deterministic["findings"])
         if status == "failed" and not output.get("error") and output.get("final"):
+            policy = str(self._tenant_config.get("output_review_policy", "warn")).lower()
+            if policy in {"block", "block_on_failed", "fail_closed"}:
+                findings.append(
+                    {
+                        "severity": "error",
+                        "message": "LLM output review blocked the final payload.",
+                    }
+                )
+                return {
+                    "status": "failed",
+                    "reason": reason,
+                    "findings": findings,
+                    "llm_required": True,
+                    "enforcement": "blocked",
+                }
             findings.append(
                 {
                     "severity": "warning",

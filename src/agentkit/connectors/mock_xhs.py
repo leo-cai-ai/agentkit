@@ -1,13 +1,14 @@
-"""Mock Xiaohongshu connector for the social-growth demo."""
+"""Mock Xiaohongshu connector for the social-growth domain pack."""
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from typing import Any
 
 
 class MockXhsConnector:
     def __init__(self) -> None:
-        self._notes = [
+        self._notes: list[dict[str, Any]] = [
             {
                 "note_id": "XHS-001",
                 "title": "30-day AI workflow rebuild diary",
@@ -81,9 +82,12 @@ class MockXhsConnector:
         ]
 
     def get_top_notes(self, *, topic: str, limit: int) -> list[dict]:
+        def score(item: dict[str, Any]) -> int:
+            return int(item["likes"]) + int(item["saves"]) * 2 + int(item["comments"]) * 3
+
         ranked = sorted(
             self._notes,
-            key=lambda item: item["likes"] + item["saves"] * 2 + item["comments"] * 3,
+            key=score,
             reverse=True,
         )
         return [dict(item, topic=topic) for item in ranked[:limit]]

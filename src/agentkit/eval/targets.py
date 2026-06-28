@@ -56,4 +56,52 @@ def make_gateway_target(
     return target
 
 
-__all__ = ["llm_target", "make_gateway_target", "extract_text"]
+def make_gateway_trace_target(
+    runtime: Any,
+    *,
+    default_roles: tuple[str, ...] = ("recruiter",),
+) -> Any:
+    """Build a target that returns full response/audit JSON for trajectory checks."""
+    from agentkit.core.contracts import TaskRequest
+
+    def target(case: EvalCase) -> str:
+        context = dict(case.context)
+        resume_decision = context.pop("_eval_resume", None)
+        if case.agent:
+            context.setdefault("agent", case.agent)
+        request = TaskRequest(
+            user_id="eval",
+            roles=list(default_roles),
+            text=case.user,
+            context=context,
+        )
+        initial_response = runtime.gateway.handle(request).to_dict()
+        response = initial_response
+        initial_output = initial_response.get("output", {})
+        if (
+            isinstance(resume_decision, dict)
+            and initial_output.get("status") == "waiting_for_approval"
+        ):
+            thread_id = str(initial_output.get("thread_id") or "")
+            response = runtime.gateway.resume(
+                thread_id,
+                approved_skills=list(resume_decision.get("approved_skills", [])),
+                rejected_skills=list(resume_decision.get("rejected_skills", [])),
+                decision_context={"source": "eval", **resume_decision},
+            ).to_dict()
+        events = response.get("audit_events", [])
+        envelope = {
+            "initial_status": initial_output.get("status", "completed"),
+            "status": response.get("output", {}).get("status", "completed"),
+            "initial_response": initial_response,
+            "response": response,
+            "audit_event_types": [
+                event.get("type") for event in events if isinstance(event, dict)
+            ],
+        }
+        return json.dumps(envelope, ensure_ascii=False, default=str)
+
+    return target
+
+
+__all__ = ["llm_target", "make_gateway_target", "make_gateway_trace_target", "extract_text"]

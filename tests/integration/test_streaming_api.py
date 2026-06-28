@@ -75,17 +75,19 @@ def client(monkeypatch):
 
     monkeypatch.setattr(llm_client, "_get_provider", lambda: FakeProvider(responder=_hr_responder))
 
-    from agentkit.web.app import app
+    from agentkit.web.app import app, clear_runtime_cache
     from agentkit.web.security import configure_security
 
     configure_security(app)
+    clear_runtime_cache()
     yield app.test_client()
+    clear_runtime_cache()
     config_mod.get_settings.cache_clear()
 
 
 def _login_and_csrf(client) -> str:
     assert client.post("/login", data={"token": "secret-token"}).status_code == 302
-    page = client.get("/command")
+    page = client.get("/chat")
     return re.search(rb'name="csrf-token" content="([^"]+)"', page.data).group(1).decode()
 
 
@@ -143,7 +145,95 @@ def test_tasks_stream_pauses_then_resume_streams_tokens(client):
     assert ranked, f"no ranked output after resume: {final_out}"
 
 
+def test_chat_stream_routes_action_agent_and_resumes_approval(client):
+    token = _login_and_csrf(client)
+    request_payload = {
+        "user_id": "browser-user",
+        "context": {
+            "agent": "hr_recruiter",
+            "message": "Rank the top candidate for JOB-001.",
+        },
+    }
+
+    waiting = client.post(
+        "/api/chat/stream",
+        json=request_payload,
+        headers={"X-CSRF-Token": token},
+    )
+    assert waiting.mimetype == "text/event-stream"
+    frames = _parse_frames(waiting.get_data(as_text=True))
+    finals = [data for event, data in frames if event == "final"]
+    assert finals, f"no final frame: {frames}"
+    assert finals[-1]["mode"] == "action"
+    assert finals[-1]["agent_kind"] == "action"
+    assert finals[-1]["conversation_id"]
+    out = finals[-1]["response"]["output"]
+    assert out["status"] == "waiting_for_approval"
+
+    resumed = client.post(
+        "/api/chat/stream",
+        json={
+            "context": {
+                "agent": "hr_recruiter",
+                "message": "Approve",
+                "approval": {
+                    "action": "approve",
+                    "thread_id": out["thread_id"],
+                    "skills": ["candidate.rank"],
+                    "request": {
+                        **request_payload,
+                        "context": {
+                            **request_payload["context"],
+                            "conversation_id": finals[-1]["conversation_id"],
+                        },
+                    },
+                },
+            },
+        },
+        headers={"X-CSRF-Token": token},
+    )
+    assert resumed.mimetype == "text/event-stream"
+    frames = _parse_frames(resumed.get_data(as_text=True))
+    tokens = [data["delta"] for event, data in frames if event == "token"]
+    finals = [data for event, data in frames if event == "final"]
+
+    assert "".join(tokens) == _SUMMARY
+    assert finals[-1]["mode"] == "action"
+    assert finals[-1]["agent_kind"] == "action"
+    assert finals[-1]["conversation_id"]
+    assert finals[-1]["response"]["output"]["governance"]["approval"]["status"] == "approved"
+
+
 def test_tasks_stream_requires_csrf(client):
     client.post("/login", data={"token": "secret-token"})
     resp = client.post("/api/tasks/stream", json={"agent": "hr_recruiter", "text": "x"})
     assert resp.status_code == 400
+
+
+def test_fail_closed_output_review_suppresses_task_token_frames(client):
+    from agentkit.web.app import get_runtime
+
+    token = _login_and_csrf(client)
+    runtime = get_runtime()
+    runtime.tenant_config["output_review_policy"] = "block_on_failed"
+
+    waiting = client.post(
+        "/api/tasks/stream",
+        json={"agent": "hr_recruiter", "text": "Rank the top candidate for JOB-001."},
+        headers={"X-CSRF-Token": token},
+    )
+    frames = _parse_frames(waiting.get_data(as_text=True))
+    out = [data for event, data in frames if event == "final"][-1]["response"]["output"]
+
+    resumed = client.post(
+        "/api/tasks/resume/stream",
+        json={"thread_id": out["thread_id"], "approved_skills": ["candidate.rank"]},
+        headers={"X-CSRF-Token": token},
+    )
+    frames = _parse_frames(resumed.get_data(as_text=True))
+    assert [data for event, data in frames if event == "token"] == []
+    finals = [data for event, data in frames if event == "final"]
+    assert finals, "missing final frame on fail-closed task stream"
+    final_out = finals[-1]["response"]["output"]
+    assert final_out["governance"]["output_review"]["status"] == "approved"
+    assert final_out["final"]["summary"] == _SUMMARY

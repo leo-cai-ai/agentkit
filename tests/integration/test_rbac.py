@@ -60,6 +60,7 @@ def _responder(system: str, user: str) -> str:
 def client(monkeypatch):
     # Proxy-terminated SSO: identity arrives via trusted headers, no shared token.
     monkeypatch.setenv("AGENTKIT_AUTH_PROXY_ENABLED", "true")
+    monkeypatch.setenv("AGENTKIT_RBAC_ROLE_PERMISSIONS", '{"chat_only":["chat:use"]}')
     monkeypatch.setenv("AGENTKIT_WEB_SECRET_KEY", "test-secret-key")
     monkeypatch.setenv("AGENTKIT_WEB_COOKIE_SECURE", "false")
     monkeypatch.setenv("AGENTKIT_WEB_AUTH_DISABLED", "false")
@@ -89,6 +90,16 @@ def test_viewer_can_view_governance(client):
     assert resp.status_code == 200
 
 
+def test_viewer_can_view_registry(client):
+    resp = client.get("/api/registry", headers=_headers("vera", "viewer"))
+    assert resp.status_code == 200
+
+
+def test_member_forbidden_from_registry(client):
+    resp = client.get("/api/registry", headers=_headers("mira", "member"))
+    assert resp.status_code == 403
+
+
 def test_viewer_forbidden_from_running_tasks(client):
     resp = client.post(
         "/api/tasks",
@@ -96,6 +107,16 @@ def test_viewer_forbidden_from_running_tasks(client):
         headers=_headers("vera", "viewer"),
     )
     assert resp.status_code == 403
+
+
+def test_chat_use_only_role_cannot_run_action_agent(client):
+    resp = client.post(
+        "/api/chat",
+        json={"context": {"agent": "hr_recruiter", "message": "Rank candidates."}},
+        headers=_headers("chris", "chat_only"),
+    )
+    assert resp.status_code == 403
+    assert "task:run" in resp.get_json()["error"]
 
 
 def test_viewer_forbidden_from_approving(client):
@@ -125,6 +146,46 @@ def test_operator_can_run_and_approve(client):
         headers=_headers("olly", "operator"),
     ).get_json()
     assert done["response"]["output"]["governance"]["approval"]["status"] == "approved"
+
+
+def test_task_run_rejects_inline_approval_decision(client):
+    resp = client.post(
+        "/api/tasks",
+        json={
+            "agent": "hr_recruiter",
+            "text": "Rank candidates.",
+            "approved_skills": ["candidate.rank"],
+        },
+        headers=_headers("olly", "operator"),
+    )
+    assert resp.status_code == 400
+    assert "approval decisions are not accepted" in resp.get_json()["error"]
+
+
+def test_task_run_rejects_non_action_agent(client):
+    resp = client.post(
+        "/api/tasks",
+        json={"agent": "customer_service", "text": "hello"},
+        headers=_headers("olly", "operator"),
+    )
+    assert resp.status_code == 400
+    assert "not an enabled action agent" in resp.get_json()["error"]
+
+
+def test_payload_roles_do_not_become_business_roles(client):
+    resp = client.post(
+        "/api/tasks",
+        json={
+            "agent": "hr_recruiter",
+            "text": "Rank candidates.",
+            "roles": ["hr_admin"],
+        },
+        headers=_headers("olly", "operator"),
+    )
+    assert resp.status_code == 200
+    runtime_context = resp.get_json()["response"]["output"]["governance"]["runtime_context"]
+    assert "hr_admin" not in runtime_context["roles"]
+    assert "ignored_payload_roles" in runtime_context["context_keys"]
 
 
 def test_unidentified_request_blocked(client):

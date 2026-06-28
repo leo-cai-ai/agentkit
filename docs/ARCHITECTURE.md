@@ -97,7 +97,7 @@ flowchart TB
 
 ## 4. 请求生命周期（LangGraph 管线）
 
-核心图 `EnterpriseAgentGraph`（`core/langgraph_agent.py`）：
+核心图 `EnterpriseAgentGraph`（`core/langgraph_agent.py`）是通用平台图，不包含 HR / 社媒 / 客服等客制化业务代码；业务差异来自 domain pack 注册的 `AgentProfile`、`SkillDefinition`、`ToolDefinition` 以及 tenant 配置：
 
 ```mermaid
 flowchart LR
@@ -158,14 +158,15 @@ flowchart LR
 - `AGENTKIT_APPROVAL_CHECKPOINTER`：
   - `memory`：进程内暂停/恢复（单进程）；
   - `sqlite`：检查点落盘（`data/<tenant>_checkpoints.sqlite`），**跨进程/多 worker/重启可恢复**——生产推荐；连接以 `check_same_thread=False` 创建，支持 worker 线程池跨线程 resume；
-  - `none`：旧路径（输出 waiting + 全量重提）。
-- `gateway.resume(thread_id, approved_skills, rejected_skills)` 注入人工决策并从暂停点继续，复用原 `run_id` 保持日志关联。
+  - `none`：无检查点模式（输出 waiting + 受保护全量重提）。
+- `gateway.resume(thread_id, approved_skills, rejected_skills, decision_context)` 注入人工决策并从暂停点继续，复用原 `run_id` 保持日志关联；Web 层会把审批人 `Principal` 写入 `decision_context`。
+- resume 会校验 thread 仍处于暂停状态、决策非空、批准/拒绝不重叠，且决策 skill 必须是当前等待审批的 skill；过期 checkpoint 返回 409，非法决策返回 400，不会对已完成或无关 thread 写 `run_resumed`。
 
 ---
 
 ## 7. 记忆架构（`core/memory/`，Phase 4）
 
-仅对 `mode: "chat"` 的会话型 Agent 生效（如 `customer_service`）。
+对所有配置在 `chat_agents` 中的 chat-first Agent 生效。回答型 agent 直接用记忆生成回复；行动型 agent 在进入 LangGraph 前读取同一套 summary / recent messages / semantic memories，并在任务完成或等待审批后写回会话。
 
 ```mermaid
 flowchart LR
@@ -196,6 +197,20 @@ flowchart LR
 
 ---
 
+## 7.2 企业知识库 RAG 框架（`core/rag/`）
+
+会话记忆解决的是 `(tenant, agent, user)` 范围内的个人历史事实；企业 RAG 解决的是制度、手册、FAQ、案例、产品资料等共享知识。当前代码先提供框架骨架，不绑定真实数据源：
+
+- `KnowledgeDocument` / `KnowledgeChunk` / `RetrievalQuery` / `RetrievalHit`：包含 tenant、metadata、URI、ACL roles 的稳定契约。
+- `KnowledgeIngestionPipeline`：文本切块、可选 embedding、写入 `KnowledgeStore`。
+- `KeywordRetriever` / `VectorRetriever` / `HybridRetriever`：支持关键词、向量、混合检索和加权 score fusion。
+- `Reranker`：重排序协议，默认 `IdentityReranker`；后续可接 LLM reranker、cross-encoder 或业务规则。
+- `InMemoryKnowledgeStore`：测试/本地框架验证；生产可替换为 pgvector、OpenSearch/Elasticsearch、Milvus、Chroma 等。
+
+默认 `AGENTKIT_RAG_ENABLED=false`，不会影响当前 agent 行为。后续接入时，把 RAG retriever 作为统一上下文来源注入回答型和行动型 agent，而不是只绑定某一个客服路径。
+
+---
+
 ## 8. LLM 层（`llm/`、`core/llm_client.py`）
 
 ```mermaid
@@ -220,7 +235,7 @@ flowchart TB
 
 ## 9. 工具 / 连接器执行加固（`core/tool_executor.py`、`core/net.py`）
 
-- `ToolExecutor`：每次工具调用提供超时（`ThreadPoolExecutor`）、重试（仅对幂等工具或带 `_idempotency_key`）、幂等缓存、审计与追踪、`contextvars` 传播。
+- `ToolExecutor`：每次工具调用进入共享有界 `ThreadPoolExecutor`（`AGENTKIT_TOOL_MAX_WORKERS`），提供超时、重试（仅对幂等工具或带 `_idempotency_key`）、幂等缓存、审计与追踪、`contextvars` 传播。
 - `ToolDefinition.idempotent` / `timeout_seconds` 控制重试与超时语义。
 - **SSRF 防护**（`core/net.py`）：`EgressPolicy` + `validate_url` + `safe_request`——默认仅允许 https 到**公网 IP**，禁私网/环回；`AGENTKIT_EGRESS_ALLOWED_DOMAINS` 白名单进一步收紧，`egress_max_response_bytes` 限制响应大小。
 - 连接器示例：`connectors/mock_ats.py`、`connectors/mock_xhs.py`。
@@ -231,8 +246,8 @@ flowchart TB
 
 两层 RBAC：
 
-1. **控制台动作 RBAC**：`Principal`（subject/roles/auth_method/claims）+ 权限（`task:run`、`task:approve`、`chat:use`、`governance:view`、`runs:view`、`*`）+ 角色（`admin`/`operator`/`member`/`viewer`）。Web 端点用 `require_permission` 装饰器强制。
-2. **租户业务 RBAC**：`tenant_config.role_permissions` + `PolicyGuard`，控制技能可执行权限。
+1. **控制台动作 RBAC**：`Principal`（subject/roles/auth_method/claims）+ 权限（`task:run`、`task:approve`、`chat:use`、`governance:view`、`runs:view`、`runtime:admin`、`*`）+ 角色（`admin`/`operator`/`member`/`viewer`）。Web 端点用 `require_permission` 装饰器强制。
+2. **租户业务 RBAC**：`tenant_config.role_permissions` + `PolicyGuard`，控制技能可执行权限。Web 入口的业务角色来自受信 business-role header、`principal_business_roles` 映射或本地默认值；payload `roles` 不参与授权。
 
 身份解析（`resolve_principal`）支持：开发模式、共享令牌映射角色、可信反代头（OIDC/SAML 由反代终结后转发 `X-Forwarded-User/Email/Roles`）。仅当反代为唯一入口时才信任这些头。
 
@@ -253,6 +268,8 @@ flowchart TB
 ## 12. 可观测性（`core/audit.py`、`log_context.py`、`metrics.py`、`tracing.py`）
 
 - **审计**：`SQLiteAuditLog` 每 run 落库；`events_for(run_id)` 取证；`event_timing_summary()` 按事件类型聚合耗时。
+- **运行清单**：`build_runtime()` 生成 `runtime_manifest`（tenant JSON / prompt SHA-256、启用 domain、root），`context_prepared` 审计事件随 run 记录，用于复现当次配置。
+- **生命周期事件**：等待审批写 `run_paused`，恢复写 `run_resumed`，最终结束才写 `run_finished`。
 - **run_id 关联日志**：`start_run` 绑定 contextvar，运行期所有日志自动带 `[run_id=...]`；不输出密钥/完整提示词。
 - **节点耗时**：各节点记录 `node_timing`（`duration_ms`、`ok`），失败也记录后再抛。
 - **链路追踪（可选 OTel）**：`init_tracing` + `span` 上下文，未装 SDK 或未开启时为 no-op；网关 `handle/resume`、LLM 调用已插桩。
@@ -264,9 +281,10 @@ flowchart TB
 - 数据模型：`CheckSpec`、`EvalCase`、`CheckOutcome`、`CaseResult`、`EvalReport`（pass_rate、mean_score、`gate()`）。
 - 确定性检查：`contains` / `regex` / `equals` / `min_length` / `no_pii` / `no_injection` 等。
 - **LLM-as-Judge**：`LLMJudge` 按 rubric 用 `require_chat_json` 打分。
-- 目标：`llm_target`（裸 LLM）/ `make_gateway_target`（走完整网关）。
+- 目标：`llm_target`（裸 LLM）/ `make_gateway_target`（走完整网关文本）/ `make_gateway_trace_target`（完整 response + audit event types JSON，用于轨迹回归）。
 - 数据集：`.jsonl` / `.json`（golden datasets）。
-- CLI：`agentkit eval <dataset> --target llm|gateway --threshold ... --min-mean-score ... [--no-judge] [--json]`，回归门禁返回退出码。
+- CLI：`agentkit eval <dataset> --target llm|gateway|gateway-trace --threshold ... --min-mean-score ... [--no-judge] [--json]`，回归门禁返回退出码。
+- `gateway-trace` 返回完整 response + audit event types 的 JSON envelope，并支持 `context._eval_resume` 自动恢复审批，用来断言 `run_paused -> run_resumed -> run_finished` 这类轨迹闭环。
 
 ---
 
@@ -274,8 +292,10 @@ flowchart TB
 
 - `bootstrap.build_runtime`：解析租户 → 加载提示词 → 发现并注册租户 `enabled_domains` 中的包 → 注册平台 Agent（router/general）→ 装配技能/工具 → 构建网关 + 审批检查点 + 会话服务。
 - `pack_registry.discover_packs`：仓库内扫描 + 安装的 entry points，自动发现领域包。
-- 内置包：`hr_recruitment`（候选人排序）、`social_growth`（小红书涨粉）、`customer_service`（会话型，带记忆）。
-- 租户配置（`tenants/<id>.json`）关键字段：`enabled_domains`、`chat_agents`（`mode: command|chat`）、`role_permissions`、`approval_required_skills`、`routing_hints`、`prompt_files`、各包专属配置。
+- `pack_registry.validate_pack_contracts`：复用发现机制，在隔离 registry 中执行每个 pack 的 `register(...)`，校验 agents/skills/tools、JSON Schema、handler callable、list 字段、`batch_key`、tool 元数据与引用完整性；CLI `agentkit validate-packs [domain...] [--json]` 可作为外部插件包的 CI smoke gate。
+- `agentkit doctor`：部署预检命令，组合 storage、pack contract、runtime build、tenant `chat_agents`/审批/routing/role 配置引用检查，不调用 LLM，适合 CI 或容器启动前门禁。
+- 内置包：`hr_recruitment`（候选人排序）、`social_growth`（小红书涨粉）、`customer_service`（回答型客服，带记忆）。
+- 租户配置（`tenants/<id>.json`）关键字段：`enabled_domains`、`chat_agents`（`mode: chat` + `actions_enabled`）、`role_permissions`、`approval_required_skills`、`routing_hints`、`prompt_files`、各包专属配置。
 
 ### 14.1 扩展方式
 
@@ -286,6 +306,7 @@ flowchart TB
 | 新工具/连接器 | 定义 `ToolDefinition`（标注 `idempotent`/超时），经 `SkillContext.call_tool` 调用 |
 | 新 LLM provider | 实现 `LLMProvider` 协议，在 `llm/factory.py` 加分支 |
 | 新向量后端 | 实现 `VectorStore` 协议，在 `build_vector_store` 加分支 |
+| 新 RAG 检索后端 | 实现 `KnowledgeStore` / `Retriever` / `Reranker` 协议，接入 `agentkit.core.rag` |
 
 ---
 
@@ -296,6 +317,7 @@ flowchart TB
 | 审计事件 | SQLite `data/<tenant>.sqlite` | — |
 | 会话历史/消息 | SQLite（per-tenant） | — |
 | 长期语义记忆 | SQLite `memories` 表 | PostgreSQL + pgvector |
+| 企业知识库 RAG | `agentkit.core.rag` 内存框架 | pgvector / OpenSearch / Milvus / Chroma / reranker |
 | 审批检查点 | 内存 / SQLite | — |
 | 限流令牌桶 | 进程内 / SQLite | （接缝可接 Redis） |
 
@@ -315,7 +337,7 @@ flowchart TB
 | 校验 | jsonschema（技能 I/O Schema） |
 | 存储 | SQLite（内置）/ PostgreSQL + pgvector（可选） |
 | 部署 | gunicorn + Docker/Compose（非 root、只读根、cap_drop、healthcheck） |
-| 质量门禁 | pytest / ruff / mypy / pre-commit |
+| 质量门禁 | pytest / ruff / mypy / pre-commit / `agentkit doctor` / `agentkit validate-packs` / `agentkit eval` |
 | 可观测 | 自有审计 + OpenTelemetry（可选） |
 
 ---
@@ -325,10 +347,18 @@ flowchart TB
 | 方法/路径 | 说明 |
 | --- | --- |
 | `GET /healthz` | 健康检查（免鉴权） |
-| `GET /` `/command` `/operations` `/governance` | 控制台页面 |
-| `POST /api/tasks` · `/api/tasks/stream` | 提交任务（含 SSE 流式） |
-| `POST /api/tasks/resume` · `/resume/stream` | 审批后恢复任务 |
-| `POST /api/chat` · `/api/chat/stream` | 会话型对话（含 SSE 流式） |
+| `GET /` `/chat` `/operations` `/governance` | 控制台页面 |
+| `POST /api/chat` · `/api/chat/stream` | 统一前端入口（`chat:use`）；回答型 agent 走记忆会话，行动型 agent 额外校验 `task:run` 后进入 LangGraph；`context.approval` 额外校验 `task:approve` |
+| `POST /api/tasks` · `/api/tasks/stream` | 脚本/系统 action API：提交行动型任务（`task:run`，agent 必须在租户 action allowlist） |
+| `POST /api/tasks/approve` · `/approve/stream` | 无 checkpoint 时的审批保护全量重提（`task:approve`） |
+| `POST /api/tasks/resume` · `/resume/stream` | 审批后原地恢复任务（`task:approve`） |
 | `GET/POST /api/conversations` · `GET /api/conversations/<id>/messages` | 会话管理 |
 | `GET /api/runs` · `/api/runs/<run_id>` | 运行记录与审计事件 |
-| `GET /api/registry` | 已注册 Agent/技能/工具清单 |
+| `GET /api/registry` | 已注册 Agent/技能/工具清单（`governance:view`） |
+| `POST /api/admin/reload` | 清理运行时/LLM provider 缓存并重建（`runtime:admin`） |
+
+前端统一使用 `/api/chat/stream`；返回 payload 含 `response` 时表示行动型 graph
+结构化结果，含 `conversation_id` 时表示会话已持久化。行动型任务 SSE 在默认 `warn` 输出复核策略下转发 token 帧；当租户把
+`output_review_policy` 设为 `block` / `block_on_failed` / `fail_closed` 时，
+任务流式入口会丢弃 token、只在 output review 完成后发 `final`，避免被复核阻断的
+内容在最终拦截前泄露。回答型 agent 不经过任务 output review 管线，保持实时聊天流式体验。

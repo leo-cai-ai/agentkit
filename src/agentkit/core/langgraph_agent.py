@@ -59,6 +59,7 @@ class EnterpriseAgentGraph:
         self,
         *,
         tenant_id: str,
+        tenant_config: dict[str, Any],
         intent_decomposer: IntentDecomposer,
         router: IntentRouter,
         planner: Planner,
@@ -73,6 +74,7 @@ class EnterpriseAgentGraph:
         combiner: Any = None,
     ) -> None:
         self._tenant_id = tenant_id
+        self._tenant_config = tenant_config
         self._fastpath = fastpath
         self._combiner = combiner
         self._intent_decomposer = intent_decomposer
@@ -88,7 +90,7 @@ class EnterpriseAgentGraph:
         self._graph = self._build_graph()
 
     def invoke(self, request: TaskRequest) -> TaskResponse:
-        # Back-compat entrypoint: allocate a throwaway thread id.
+        # Stateless invocation: allocate a throwaway thread id.
         return self.run(request, thread_id=str(uuid.uuid4()))
 
     def run(self, request: TaskRequest, *, thread_id: str) -> TaskResponse:
@@ -105,6 +107,7 @@ class EnterpriseAgentGraph:
         *,
         approved_skills: list[str] | tuple[str, ...] = (),
         rejected_skills: list[str] | tuple[str, ...] = (),
+        decision_context: dict[str, Any] | None = None,
     ) -> TaskResponse:
         if self._checkpointer is None:
             raise RuntimeError("resume requires an approval checkpointer (set it to 'memory').")
@@ -112,12 +115,22 @@ class EnterpriseAgentGraph:
         state = self._graph.get_state(config)
         if not state.values or "request" not in state.values:
             raise KeyError(f"unknown or expired thread_id: {thread_id}")
+        run_id = str(state.values.get("run_id", "-"))
+        self._validate_resume_decision(
+            state=state,
+            run_id=run_id,
+            thread_id=thread_id,
+            approved_skills=approved_skills,
+            rejected_skills=rejected_skills,
+        )
         request: TaskRequest = state.values["request"]
         context = dict(request.context)
         if approved_skills:
             context["approved_skills"] = list(approved_skills)
         if rejected_skills:
             context["rejected_skills"] = list(rejected_skills)
+        if decision_context:
+            context["approval_decision"] = dict(decision_context)
         resumed_request = TaskRequest(
             user_id=request.user_id,
             roles=request.roles,
@@ -127,10 +140,55 @@ class EnterpriseAgentGraph:
         # Re-bind the original run id so resume logs stay correlated, then inject
         # the human decision and continue from the paused human_approval node.
         # bind_run_id resets on exit so the run id never leaks past this call.
-        with bind_run_id(str(state.values.get("run_id", "-"))):
+        with bind_run_id(run_id):
+            self._audit.record(
+                run_id,
+                "run_resumed",
+                {
+                    "thread_id": thread_id,
+                    "approved_skills": list(approved_skills),
+                    "rejected_skills": list(rejected_skills),
+                    "decision_context": decision_context or {},
+                },
+            )
             self._graph.update_state(config, {"request": resumed_request})
             self._graph.invoke(None, config)
         return self._response_from_thread(thread_id, config)
+
+    def _validate_resume_decision(
+        self,
+        *,
+        state: Any,
+        run_id: str,
+        thread_id: str,
+        approved_skills: list[str] | tuple[str, ...],
+        rejected_skills: list[str] | tuple[str, ...],
+    ) -> None:
+        if not state.next:
+            raise RuntimeError(f"thread_id is not waiting for approval: {thread_id}")
+        approved = {str(skill) for skill in approved_skills}
+        rejected = {str(skill) for skill in rejected_skills}
+        if not approved and not rejected:
+            raise RuntimeError("approved_skills or rejected_skills is required.")
+        overlap = approved & rejected
+        if overlap:
+            raise RuntimeError(
+                "skills cannot be both approved and rejected: "
+                + ", ".join(sorted(overlap))
+            )
+
+        approval = self._last_approval(run_id)
+        if approval.get("status") != "waiting_for_approval":
+            raise RuntimeError(f"thread_id is not waiting for approval: {thread_id}")
+        pending = {str(skill) for skill in approval.get("skills", [])}
+        if not pending:
+            raise RuntimeError("pending approval has no skills to decide.")
+        unknown = (approved | rejected) - pending
+        if unknown:
+            raise RuntimeError(
+                "approval decision contains skills that are not pending: "
+                + ", ".join(sorted(unknown))
+            )
 
     def _response_from_thread(self, thread_id: str, config: dict[str, Any]) -> TaskResponse:
         state = self._graph.get_state(config)
@@ -161,8 +219,8 @@ class EnterpriseAgentGraph:
         }
         self._audit.record(
             run_id,
-            "run_finished",
-            {"has_error": False, "status": "waiting_for_approval"},
+            "run_paused",
+            {"status": "waiting_for_approval", "thread_id": thread_id},
         )
         return TaskResponse(
             output=output,
@@ -233,6 +291,7 @@ class EnterpriseAgentGraph:
             "selected_agent": state["request"].context.get("agent", ""),
             "roles": state["request"].roles,
             "context_keys": sorted(state["request"].context.keys()),
+            "runtime_manifest": self._tenant_config.get("runtime_manifest", {}),
         }
         self._audit.record(run_id, "context_prepared", runtime_context)
         self._audit.record(run_id, "graph_node_finished", {"node": "prepare_context"})
@@ -392,8 +451,8 @@ class EnterpriseAgentGraph:
         self._audit.record(run_id, "graph_node_finished", {"node": "human_approval"})
 
         # With a checkpointer, pause the graph here and resume in-place once the
-        # human decides (gateway.resume). Without one, fall back to the legacy
-        # behavior: emit a waiting output and let the client resubmit the task.
+        # human decides (gateway.resume). Without one, emit a waiting output so
+        # the client can perform a protected full resubmit.
         if approval["status"] == "waiting_for_approval" and self._checkpointer is not None:
             raise NodeInterrupt(approval)
 
@@ -456,12 +515,29 @@ class EnterpriseAgentGraph:
     def _finalize_node(self, state: EnterpriseAgentState) -> EnterpriseAgentState:
         run_id = state["run_id"]
         output = dict(state["output"])
+        output_review = state.get("output_review", {})
+        if output_review.get("status") == "failed" and not output.get("error"):
+            self._audit.record(
+                run_id,
+                "output_blocked",
+                {
+                    "reason": output_review.get("reason") or "output governance review failed",
+                    "output_keys": sorted(output.keys()),
+                },
+            )
+            output = {
+                "error": "output_review_failed",
+                "reason": output_review.get("reason") or "output governance review failed",
+                "final": {
+                    "message": "The response was blocked by output governance review.",
+                },
+            }
         output["governance"] = {
             "runtime_context": state.get("runtime_context", {}),
             "intent": asdict(state["intent"]) if "intent" in state else {},
             "plan_review": state.get("plan_review", {}),
             "approval": state.get("approval", {}),
-            "output_review": state.get("output_review", {}),
+            "output_review": output_review,
         }
         has_error = "error" in output
         output_status = output.get("status")

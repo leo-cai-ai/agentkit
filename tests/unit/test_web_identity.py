@@ -21,11 +21,17 @@ def test_resolve_dev_admin_when_auth_disabled() -> None:
 
 
 def test_resolve_session_principal_after_token_login() -> None:
-    s = _settings(web_auth_token="t", web_token_subject="ops", web_token_roles="operator")
+    s = _settings(
+        web_auth_token="t",
+        web_token_subject="ops",
+        web_token_roles="operator",
+        web_token_business_roles="recruiter",
+    )
     p = resolve_principal(s, headers={}, sess={"authenticated": True})
     assert p.auth_method == "token"
     assert p.subject == "ops"
     assert p.roles == ("operator",)
+    assert p.claims["business_roles"] == ["recruiter"]
 
 
 def test_resolve_anonymous_when_not_logged_in() -> None:
@@ -39,12 +45,14 @@ def test_proxy_header_principal_reads_identity() -> None:
         "X-Forwarded-User": "alice",
         "X-Forwarded-Email": "alice@example.com",
         "X-Forwarded-Roles": "operator, viewer",
+        "X-Forwarded-Business-Roles": "recruiter, growth_manager",
     }
     p = proxy_header_principal(headers, s)
     assert p is not None
     assert p.subject == "alice"
     assert p.email == "alice@example.com"
     assert p.roles == ("operator", "viewer")
+    assert p.claims["business_roles"] == ["recruiter", "growth_manager"]
     assert p.auth_method == "proxy"
 
 

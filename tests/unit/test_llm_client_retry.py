@@ -71,6 +71,11 @@ def test_extract_json_handles_think_and_fence():
     assert llm_client._extract_json(raw) == {"a": 2}
 
 
+def test_extract_json_scans_first_valid_object_without_greedy_capture():
+    raw = 'prefix {"a": 1} trailing {"b": 2}'
+    assert llm_client._extract_json(raw) == {"a": 1}
+
+
 def test_truncated_think_yields_friendly_message(monkeypatch):
     # Reasoning ran out of budget mid-thought: unclosed <think>, no JSON.
     prov = _FlakyProvider(fail_times=0, then="<think>let me work through {the data")

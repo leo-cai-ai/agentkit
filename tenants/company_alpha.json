@@ -26,11 +26,12 @@
     "default_top_n": 3
   },
   "chat_agents": [
-    { "name": "hr_recruiter", "mode": "command" },
-    { "name": "xhs_growth", "mode": "command" },
+    { "name": "hr_recruiter", "mode": "chat", "actions_enabled": true, "memory": { "enabled": true } },
+    { "name": "xhs_growth", "mode": "chat", "actions_enabled": true, "memory": { "enabled": true } },
     {
       "name": "customer_service",
       "mode": "chat",
+      "actions_enabled": false,
       "label": "Customer Service Agent",
       "mission": "Conversational support with long/short-term memory",
       "memory": {
@@ -58,6 +59,13 @@
     "hr_admin": ["hr.job.read", "hr.candidate.read", "hr.candidate.write"],
     "employee": [],
     "growth_manager": ["content.research", "content.write", "content.publish"]
+  },
+  "principal_business_roles": {
+    "admin": ["recruiter", "growth_manager"],
+    "operator": ["recruiter", "growth_manager"],
+    "member": ["recruiter"],
+    "hr_admin": ["hr_admin"],
+    "growth_manager": ["growth_manager"]
   },
   "approval_required_skills": ["xhs.growth.campaign", "candidate.rank"],
   "routing_hints": {

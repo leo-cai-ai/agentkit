@@ -5,6 +5,7 @@ from __future__ import annotations
 from agentkit.config import Settings
 from agentkit.core.identity import (
     GOVERNANCE_VIEW,
+    RUNTIME_ADMIN,
     TASK_APPROVE,
     TASK_RUN,
     Principal,
@@ -35,6 +36,7 @@ def test_admin_wildcard_grants_everything() -> None:
     assert has_permission(admin, TASK_RUN)
     assert has_permission(admin, TASK_APPROVE)
     assert has_permission(admin, GOVERNANCE_VIEW)
+    assert has_permission(admin, RUNTIME_ADMIN)
 
 
 def test_viewer_cannot_run_but_can_view() -> None:

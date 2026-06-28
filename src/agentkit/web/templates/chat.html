@@ -3,20 +3,20 @@
 {% block content %}
   <script id="ui-config" type="application/json">{{ ui | tojson }}</script>
   {% set agent_options = chat_agents if chat_agents is defined and chat_agents else ui.chat_agents | default([]) %}
-  <section class="command-layout">
-    <article class="panel command-panel">
+  <section class="chat-layout">
+    <article class="panel chat-panel">
       <div class="panel-head">
         <h2>Ask The AI Workforce</h2>
-        <span>Conversational command center</span>
+        <span>Unified chat console</span>
       </div>
 
-      <section class="chat-command">
+      <section class="chat-surface">
         <fieldset class="agent-selector field-wide">
           <legend>Active Agent</legend>
           <div class="agent-card-grid" role="radiogroup" aria-label="Active agent">
             {% for agent in agent_options %}
               {% set demo_prompt = ui.demo_prompts.get(agent.name, ui.demo_prompt) if ui.demo_prompts is defined else ui.demo_prompt %}
-              <label class="agent-card" data-agent-card="{{ agent.name }}" data-demo-prompt="{{ demo_prompt }}" data-agent-mode="{{ agent.mode | default('command') }}">
+              <label class="agent-card" data-agent-card="{{ agent.name }}" data-demo-prompt="{{ demo_prompt }}">
                 <input type="radio" name="agent" value="{{ agent.name }}" {{ 'checked' if agent.name == ui.default_agent else '' }}>
                 <span class="agent-card-top">
                   <strong>{{ agent.label | default(agent.name | replace('_', ' ') | title) }}</strong>
@@ -27,7 +27,7 @@
                 <span class="agent-skills">{{ agent.allowed_skills | default([]) | join(', ') }}</span>
               </label>
             {% else %}
-              <label class="agent-card active" data-agent-card="{{ ui.default_agent }}" data-demo-prompt="{{ ui.demo_prompt }}" data-agent-mode="command">
+              <label class="agent-card active" data-agent-card="{{ ui.default_agent }}" data-demo-prompt="{{ ui.demo_prompt }}">
                 <input type="radio" name="agent" value="{{ ui.default_agent }}" checked>
                 <span class="agent-card-top">
                   <strong>{{ ui.default_agent | replace('_', ' ') | title }}</strong>

@@ -1,1 +1,1 @@
-"""Enterprise-system connectors for the demo."""
+"""Enterprise-system connectors for bundled domain packs."""

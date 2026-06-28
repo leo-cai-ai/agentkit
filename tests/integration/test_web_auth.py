@@ -68,7 +68,7 @@ def test_post_with_csrf_not_rejected(client, monkeypatch):
     monkeypatch.setattr(llm_client, "_get_provider", lambda: FakeProvider(responder=_responder))
 
     _login(client)
-    page = client.get("/command")
+    page = client.get("/chat")
     token = re.search(rb'name="csrf-token" content="([^"]+)"', page.data).group(1).decode()
 
     resp = client.post(
@@ -77,6 +77,15 @@ def test_post_with_csrf_not_rejected(client, monkeypatch):
         headers={"X-CSRF-Token": token},
     )
     assert resp.status_code != 400
+
+
+def test_admin_reload_requires_csrf_and_succeeds(client):
+    _login(client)
+    page = client.get("/chat")
+    token = re.search(rb'name="csrf-token" content="([^"]+)"', page.data).group(1).decode()
+    resp = client.post("/api/admin/reload", headers={"X-CSRF-Token": token})
+    assert resp.status_code == 200
+    assert resp.get_json()["status"] == "reloaded"
 
 
 def test_auth_disabled_allows_access(monkeypatch):

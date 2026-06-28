@@ -66,6 +66,7 @@ class AgentGateway:
         )
         self._agent_graph = EnterpriseAgentGraph(
             tenant_id=tenant_id,
+            tenant_config=tenant_config,
             intent_decomposer=self._intent_decomposer,
             router=self._router,
             planner=self._planner,
@@ -156,6 +157,7 @@ class AgentGateway:
         *,
         approved_skills: list[str] | tuple[str, ...] = (),
         rejected_skills: list[str] | tuple[str, ...] = (),
+        decision_context: dict[str, Any] | None = None,
     ) -> TaskResponse:
         from .cost import cost_tracking
         from .tracing import span
@@ -168,6 +170,7 @@ class AgentGateway:
                 thread_id,
                 approved_skills=approved_skills,
                 rejected_skills=rejected_skills,
+                decision_context=decision_context,
             )
 
     @property
@@ -194,7 +197,7 @@ def build_checkpointer(*, mode: str, sqlite_path: Path | None = None) -> Any:
     - ``sqlite``: on-disk saver so paused approvals survive restarts and are
       resumable across processes/workers. Falls back to in-memory when no
       ``sqlite_path`` is supplied (e.g. lightweight direct construction).
-    - ``none``: disabled (legacy waiting-output + full resubmit path).
+    - ``none``: disabled (waiting output + protected full resubmit path).
     """
     if mode == "memory":
         from langgraph.checkpoint.memory import InMemorySaver

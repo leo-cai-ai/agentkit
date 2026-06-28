@@ -1,7 +1,8 @@
-"""Bootstrap helpers shared by the CLI demo and Flask console."""
+"""Bootstrap helpers shared by the CLI and Flask console."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -23,21 +24,24 @@ from agentkit.runtime.pack_registry import discover_packs
 # the Docker image) __file__ lives under site-packages, so parents[3] would point
 # into the venv; AGENTKIT_ROOT lets the deployment pin the real config root
 # (the Dockerfile/compose set it to /app).
-DEMO_ROOT = Path(os.environ.get("AGENTKIT_ROOT") or Path(__file__).resolve().parents[3]).resolve()
-TENANTS_DIR = DEMO_ROOT / "tenants"
-DATA_DIR = DEMO_ROOT / "data"
+AGENTKIT_ROOT = Path(
+    os.environ.get("AGENTKIT_ROOT") or Path(__file__).resolve().parents[3]
+).resolve()
+TENANTS_DIR = AGENTKIT_ROOT / "tenants"
+DATA_DIR = AGENTKIT_ROOT / "data"
 DEFAULT_TENANT_ID = "company_alpha"
 TENANT_ENV_VAR = "AGENTKIT_TENANT_ID"
 
 
 @dataclass(frozen=True)
-class DemoRuntime:
+class AgentKitRuntime:
     gateway: AgentGateway
     tenant_config: dict
     db_path: Path
     skill_store: SkillFileStore
     tenant_id: str
     chat_service: Any = None
+    manifest: dict[str, Any] | None = None
 
 
 def list_tenants() -> list[str]:
@@ -65,20 +69,54 @@ def load_tenant_config(tenant_id: str = DEFAULT_TENANT_ID) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _runtime_manifest(*, tenant_id: str, tenant_config: dict[str, Any]) -> dict[str, Any]:
+    tenant_path = TENANTS_DIR / f"{tenant_id}.json"
+    prompts: dict[str, Any] = {}
+    prompt_files = tenant_config.get("prompt_files", {})
+    if isinstance(prompt_files, dict):
+        for name, rel_path in sorted(prompt_files.items()):
+            prompt_path = (AGENTKIT_ROOT / str(rel_path)).resolve()
+            prompts[str(name)] = {
+                "path": str(Path(str(rel_path)).as_posix()),
+                "sha256": _sha256_file(prompt_path) if prompt_path.is_file() else "",
+            }
+    return {
+        "agentkit_root": str(AGENTKIT_ROOT),
+        "tenant_id": tenant_config.get("tenant_id", tenant_id),
+        "tenant_selector": tenant_id,
+        "tenant_config": {
+            "path": str((TENANTS_DIR / f"{tenant_id}.json").relative_to(AGENTKIT_ROOT).as_posix()),
+            "sha256": _sha256_file(tenant_path) if tenant_path.is_file() else "",
+        },
+        "enabled_domains": list(tenant_config.get("enabled_domains", [])),
+        "prompt_files": prompts,
+    }
+
+
 def build_runtime(
     *,
     tenant_id: str | None = None,
     db_path: Path | None = None,
-) -> DemoRuntime:
+) -> AgentKitRuntime:
     resolved_tenant_id = resolve_tenant_id(tenant_id)
     if db_path is None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         db_path = DATA_DIR / f"{resolved_tenant_id}.sqlite"
     tenant_config = load_tenant_config(resolved_tenant_id)
+    manifest = _runtime_manifest(tenant_id=resolved_tenant_id, tenant_config=tenant_config)
     tenant_config["prompts"] = load_prompt_files(
-        base_dir=DEMO_ROOT,
+        base_dir=AGENTKIT_ROOT,
         prompt_files=tenant_config.get("prompt_files", {}),
     )
+    tenant_config["runtime_manifest"] = manifest
 
     agents = AgentRegistry()
     skills = SkillRegistry()
@@ -104,7 +142,7 @@ def build_runtime(
     # allowed to dispatch to whatever skills the enabled packs registered.
     _register_platform_agents(agents=agents, skills=skills, tenant_config=tenant_config)
 
-    skill_store = SkillFileStore(DEMO_ROOT / "skills", display_root=DEMO_ROOT)
+    skill_store = SkillFileStore(AGENTKIT_ROOT / "skills", display_root=AGENTKIT_ROOT)
     attach_skill_packages(skills=skills, store=skill_store)
     tenant_config["skill_catalog"] = [
         {
@@ -143,13 +181,14 @@ def build_runtime(
         agents=agents,
         audit=audit,
     )
-    return DemoRuntime(
+    return AgentKitRuntime(
         gateway=gateway,
         tenant_config=tenant_config,
         db_path=db_path,
         skill_store=skill_store,
         tenant_id=resolved_tenant_id,
         chat_service=chat_service,
+        manifest=manifest,
     )
 
 

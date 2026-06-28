@@ -87,6 +87,38 @@ def test_full_graph_hr_execute_with_fake(monkeypatch, tmp_path):
     assert ranked[0]["candidate_id"] == "C-100"
 
 
+def test_output_review_fail_closed_does_not_return_blocked_payload(monkeypatch, tmp_path):
+    def responder(system: str, user: str) -> str:
+        if "output-review node" in system.lower():
+            return json.dumps({"status": "failed", "reason": "unsafe", "findings": []})
+        return _hr_responder(system, user)
+
+    monkeypatch.setattr(llm_client, "_get_provider", lambda: FakeProvider(responder=responder))
+    runtime = build_runtime(db_path=tmp_path / "audit-block.sqlite")
+    runtime.tenant_config["output_review_policy"] = "block_on_failed"
+    request = TaskRequest(
+        user_id="u-1",
+        roles=["recruiter"],
+        text="Rank the top candidate for JOB-001.",
+        context={
+            "agent": "hr_recruiter",
+            "job_id": "JOB-001",
+            "candidate_ids": ["C-100"],
+            "top_n": 1,
+            "approved_skills": ["candidate.rank"],
+        },
+    )
+    out = runtime.gateway.handle(request).to_dict()
+    assert out["output"]["error"] == "output_review_failed"
+    assert (
+        out["output"]["final"]["message"]
+        == "The response was blocked by output governance review."
+    )
+    assert "blocked_output" not in out["output"]
+    assert "ranked_candidates" not in json.dumps(out["output"], ensure_ascii=False)
+    assert "output_blocked" in [event["type"] for event in out["audit_events"]]
+
+
 def _chitchat_responder(system: str, user: str) -> str:
     s = system.lower()
     if "intent decomposition module" in s:

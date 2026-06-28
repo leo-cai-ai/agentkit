@@ -16,7 +16,7 @@ let conversationCache = [];
 let chatBusy = false;
 
 // Disable both the Send and "Use Demo Prompt" buttons while a turn is running so
-// a previous command/chat can't be re-triggered before it finishes.
+// a previous chat/action turn can't be re-triggered before it finishes.
 function setChatBusy(busy) {
   chatBusy = busy;
   document
@@ -176,19 +176,20 @@ function finalizeAssistantBubble(bubble, text) {
   bubble.p = body;
 }
 
-// The UI is a single chat window for every agent. Command-mode agents send only
-// {agent, text}; the server fills business params from tenant defaults + the
-// natural-language request. Chat-mode agents post to /api/chat instead.
-function collectCommandPayload(message) {
-  return {
-    text: message,
+// Canonical browser -> server shape: identity hint plus a single context object.
+// The server owns trusted identity/RBAC and routes the selected agent to
+// answer-only memory or the governed action graph.
+function collectChatPayload(message, extraContext = {}) {
+  const context = {
     agent: getSelectedAgentName(),
+    message,
+    ...extraContext,
   };
-}
-
-function getSelectedAgentMode() {
-  const card = getAgentCard(getSelectedAgentName());
-  return (card?.dataset.agentMode || "command").toLowerCase();
+  if (currentConversationId) context.conversation_id = currentConversationId;
+  return {
+    user_id: UI_CONFIG.default_user_id || "",
+    context,
+  };
 }
 
 function getSelectedAgentName() {
@@ -213,44 +214,6 @@ function getSelectedAgentDemoPrompt() {
 
 function getCsrfToken() {
   return document.querySelector('meta[name="csrf-token"]')?.content || "";
-}
-
-async function postTask(payload) {
-  const response = await fetch("/api/tasks", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-CSRF-Token": getCsrfToken(),
-    },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || `Request failed with ${response.status}`);
-  }
-  return response.json();
-}
-
-async function postResume(payload) {
-  const response = await fetch("/api/tasks/resume", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-CSRF-Token": getCsrfToken(),
-    },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) {
-    let message = `Request failed with ${response.status}`;
-    try {
-      const data = await response.json();
-      message = data.error || message;
-    } catch {
-      /* ignore */
-    }
-    throw new Error(message);
-  }
-  return response.json();
 }
 
 async function postChat(payload) {
@@ -508,9 +471,8 @@ function setAgentStatus(agentName, label) {
 }
 
 function applyAgentMode() {
-  const mode = getSelectedAgentMode();
   const bar = document.querySelector("[data-conversation-bar]");
-  if (bar) bar.hidden = mode !== "chat";
+  if (bar) bar.hidden = false;
 }
 
 function bindAgentSelector() {
@@ -527,16 +489,13 @@ function bindAgentSelector() {
     applyAgentMode();
 
     if (isUserChange) {
-      // Switching agents starts a fresh thread; chat agents also load history.
+      // Switching agents starts a fresh local thread; chat agents may also load
+      // persisted history from the backend.
       currentConversationId = null;
       clearPendingResult();
-      if (getSelectedAgentMode() === "chat") {
-        resetChatThread(`Hi, I'm the ${getSelectedAgentLabel()}. How can I help?`);
-        await loadConversations(selected);
-      } else {
-        resetChatThread("");
-      }
-    } else if (getSelectedAgentMode() === "chat") {
+      resetChatThread(`Hi, I'm the ${getSelectedAgentLabel()}. How can I help?`);
+      await loadConversations(selected);
+    } else {
       await loadConversations(selected);
     }
   };
@@ -670,7 +629,7 @@ function approvalActionHtml(waitingForApproval, approval) {
     <div class="approval-box">
       <div>
         <strong>Human approval required</strong>
-        <p>Approve execution for <code>${escapeHtml(skillText)}</code>. This demo will resubmit the same task with an approval token in the request context.</p>
+        <p>Approve execution for <code>${escapeHtml(skillText)}</code>. The runtime will resume the paused task with an approval token in the request context.</p>
       </div>
       <div class="approval-actions">
         <button class="secondary danger" type="button" data-reject-pending>Reject</button>
@@ -849,7 +808,7 @@ function bindRangeOutputs() {
   });
 }
 
-function finalizeCommandResult(result, requestPayload, bubble, selectedAgent, streamed = "") {
+function finalizeActionResult(result, requestPayload, bubble, selectedAgent, streamed = "") {
   const response = result.response || {};
   const final = response.output?.final || {};
   const status = response.output?.status;
@@ -876,13 +835,38 @@ function finalizeCommandResult(result, requestPayload, bubble, selectedAgent, st
   renderResult(result, requestPayload, { hidePrimaryPanel });
 }
 
-async function runCommandTurn(message, selectedAgent, submit) {
-  const requestPayload = collectCommandPayload(message);
+function agentFromRequestPayload(payload) {
+  return payload?.context?.agent || payload?.agent || getSelectedAgentName();
+}
+
+function buildApprovalChatPayload(action) {
+  const originalRequest = pendingApproval?.request || collectChatPayload("");
+  const originalContext = originalRequest.context || {};
+  const context = {
+    agent: originalContext.agent || originalRequest.agent || getSelectedAgentName(),
+    message: action === "approve" ? "Approve" : "Reject",
+    approval: {
+      action,
+      thread_id: pendingApproval?.thread_id || "",
+      skills: pendingApproval?.skills || [],
+      request: originalRequest,
+    },
+  };
+  if (currentConversationId) context.conversation_id = currentConversationId;
+  return {
+    user_id: originalRequest.user_id || UI_CONFIG.default_user_id || "",
+    context,
+  };
+}
+
+async function runUnifiedChatTurn(message, selectedAgent, submit) {
+  const isNewConversation = !currentConversationId;
+  const requestPayload = collectChatPayload(message);
   const bubble = addLiveAssistantMessage(getSelectedAgentLabel());
   let streamed = "";
   let errored = null;
   try {
-    const finalData = await streamSse("/api/tasks/stream", requestPayload, {
+    const finalData = await streamSse("/api/chat/stream", requestPayload, {
       onToken: (delta) => {
         streamed += delta;
         if (bubble) bubble.p.textContent = streamed;
@@ -893,60 +877,19 @@ async function runCommandTurn(message, selectedAgent, submit) {
       },
     });
     if (errored && !finalData) throw new Error(errored);
-    finalizeCommandResult(finalData, requestPayload, bubble, selectedAgent, streamed);
-  } catch (error) {
-    if (!streamed) {
-      try {
-        const result = await postTask(requestPayload);
-        if (bubble) bubble.node.remove();
-        addAssistantResponse(result, requestPayload);
-        const status = result.response?.output?.status;
-        const final = result.response?.output?.final || {};
-        setExecutionState(status === "waiting_for_approval" ? "Waiting for approval" : "Completed", status === "waiting_for_approval" ? 2 : 5, status !== "waiting_for_approval");
-        setAgentStatus(selectedAgent, status === "waiting_for_approval" ? "waiting" : "completed");
-        const intentType = result.response?.output?.governance?.intent?.intent_type || final.intent_type || "";
-        const hidePrimaryPanel = Boolean(final.conversation) || ["waiting_for_approval", "rejected"].includes(status) || ["platform_question", "chit_chat", "unknown"].includes(intentType);
-        renderResult(result, requestPayload, { hidePrimaryPanel });
-        return;
-      } catch (fallbackError) {
-        error = fallbackError;
-      }
-    }
-    if (bubble) bubble.p.textContent = error.message;
-    setExecutionState("Failed");
-    setAgentStatus(selectedAgent, "failed");
-  } finally {
-    submit.disabled = false;
-  }
-}
-
-async function runChatTurn(message, selectedAgent, submit) {
-  const isNewConversation = !currentConversationId;
-  const bubble = addLiveAssistantMessage(getSelectedAgentLabel());
-  let streamed = "";
-  let errored = null;
-  try {
-    const finalData = await streamSse(
-      "/api/chat/stream",
-      { agent: selectedAgent, message, conversation_id: currentConversationId },
-      {
-        onToken: (delta) => {
-          streamed += delta;
-          if (bubble) bubble.p.textContent = streamed;
-          scrollChatToBottom();
-        },
-        onError: (msg) => {
-          errored = msg;
-        },
-      },
-    );
-    if (errored && !finalData) throw new Error(errored);
     if (finalData) {
-      currentConversationId = finalData.conversation_id || currentConversationId;
-      // The streamed text already equals the reply; fall back to the final
-      // payload only when nothing streamed. Either way re-render the bubble
-      // with collapsible thinking + markdown.
-      finalizeAssistantBubble(bubble, streamed || finalData.assistant_text || "");
+      if (finalData.response) {
+        currentConversationId = finalData.conversation_id || currentConversationId;
+        finalizeActionResult(finalData, requestPayload, bubble, selectedAgent, streamed);
+        if (isNewConversation) await loadConversations(selectedAgent);
+        return;
+      } else {
+        currentConversationId = finalData.conversation_id || currentConversationId;
+        // The streamed text already equals the reply; fall back to the final
+        // payload only when nothing streamed. Either way re-render the bubble
+        // with collapsible thinking + markdown.
+        finalizeAssistantBubble(bubble, streamed || finalData.assistant_text || "");
+      }
     }
     setExecutionState("Completed", 5, true);
     setAgentStatus(selectedAgent, "completed");
@@ -954,12 +897,18 @@ async function runChatTurn(message, selectedAgent, submit) {
   } catch (error) {
     if (!streamed) {
       try {
-        const result = await postChat({ agent: selectedAgent, message, conversation_id: currentConversationId });
-        currentConversationId = result.conversation_id;
-        finalizeAssistantBubble(bubble, result.assistant_text || "");
-        setExecutionState("Completed", 5, true);
-        setAgentStatus(selectedAgent, "completed");
-        if (isNewConversation) await loadConversations(selectedAgent);
+        const result = await postChat(requestPayload);
+        if (result.response) {
+          currentConversationId = result.conversation_id || currentConversationId;
+          finalizeActionResult(result, requestPayload, bubble, selectedAgent, "");
+          if (isNewConversation) await loadConversations(selectedAgent);
+        } else {
+          currentConversationId = result.conversation_id || currentConversationId;
+          finalizeAssistantBubble(bubble, result.assistant_text || "");
+          setExecutionState("Completed", 5, true);
+          setAgentStatus(selectedAgent, "completed");
+          if (isNewConversation) await loadConversations(selectedAgent);
+        }
         return;
       } catch (fallbackError) {
         error = fallbackError;
@@ -988,11 +937,7 @@ function bindChatForm() {
     setAgentStatus(selectedAgent, "running");
     setExecutionState("Processing", 0);
     try {
-      if (getSelectedAgentMode() === "chat") {
-        await runChatTurn(message, selectedAgent, submit);
-      } else {
-        await runCommandTurn(message, selectedAgent, submit);
-      }
+      await runUnifiedChatTurn(message, selectedAgent, submit);
     } finally {
       setChatBusy(false);
     }
@@ -1047,7 +992,8 @@ function bindConversationBar() {
 
 async function approvePendingTask() {
   if (!pendingApproval) return;
-  const agentName = pendingApproval.request.agent;
+  const originalRequest = pendingApproval.request;
+  const agentName = agentFromRequestPayload(originalRequest);
   const agentLabel = getSelectedAgentLabel();
   const buttons = document.querySelectorAll("[data-approve-pending], [data-reject-pending]");
   buttons.forEach((button) => {
@@ -1055,18 +1001,13 @@ async function approvePendingTask() {
   });
   setExecutionState("Approved, executing", 3);
   setAgentStatus(agentName, "running");
-  // Prefer in-place resume (fast path): no re-running intent/route/plan.
-  // Fall back to a full resubmit when no checkpoint thread is available.
-  const usingResume = Boolean(pendingApproval.thread_id);
-  const approvedPayload = usingResume
-    ? { thread_id: pendingApproval.thread_id, approved_skills: pendingApproval.skills }
-    : { ...pendingApproval.request, approved_skills: pendingApproval.skills };
+  const approvedPayload = buildApprovalChatPayload("approve");
   const bubble = addLiveAssistantMessage(agentLabel);
   let streamed = "";
   let errored = null;
   let succeeded = false;
   try {
-    const result = await streamSse(usingResume ? "/api/tasks/resume/stream" : "/api/tasks/stream", approvedPayload, {
+    const result = await streamSse("/api/chat/stream", approvedPayload, {
       onToken: (delta) => {
         streamed += delta;
         if (bubble) bubble.p.textContent = streamed;
@@ -1085,7 +1026,7 @@ async function approvePendingTask() {
     pendingApproval = null;
     clearPendingResult();
     finalizeAssistantBubble(bubble, streamed || result.assistant_text || "");
-    renderResult(result, approvedPayload);
+    renderResult(result, originalRequest);
     succeeded = true;
   } catch (error) {
     setExecutionState("Failed");
@@ -1105,7 +1046,8 @@ async function approvePendingTask() {
 
 async function rejectPendingTask() {
   if (!pendingApproval) return;
-  const agentName = pendingApproval.request.agent;
+  const originalRequest = pendingApproval.request;
+  const agentName = agentFromRequestPayload(originalRequest);
   const agentLabel = getSelectedAgentLabel();
   const buttons = document.querySelectorAll("[data-approve-pending], [data-reject-pending]");
   buttons.forEach((button) => {
@@ -1113,16 +1055,13 @@ async function rejectPendingTask() {
   });
   setExecutionState("Rejected", 2);
   setAgentStatus(agentName, "rejected");
-  const usingResume = Boolean(pendingApproval.thread_id);
-  const rejectedPayload = usingResume
-    ? { thread_id: pendingApproval.thread_id, rejected_skills: pendingApproval.skills }
-    : { ...pendingApproval.request, rejected_skills: pendingApproval.skills };
+  const rejectedPayload = buildApprovalChatPayload("reject");
   const bubble = addLiveAssistantMessage(agentLabel);
   let streamed = "";
   let errored = null;
   let succeeded = false;
   try {
-    const result = await streamSse(usingResume ? "/api/tasks/resume/stream" : "/api/tasks/stream", rejectedPayload, {
+    const result = await streamSse("/api/chat/stream", rejectedPayload, {
       onToken: (delta) => {
         streamed += delta;
         if (bubble) bubble.p.textContent = streamed;
@@ -1140,7 +1079,7 @@ async function rejectPendingTask() {
     clearPendingResult();
     // Rejected runs don't execute, so nothing streams -> show the rejection text.
     finalizeAssistantBubble(bubble, streamed || result.assistant_text || "");
-    renderResult(result, rejectedPayload);
+    renderResult(result, originalRequest);
     succeeded = true;
   } catch (error) {
     setExecutionState("Failed");
