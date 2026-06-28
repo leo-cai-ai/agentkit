@@ -42,7 +42,7 @@ uv sync --extra serve            # 接 PG 再加 --extra pg
 
 # 方式二：pip + venv
 python -m venv .venv
-source .venv/bin/activate        # Windows: .\.venv\Scripts\Activate.ps1
+source .venv/bin/activate        # Windows: first: Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process  then: .\.venv\Scripts\Activate.ps1
 pip install -e ".[serve]"        # 接 PG: pip install -e ".[serve,pg]"
 ```
 
@@ -133,10 +133,10 @@ AGENTKIT_VECTOR_STORE_BACKEND=sqlite
 2) 建库 / 用户 / 扩展：
 
 ```sql
-CREATE DATABASE agentkit;
+CREATE DATABASE agentkitdb;
 CREATE USER agentkit WITH PASSWORD '你的强密码';
 GRANT ALL PRIVILEGES ON DATABASE agentkit TO agentkit;
--- 连到 agentkit 库后：
+-- 连到 agentkitdb 库后：
 CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
@@ -197,11 +197,27 @@ gunicorn --bind 0.0.0.0:8501 --workers 2 --timeout 120 agentkit.web.app:app
 
 仓库自带 `Dockerfile` + `docker-compose.yml`（web + pgvector，含扩展自动初始化、健康检查依赖、容器加固）：
 
+<!-- "registry-mirrors": [
+    "https://mirror.ccs.tencentyun.com",
+    "https://docker.mirrors.ustc.edu.cn"
+  ] -->
+
+如果是本机安装的ollama llm，docker无法访问ollama 的11434 端口，则需要在本机转发11434 端口到11435
+.env 设置： AGENTKIT_OPENAI_BASE_URL=http://host.docker.internal:11435/v1
+ollama 监听： [Service]Environment="OLLAMA_HOST=0.0.0.0:11434"
+本机powershell： 
+转发： netsh interface portproxy add v4tov4 listenport=11435 listenaddress=0.0.0.0 connectport=11434 connectaddress=[ollama ip addr]
+验证转发规则： netsh interface portproxy show all
+允许 Windows 防火墙入站连接（如果被拦截）：New-NetFirewallRule -DisplayName "Allow Ollama 11435" -Direction Inbound -Protocol TCP -LocalPort 11435 -Action Allow
+在容器内测试端口是否开放（从容器内测试）：python3 -c "import socket; s=socket.socket(); s.settimeout(3); s.connect(('host.docker.internal',11435)); print('open')"
+
+
+
 ```bash
 cp .env.example .env
 # 编辑 .env：AGENTKIT_WEB_AUTH_TOKEN / AGENTKIT_WEB_SECRET_KEY / AGENTKIT_PG_PASSWORD
 docker compose up -d --build
-# 控制台 http://<host>:8501   健康检查 http://<host>:8501/healthz
+# 控制台 http://127.0.0.1:8501   健康检查 http://127.0.0.1:8501/healthz
 ```
 
 要点：
