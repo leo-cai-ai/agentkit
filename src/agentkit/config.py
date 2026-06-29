@@ -200,15 +200,29 @@ class Settings(BaseSettings):
     # the VectorStore protocol without changing the retriever or its callers.
     vector_store_backend: Literal["sqlite", "postgres"] = "sqlite"
 
-    # Enterprise knowledge-base RAG scaffolding. Defaults are inert; deployments
-    # can wire ingestion/search backends later without changing agent entrypoints.
+    # Enterprise knowledge-base RAG. Disabled by default; when enabled, chat
+    # agents retrieve tenant-scoped knowledge chunks and inject cited snippets
+    # into the prompt. Chroma is the default persistent KB store, imported lazily
+    # so non-RAG deployments do not need the optional dependency.
     rag_enabled: bool = False
+    rag_store_backend: Literal["chroma", "memory"] = "chroma"
+    rag_chroma_path: str = "data/chroma"
+    rag_chroma_collection: str = "agentkit_knowledge"
     rag_chunk_max_chars: int = Field(default=1200, gt=0)
     rag_chunk_overlap_chars: int = Field(default=120, ge=0)
+    rag_table_chunk_max_chars: int = Field(default=900, gt=0)
+    rag_ocr_chunk_max_chars: int = Field(default=900, gt=0)
     rag_keyword_weight: float = Field(default=0.4, ge=0.0)
     rag_vector_weight: float = Field(default=0.6, ge=0.0)
-    rag_reranker: Literal["none", "llm"] = "none"
+    rag_min_vector_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    rag_query_rewrite: Literal["none", "llm"] = "none"
+    rag_query_rewrite_max: int = Field(default=3, ge=1)
+    rag_reranker: Literal["none", "keyword", "llm"] = "none"
+    rag_rerank_candidates: int = Field(default=12, ge=1)
     rag_top_k: int = Field(default=5, ge=0)
+    rag_context_cap_tokens: int = Field(default=1000, ge=0)
+    rag_ocr_enabled: bool = False
+    rag_ocr_languages: str = "eng+chi_sim"
 
     # PostgreSQL connection (used when a backend is set to 'postgres', e.g.
     # vector_store_backend=postgres with the pgvector extension). Either set a

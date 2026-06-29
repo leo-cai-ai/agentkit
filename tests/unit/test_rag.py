@@ -2,13 +2,18 @@ from __future__ import annotations
 
 from agentkit.core.memory.embeddings import FakeEmbeddingProvider
 from agentkit.core.rag import (
+    AdaptiveTextChunker,
+    ChunkingOptions,
+    DocumentFolderLoader,
     HybridRetriever,
     InMemoryKnowledgeStore,
     KeywordRetriever,
     KnowledgeDocument,
     KnowledgeIngestionPipeline,
+    RAGEvalCase,
     RetrievalQuery,
     VectorRetriever,
+    evaluate_retriever,
 )
 
 
@@ -80,3 +85,75 @@ def test_hybrid_retriever_fuses_keyword_and_vector_scores():
     assert hits[0].chunk.document_id == "kb-1"
     assert hits[0].source == "hybrid"
     assert "keyword" in hits[0].diagnostics
+
+
+def test_adaptive_chunker_preserves_block_provenance():
+    doc = KnowledgeDocument(
+        id="doc-1",
+        tenant_id="t1",
+        title="Handbook",
+        text="",
+        metadata={
+            "blocks": [
+                {"text": "Refund workflow overview", "kind": "page_text", "page": 1},
+                {"text": "SLA | Owner\n24h | Support", "kind": "table", "page": 2},
+            ],
+            "source_path": "handbook.pdf",
+        },
+        acl_roles=("support",),
+    )
+    chunks = AdaptiveTextChunker(ChunkingOptions(max_chars=120)).chunk(doc)
+
+    assert len(chunks) == 2
+    assert chunks[0].metadata["pages"] == [1]
+    assert chunks[1].metadata["content_kinds"] == ["table"]
+    assert "blocks" not in chunks[0].metadata
+    assert chunks[1].acl_roles == ("support",)
+
+
+def test_folder_loader_loads_plain_text(tmp_path):
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "policy.txt").write_text("Refunds need approval.", encoding="utf-8")
+
+    docs = DocumentFolderLoader().load_path(docs_dir, tenant_id="t1")
+
+    assert len(docs) == 1
+    assert docs[0].title == "policy"
+    assert docs[0].text == "Refunds need approval."
+    assert docs[0].metadata["blocks"][0]["source"] == "txt"
+
+
+def test_rag_eval_reports_hit_rate_and_mrr():
+    store = InMemoryKnowledgeStore()
+    pipeline = KnowledgeIngestionPipeline(
+        store=store,
+        embeddings=FakeEmbeddingProvider(dim=32),
+    )
+    pipeline.ingest(
+        [
+            KnowledgeDocument(
+                id="refund-policy",
+                tenant_id="t1",
+                title="Refund Policy",
+                text="Refund approval requires the support manager.",
+            )
+        ]
+    )
+    retriever = KeywordRetriever(store=store)
+
+    report = evaluate_retriever(
+        [
+            RAGEvalCase(
+                tenant_id="t1",
+                query="refund approval",
+                relevant_document_ids=("refund-policy",),
+                k=3,
+            )
+        ],
+        retriever=retriever,
+        default_tenant_id="t1",
+    )
+
+    assert report.hit_rate == 1.0
+    assert report.mrr == 1.0

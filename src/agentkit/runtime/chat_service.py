@@ -8,6 +8,7 @@ can have its own memory window / budget / retrieval settings.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,7 @@ class ChatService:
         settings: Any,
         chat_fn: Any = None,
         embedding_provider: Any = None,
+        knowledge_service: Any = None,
     ) -> None:
         self._tenant_id = tenant_id
         self._tenant_config = tenant_config
@@ -59,6 +61,7 @@ class ChatService:
         self._tokenizer = HeuristicTokenEstimator()
         self._prompts = PromptLibrary.from_tenant_config(tenant_config)
         self._embeddings = embedding_provider or build_embedding_provider(settings)
+        self._knowledge = knowledge_service or self._build_knowledge_service()
         self._chat_agents = {
             str(item.get("name")): item
             for item in tenant_config.get("chat_agents", [])
@@ -84,8 +87,15 @@ class ChatService:
         user_id: str,
         message: str,
         conversation_id: str | None = None,
+        roles: Sequence[str] = (),
     ) -> dict[str, Any]:
         manager = self._manager_for(agent)
+        knowledge = self._retrieve_knowledge(
+            agent=agent,
+            user_id=user_id,
+            message=message,
+            roles=roles,
+        )
         reply = manager.chat(
             tenant_id=self._tenant_id,
             agent=agent,
@@ -94,6 +104,7 @@ class ChatService:
             conversation_id=conversation_id,
             persona=self._persona(agent),
             tool_catalog=self._tool_catalog(agent),
+            retrieved_knowledge=knowledge,
         )
         return {
             "interaction_mode": "chat",
@@ -102,6 +113,7 @@ class ChatService:
             "conversation_id": reply.conversation_id,
             "run_id": reply.run_id,
             "summary_updated": reply.summary_updated,
+            "retrieved_knowledge": len(knowledge),
         }
 
     def list_conversations(self, *, agent: str, user_id: str) -> list[dict[str, Any]]:
@@ -131,6 +143,7 @@ class ChatService:
         user_id: str,
         message: str,
         conversation_id: str | None = None,
+        roles: Sequence[str] = (),
     ) -> dict[str, Any]:
         """Prepare bounded memory context for an action-capable chat turn.
 
@@ -157,6 +170,12 @@ class ChatService:
             user_id=user_id,
             query=message,
         )
+        knowledge = self._retrieve_knowledge(
+            agent=agent,
+            user_id=user_id,
+            message=message,
+            roles=roles,
+        )
         return {
             "conversation_id": conversation_id,
             "memory": {
@@ -167,6 +186,7 @@ class ChatService:
                     if row.get("content")
                 ],
                 "retrieved_memories": memories,
+                "retrieved_knowledge": knowledge,
             },
         }
 
@@ -220,6 +240,7 @@ class ChatService:
             budget_tokens=int(cfg["max_context_tokens"]),
             window_turns=int(cfg["window_turns"]),
             summary_cap_tokens=int(cfg["summary_cap_tokens"]),
+            knowledge_cap_tokens=int(getattr(self._settings, "rag_context_cap_tokens", 1000)),
         )
         retriever = MemoryRetriever(
             vector_store=build_vector_store(self._settings, self._store),
@@ -242,6 +263,47 @@ class ChatService:
         )
         self._managers[agent_name] = manager
         return manager
+
+    def _build_knowledge_service(self) -> Any:
+        if not bool(getattr(self._settings, "rag_enabled", False)):
+            return None
+        from agentkit.core.rag.service import build_knowledge_service
+
+        return build_knowledge_service(
+            self._settings,
+            tenant_id=self._tenant_id,
+            embeddings=self._embeddings,
+        )
+
+    def _retrieve_knowledge(
+        self,
+        *,
+        agent: str,
+        user_id: str,
+        message: str,
+        roles: Sequence[str],
+    ) -> list[str]:
+        if self._knowledge is None or not self._rag_enabled_for_agent(agent):
+            return []
+        try:
+            return self._knowledge.retrieve_context(
+                message,
+                user_id=user_id,
+                agent=agent,
+                roles=tuple(str(role) for role in roles),
+                k=int(getattr(self._settings, "rag_top_k", 5)),
+            )
+        except Exception:
+            return []
+
+    def _rag_enabled_for_agent(self, agent_name: str) -> bool:
+        if not bool(getattr(self._settings, "rag_enabled", False)):
+            return False
+        agent_cfg = self._chat_agents.get(agent_name, {})
+        rag_cfg = agent_cfg.get("rag", {}) if isinstance(agent_cfg, dict) else {}
+        if isinstance(rag_cfg, dict) and "enabled" in rag_cfg:
+            return bool(rag_cfg["enabled"])
+        return True
 
     def _resolve_conversation_id(
         self,

@@ -55,6 +55,23 @@ class RetrievalHit:
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class DocumentBlock:
+    """A semantically meaningful extraction block before chunking."""
+
+    text: str
+    kind: str = "text"
+    page: int | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class IngestionResult:
+    documents: list[KnowledgeDocument] = field(default_factory=list)
+    chunks: list[KnowledgeChunk] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
 @runtime_checkable
 class KnowledgeStore(Protocol):
     def add_chunks(self, chunks: Sequence[KnowledgeChunk]) -> None: ...
@@ -72,15 +89,23 @@ class Retriever(Protocol):
 
 
 @runtime_checkable
+class QueryRewriter(Protocol):
+    def rewrite(self, query: RetrievalQuery) -> list[str]: ...
+
+
+@runtime_checkable
 class Reranker(Protocol):
     def rerank(self, *, query: RetrievalQuery, hits: Sequence[RetrievalHit]) -> list[RetrievalHit]:
         ...
 
 
 __all__ = [
+    "DocumentBlock",
+    "IngestionResult",
     "KnowledgeChunk",
     "KnowledgeDocument",
     "KnowledgeStore",
+    "QueryRewriter",
     "RetrievalHit",
     "RetrievalQuery",
     "Retriever",

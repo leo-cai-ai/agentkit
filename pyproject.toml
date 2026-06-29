@@ -42,6 +42,17 @@ pg = [
     "psycopg[binary,pool]>=3.1,<4.0",
     "langgraph-checkpoint-postgres>=2.0.0,<3.0.0",
 ]
+# Enterprise knowledge-base RAG: Chroma persistence plus PDF/Word/OCR loaders.
+# OCR also needs a system tesseract binary and language packs.
+rag = [
+    "chromadb>=0.5.0,<2.0.0",
+    "numpy>=1.26,<2.4",
+    "pypdf>=4.0.0,<7.0.0",
+    "pymupdf>=1.24.0,<2.0.0",
+    "python-docx>=1.1.0,<2.0.0",
+    "pillow>=10.0.0,<13.0.0",
+    "pytesseract>=0.3.10,<0.4.0",
+]
 
 [build-system]
 requires = ["hatchling"]

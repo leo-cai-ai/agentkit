@@ -7,8 +7,19 @@ from collections.abc import Iterable, Sequence
 from .base import KnowledgeChunk, RetrievalQuery
 
 
-def _allowed(chunk: KnowledgeChunk, roles: tuple[str, ...]) -> bool:
+def allowed_for_roles(chunk: KnowledgeChunk, roles: tuple[str, ...]) -> bool:
     return not chunk.acl_roles or bool(set(chunk.acl_roles) & set(roles))
+
+
+def matches_filters(chunk: KnowledgeChunk, filters: dict) -> bool:
+    for key, expected in filters.items():
+        actual = chunk.metadata.get(str(key))
+        if isinstance(expected, list | tuple | set):
+            if actual not in expected:
+                return False
+        elif actual != expected:
+            return False
+    return True
 
 
 class InMemoryKnowledgeStore:
@@ -36,7 +47,9 @@ class InMemoryKnowledgeStore:
         for chunk in self._chunks.values():
             if chunk.tenant_id != query.tenant_id:
                 continue
-            if not _allowed(chunk, query.roles):
+            if not allowed_for_roles(chunk, query.roles):
+                continue
+            if not matches_filters(chunk, query.filters):
                 continue
             yield chunk
 
@@ -44,4 +57,4 @@ class InMemoryKnowledgeStore:
         return self._embeddings.get(chunk_id)
 
 
-__all__ = ["InMemoryKnowledgeStore"]
+__all__ = ["InMemoryKnowledgeStore", "allowed_for_roles", "matches_filters"]

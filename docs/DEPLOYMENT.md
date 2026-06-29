@@ -43,7 +43,7 @@ uv sync --extra serve            # 接 PG 再加 --extra pg
 # 方式二：pip + venv
 python -m venv .venv
 source .venv/bin/activate        # Windows: first: Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process  then: .\.venv\Scripts\Activate.ps1
-pip install -e ".[serve]"        # 接 PG: pip install -e ".[serve,pg]"
+pip install -e ".[serve]"        # 接 PG/RAG: pip install -e ".[serve,pg,rag]"
 ```
 
 ---
@@ -236,9 +236,18 @@ docker compose up -d --build
 要点：
 - `web`（gunicorn）+ `db`（`pgvector/pgvector:pg16`），`web` 经健康检查依赖等 db 就绪后再启动。
 - `db` 首次初始化由 `docker/initdb/01-vector.sql` 执行 `CREATE EXTENSION vector`；审计、会话、checkpoint、`memories` 表由应用幂等创建。
-- compose 在 `web` 上覆盖 `AGENTKIT_STORAGE_BACKEND=postgres`、`AGENTKIT_VECTOR_STORE_BACKEND=postgres`、`AGENTKIT_APPROVAL_CHECKPOINTER=postgres`、`AGENTKIT_PG_HOST=db`、`AGENTKIT_PG_SSLMODE=disable`，其余 PG 凭据从 `.env` 注入；镜像已含 `psycopg` 与 Postgres checkpointer（`.[serve,pg]`）。
-- 持久化：审计、会话、checkpoint、长期语义记忆都写入 PG；默认 compose 的 PG 数据落 `pgdata`，外部 PG 模式写入企业 PG。
+- compose 在 `web` 上覆盖 `AGENTKIT_STORAGE_BACKEND=postgres`、`AGENTKIT_VECTOR_STORE_BACKEND=postgres`、`AGENTKIT_APPROVAL_CHECKPOINTER=postgres`、`AGENTKIT_PG_HOST=db`、`AGENTKIT_PG_SSLMODE=disable`，其余 PG 凭据从 `.env` 注入；镜像已含 `psycopg`、Postgres checkpointer、Chroma RAG 依赖与 tesseract OCR（`.[serve,pg,rag]`）。
+- 持久化：审计、会话、checkpoint、长期语义记忆都写入 PG；企业知识库 RAG 默认写入 `/app/data/chroma`，由 `agentkit_data` volume 持久化；默认 compose 的 PG 数据落 `pgdata`，外部 PG 模式写入企业 PG。
 - `db` 默认不对宿主暴露端口（仅内部网络）。
+
+RAG 入库/检索：
+
+```bash
+docker compose run --rm web agentkit --tenant company_alpha rag-ingest /app/data/knowledge --ocr
+docker compose run --rm web agentkit --tenant company_alpha rag-query "退款审批规则" --roles support
+```
+
+启用线上检索时设置 `AGENTKIT_RAG_ENABLED=true`。扫描件 OCR 依赖 tesseract，默认镜像已安装英文和简体中文语言包。
 
 **纯 SQLite 部署**：仅建议本地开发使用。把 `.env` 的 `AGENTKIT_STORAGE_BACKEND`、`AGENTKIT_APPROVAL_CHECKPOINTER`、`AGENTKIT_VECTOR_STORE_BACKEND` 设为 `sqlite`，并不要使用默认 Docker compose 的 PG 覆盖。
 
@@ -296,7 +305,7 @@ agentkit new-pack billing.invoices       # 脚手架生成新领域包
 
 | 现象 | 排查 |
 | --- | --- |
-| 启动报 `psycopg` 缺失 | 装 `pip install 'agentkit[pg]'` 或镜像用 `.[serve,pg]` |
+| 启动报 `psycopg` 缺失 | 装 `pip install 'agentkit[pg]'` 或镜像用 `.[serve,pg,rag]` |
 | `init-db` 报连接错误 | 检查 PG host/port/凭据/`sslmode`、网络可达 5432、`vector` 扩展是否启用 |
 | 登录后立刻退出 | 纯 http 下把 `AGENTKIT_WEB_COOKIE_SECURE=false` |
 | 多 worker 限速被击穿 | 设 `AGENTKIT_LLM_RATE_LIMITER_BACKEND=sqlite` |

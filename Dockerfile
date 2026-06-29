@@ -14,11 +14,10 @@ RUN pip install --no-cache-dir uv && python -m venv "$VIRTUAL_ENV"
 WORKDIR /app
 
 # Install dependencies first (better layer caching), then the package itself.
-# 'pg' bundles the psycopg driver so the PostgreSQL/pgvector backend works
-# out of the box (activate via AGENTKIT_VECTOR_STORE_BACKEND=postgres).
+# 'pg' bundles the psycopg driver; 'rag' bundles Chroma + document parsers.
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
-RUN uv pip install --python "$VIRTUAL_ENV/bin/python" ".[serve,pg]"
+RUN uv pip install --python "$VIRTUAL_ENV/bin/python" ".[serve,pg,rag]"
 
 # ---- runtime: minimal image, non-root ----
 FROM python:3.12.10-slim AS runtime
@@ -32,8 +31,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     # and the data volume is mounted.
     AGENTKIT_ROOT=/app
 
-# Create an unprivileged user to run the app.
-RUN useradd --create-home --uid 10001 appuser
+# OCR support for scanned PDFs and embedded Word images. chi-sim lets the
+# default eng+chi_sim OCR language setting work for Chinese enterprise docs.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        tesseract-ocr \
+        tesseract-ocr-eng \
+        tesseract-ocr-chi-sim \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 10001 appuser
 
 WORKDIR /app
 

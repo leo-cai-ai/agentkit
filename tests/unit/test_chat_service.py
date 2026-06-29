@@ -73,6 +73,12 @@ def _service(tmp_path, captured):
     )
 
 
+class _FakeKnowledgeService:
+    def retrieve_context(self, text, *, user_id="", agent="", roles=(), k=5, filters=None):
+        assert roles == ("support",)
+        return ["[KB id=policy#chunk-0] Refunds require manager approval."]
+
+
 def test_agent_action_capability_resolution():
     tc = _tenant_config()
     assert agent_actions_enabled(tc, "hr_recruiter") is True
@@ -147,6 +153,41 @@ def test_chat_stores_assistant_reply_without_reasoning_tags(tmp_path):
     assert out["assistant_text"] == raw
     msgs = svc.messages(conversation_id=out["conversation_id"], user_id="u1")
     assert msgs[-1]["content"] == "Visible answer."
+
+
+def test_chat_injects_rag_knowledge_context(tmp_path):
+    captured: dict = {}
+
+    def chat_fn(system, user):
+        captured.setdefault("systems", []).append(system)
+        return "assistant reply"
+
+    settings = _settings()
+    settings.rag_enabled = True
+    settings.rag_top_k = 3
+    settings.rag_context_cap_tokens = 1000
+    svc = ChatService(
+        tenant_id="AI-ABC",
+        tenant_config=_tenant_config(),
+        db_path=tmp_path / "t.sqlite",
+        agents=_agents(),
+        audit=InMemoryAuditLog(),
+        settings=settings,
+        chat_fn=chat_fn,
+        embedding_provider=FakeEmbeddingProvider(dim=128),
+        knowledge_service=_FakeKnowledgeService(),
+    )
+
+    out = svc.chat(
+        agent="customer_service",
+        user_id="u1",
+        message="how do refunds work?",
+        roles=("support",),
+    )
+
+    assert out["retrieved_knowledge"] == 1
+    assert any("## Relevant knowledge" in system for system in captured["systems"])
+    assert any("Refunds require manager approval" in system for system in captured["systems"])
 
 
 def test_messages_scoped_to_user(tmp_path):

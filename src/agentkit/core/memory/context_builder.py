@@ -57,12 +57,14 @@ class ContextBuilder:
         window_turns: int = 6,
         summary_cap_tokens: int = 600,
         memory_cap_tokens: int = 600,
+        knowledge_cap_tokens: int = 1000,
     ) -> None:
         self._tokenizer = tokenizer
         self._budget = max(1, budget_tokens)
         self._window_turns = max(1, window_turns)
         self._summary_cap = summary_cap_tokens
         self._memory_cap = memory_cap_tokens
+        self._knowledge_cap = knowledge_cap_tokens
 
     @property
     def window_turns(self) -> int:
@@ -74,6 +76,7 @@ class ContextBuilder:
         persona: str = "",
         tool_catalog: str = "",
         retrieved_memories: Sequence[str] = (),
+        retrieved_knowledge: Sequence[str] = (),
         summary: str = "",
         recent_messages: Sequence[dict[str, Any]] = (),
         current_text: str,
@@ -89,12 +92,15 @@ class ContextBuilder:
         memories_text = self._truncate(
             "\n".join(f"- {m}" for m in retrieved_memories), self._memory_cap
         )
+        knowledge_text = self._truncate(
+            "\n".join(f"- {m}" for m in retrieved_knowledge), self._knowledge_cap
+        )
         user_text = current_text
 
         while True:
             summary_capped = self._truncate(summary_cur, self._summary_cap)
             system_text = self._render(
-                persona, tool_catalog, memories_text, summary_capped, working
+                persona, tool_catalog, memories_text, knowledge_text, summary_capped, working
             )
             total = self._tokenizer.estimate(system_text) + self._tokenizer.estimate(user_text)
             if total <= self._budget or not working:
@@ -107,7 +113,9 @@ class ContextBuilder:
             covered_through = max(covered_through, batch_max_id)
 
         summary_capped = self._truncate(summary_cur, self._summary_cap)
-        system_text = self._render(persona, tool_catalog, memories_text, summary_capped, working)
+        system_text = self._render(
+            persona, tool_catalog, memories_text, knowledge_text, summary_capped, working
+        )
         estimated = self._tokenizer.estimate(system_text) + self._tokenizer.estimate(user_text)
         return BuildResult(
             system_text=system_text,
@@ -124,6 +132,7 @@ class ContextBuilder:
         persona: str,
         tool_catalog: str,
         memories_text: str,
+        knowledge_text: str,
         summary: str,
         working: Sequence[dict[str, Any]],
     ) -> str:
@@ -134,6 +143,13 @@ class ContextBuilder:
             parts.append("## Available tools & skills\n" + tool_catalog.strip())
         if memories_text.strip():
             parts.append("## Relevant memory\n" + memories_text.strip())
+        if knowledge_text.strip():
+            parts.append(
+                "## Relevant knowledge\n"
+                + knowledge_text.strip()
+                + "\n\nUse this knowledge only when it is relevant. "
+                "Cite the bracketed KB source ids in the answer when you rely on it."
+            )
         if summary.strip():
             parts.append("## Conversation summary so far\n" + summary.strip())
         if working:

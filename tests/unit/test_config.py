@@ -25,6 +25,10 @@ def _fresh_settings(monkeypatch, **env):
         "AGENTKIT_AUTH_PROXY_DEFAULT_BUSINESS_ROLES",
         "AGENTKIT_TOOL_MAX_WORKERS",
         "AGENTKIT_VECTOR_STORE_BACKEND",
+        "AGENTKIT_RAG_ENABLED",
+        "AGENTKIT_RAG_STORE_BACKEND",
+        "AGENTKIT_RAG_QUERY_REWRITE",
+        "AGENTKIT_RAG_RERANKER",
         "AGENTKIT_MEMORY_WINDOW_TURNS",
         "AGENTKIT_MEMORY_MAX_CONTEXT_TOKENS",
     ]:
@@ -197,12 +201,21 @@ def test_embedding_defaults(monkeypatch):
 def test_rag_defaults(monkeypatch):
     s = _fresh_settings(monkeypatch)
     assert s.rag_enabled is False
+    assert s.rag_store_backend == "chroma"
+    assert s.rag_chroma_path == "data/chroma"
+    assert s.rag_chroma_collection == "agentkit_knowledge"
     assert s.rag_chunk_max_chars == 1200
     assert s.rag_chunk_overlap_chars == 120
+    assert s.rag_table_chunk_max_chars == 900
+    assert s.rag_ocr_chunk_max_chars == 900
     assert s.rag_keyword_weight == 0.4
     assert s.rag_vector_weight == 0.6
+    assert s.rag_query_rewrite == "none"
     assert s.rag_reranker == "none"
+    assert s.rag_rerank_candidates == 12
     assert s.rag_top_k == 5
+    assert s.rag_context_cap_tokens == 1000
+    assert s.rag_ocr_enabled is False
 
 
 def test_get_settings_cached(monkeypatch):

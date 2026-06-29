@@ -200,15 +200,18 @@ flowchart LR
 
 ## 7.2 企业知识库 RAG 框架（`core/rag/`）
 
-会话记忆解决的是 `(tenant, agent, user)` 范围内的个人历史事实；企业 RAG 解决的是制度、手册、FAQ、案例、产品资料等共享知识。当前代码先提供框架骨架，不绑定真实数据源：
+会话记忆解决的是 `(tenant, agent, user)` 范围内的个人历史事实；企业 RAG 解决的是制度、手册、FAQ、案例、产品资料等共享知识。当前实现已经包含从文件夹入库到 chat 上下文装载的闭环：
 
-- `KnowledgeDocument` / `KnowledgeChunk` / `RetrievalQuery` / `RetrievalHit`：包含 tenant、metadata、URI、ACL roles 的稳定契约。
-- `KnowledgeIngestionPipeline`：文本切块、可选 embedding、写入 `KnowledgeStore`。
-- `KeywordRetriever` / `VectorRetriever` / `HybridRetriever`：支持关键词、向量、混合检索和加权 score fusion。
-- `Reranker`：重排序协议，默认 `IdentityReranker`；后续可接 LLM reranker、cross-encoder 或业务规则。
-- `InMemoryKnowledgeStore`：测试/本地框架验证；生产可替换为 pgvector、OpenSearch/Elasticsearch、Milvus、Chroma 等。
+- 数据契约：`KnowledgeDocument` / `KnowledgeChunk` / `RetrievalQuery` / `RetrievalHit`，包含 tenant、metadata、URI、ACL roles。
+- 文件摄取：`DocumentFolderLoader` 支持 `pdf/docx/txt/md/html/json/csv`；PDF 优先文本抽取，扫描件可启用 OCR；Word 抽取段落、表格，并可对嵌入图片 OCR。图表/柱状图等图片内容通过 `ImageAnalyzer` 接口接入，默认实现为 Tesseract OCR，后续可替换成多模态图表理解 provider。
+- Chunk 策略：`AdaptiveTextChunker` 优先保留页、表格、OCR 块、图片块等结构边界；超长块才做 overlap split；chunk metadata 保留 `pages/content_kinds/source_path/extractors`，便于引用与追溯。
+- 持久化：`ChromaKnowledgeStore` 为默认 RAG 后端，持久化 chunk、metadata、ACL 和 embedding；`InMemoryKnowledgeStore` 用于测试。
+- 检索：`KeywordRetriever` 使用 BM25；`VectorRetriever` 使用 embedding cosine；`HybridRetriever` 做加权 fusion，并支持 `NoopQueryRewriter` / `LLMQueryRewriter`。
+- 重排：默认 `IdentityReranker`；可选 `KeywordOverlapReranker` 或 `LLMReranker`。小客户默认关闭 LLM rewrite/rerank 以控制 token 成本。
+- 运行时接入：`ChatService` 在 `AGENTKIT_RAG_ENABLED=true` 时把 `Relevant knowledge` 注入回答型 agent prompt；行动型 agent 在进入 LangGraph 前把 `retrieved_knowledge` 写入 `TaskRequest.context.chat_memory`。
+- 评估：`RAGEvalCase` / `evaluate_retriever` 输出 hit-rate、recall@k、precision@k、MRR，可作为 CI 回归门禁。
 
-默认 `AGENTKIT_RAG_ENABLED=false`，不会影响当前 agent 行为。后续接入时，把 RAG retriever 作为统一上下文来源注入回答型和行动型 agent，而不是只绑定某一个客服路径。
+默认 `AGENTKIT_RAG_ENABLED=false`，不会影响当前 agent 行为。RAG 检索严格按 tenant 隔离，并用入库时的 `acl_roles` 与后端可信解析出的 business roles 做过滤；浏览器 payload 中的 roles 不参与授权。
 
 ---
 
@@ -339,7 +342,7 @@ flowchart TB
 | 审计事件 | SQLite `data/<tenant>.sqlite` | PostgreSQL `task_runs` / `audit_events` |
 | 会话历史/消息 | SQLite（per-tenant） | PostgreSQL `conversations` / `messages` / `conversation_summaries` |
 | 长期语义记忆 | SQLite `memories` 表 | PostgreSQL + pgvector `memories` |
-| 企业知识库 RAG | `agentkit.core.rag` 内存框架 | pgvector / OpenSearch / Milvus / Chroma / reranker |
+| 企业知识库 RAG | Chroma `data/chroma` + `agentkit.core.rag` | OpenSearch / Milvus / pgvector / custom reranker |
 | Workflow artifacts | run-scoped `InMemoryArtifactStore` + 审计引用 | SQLite / PostgreSQL / object store |
 | 审批检查点 | 内存 / SQLite | PostgreSQL LangGraph checkpointer |
 | 限流令牌桶 | 进程内 / SQLite | （接缝可接 Redis） |

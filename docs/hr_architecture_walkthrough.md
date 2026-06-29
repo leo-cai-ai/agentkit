@@ -40,6 +40,7 @@ src/agentkit/
     executor.py                  # skill 执行、batch、tool 调用
     audit.py                     # SQLite/PostgreSQL audit/run history
     memory/                      # 会话记忆、向量检索、pgvector 后端
+    rag/                         # 企业知识库摄取、Chroma、混合召回、评估
   domain_packs/
     hr_recruitment/pack.py       # HR agent / skill / tool 注册
     hr_recruitment/scoring.py    # 候选人确定性打分
@@ -68,6 +69,7 @@ domain_packs/...       业务能力包，注册 agents/skills/tools
 connectors/            企业系统连接器，这里是 mock ATS
 tenants/               租户开关、权限、审批、routing hints、UI 默认值
 prompts/               prompt 文件，由 PromptLibrary 注入 LLM 节点
+core/rag/              横向知识库能力，不属于 HR pack；HR/客服/增长 agent 可共享同一套 RAG
 skills/                skill 文档化/打包格式，运行时会附到 SkillDefinition
 web/                   Flask 控制台和 JSON/SSE API
 llm/                   LLM provider 抽象与实现

@@ -681,11 +681,16 @@ def _action_chat_runner(
     conversation_id = _chat_conversation_id(payload, context=context)
     action_memory: dict[str, Any] | None = None
     if chat_service is not None:
+        roles, _roles_source = _trusted_business_roles(
+            tenant_config=runtime.tenant_config,
+            ui=ui,
+        )
         action_context = chat_service.prepare_action_turn(
             agent=agent,
             user_id=user_id,
             message=message,
             conversation_id=conversation_id,
+            roles=roles,
         )
         conversation_id = str(action_context["conversation_id"])
         action_memory = action_context["memory"]
@@ -1075,6 +1080,10 @@ def api_chat():
             return jsonify({"error": "context.approval is only valid for action agents."}), 400
         user_id = _effective_user_id(payload, ui)
         conversation_id = _chat_conversation_id(payload, context=context)
+        roles, _roles_source = _trusted_business_roles(
+            tenant_config=runtime.tenant_config,
+            ui=ui,
+        )
 
         try:
             result = chat_service.chat(
@@ -1082,6 +1091,7 @@ def api_chat():
                 user_id=user_id,
                 message=message,
                 conversation_id=conversation_id,
+                roles=roles,
             )
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
@@ -1126,6 +1136,10 @@ def api_chat_stream():
             return jsonify({"error": "context.approval is only valid for action agents."}), 400
         user_id = _effective_user_id(payload, ui)
         conversation_id = _chat_conversation_id(payload, context=context)
+        roles, _roles_source = _trusted_business_roles(
+            tenant_config=runtime.tenant_config,
+            ui=ui,
+        )
 
         def produce_chat() -> dict[str, Any]:
             return {
@@ -1135,6 +1149,7 @@ def api_chat_stream():
                     user_id=user_id,
                     message=message,
                     conversation_id=conversation_id,
+                    roles=roles,
                 ),
             }
 

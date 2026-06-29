@@ -418,6 +418,150 @@ def _run_eval(
     return 0 if passed else 1
 
 
+def _parse_csv(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _rag_service_for_tenant(tenant_selector: str | None):
+    from agentkit.config import get_settings
+    from agentkit.core.rag.service import build_knowledge_service
+    from agentkit.runtime.bootstrap import load_tenant_config, resolve_tenant_id
+
+    resolved = resolve_tenant_id(tenant_selector)
+    tenant_config = load_tenant_config(resolved)
+    tenant_id = str(tenant_config.get("tenant_id") or resolved)
+    return tenant_id, build_knowledge_service(get_settings(), tenant_id=tenant_id)
+
+
+def _rag_ingest(
+    path: str,
+    *,
+    tenant_id: str | None,
+    roles: str,
+    ocr: bool | None,
+    as_json: bool,
+) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    configure_logging()
+    from agentkit.config import get_settings
+
+    logical_tenant_id, service = _rag_service_for_tenant(tenant_id)
+    settings = get_settings()
+    report = service.ingest_path(
+        path,
+        acl_roles=_parse_csv(roles),
+        metadata={"tenant_id": logical_tenant_id},
+        ocr_enabled=bool(getattr(settings, "rag_ocr_enabled", False) if ocr is None else ocr),
+        ocr_languages=str(getattr(settings, "rag_ocr_languages", "eng+chi_sim")),
+    )
+    if as_json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        print(
+            f"[ok] RAG ingested {report['documents']} documents, "
+            f"{report['chunks']} chunks for tenant {logical_tenant_id}"
+        )
+        for warning in report["warnings"]:
+            print(f"  warning: {warning}")
+        for skipped in report["skipped"]:
+            print(f"  skipped: {skipped}")
+    return 0
+
+
+def _rag_query(
+    text: str,
+    *,
+    tenant_id: str | None,
+    agent: str,
+    user_id: str,
+    roles: str,
+    k: int | None,
+    as_json: bool,
+) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    configure_logging()
+    from agentkit.config import get_settings
+
+    logical_tenant_id, service = _rag_service_for_tenant(tenant_id)
+    top_k = k if k is not None else int(getattr(get_settings(), "rag_top_k", 5))
+    hits = service.retrieve(
+        text,
+        user_id=user_id,
+        agent=agent,
+        roles=_parse_csv(roles),
+        k=top_k,
+    )
+    rows = [
+        {
+            "chunk_id": hit.chunk.id,
+            "document_id": hit.chunk.document_id,
+            "title": hit.chunk.title,
+            "uri": hit.chunk.uri,
+            "score": hit.score,
+            "source": hit.source,
+            "metadata": hit.chunk.metadata,
+            "text": hit.chunk.text,
+        }
+        for hit in hits
+    ]
+    if as_json:
+        print(
+            json.dumps(
+                {"tenant_id": logical_tenant_id, "hits": rows},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+    else:
+        print(f"[ok] {len(rows)} hits for tenant {logical_tenant_id}")
+        for index, row in enumerate(rows, start=1):
+            snippet = " ".join(str(row["text"]).split())[:240]
+            print(f"{index}. {row['score']:.3f} {row['title']} {row['uri']}")
+            print(f"   {snippet}")
+    return 0
+
+
+def _rag_eval(
+    dataset: str,
+    *,
+    tenant_id: str | None,
+    min_hit_rate: float,
+    min_mrr: float,
+    as_json: bool,
+) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    configure_logging()
+    from agentkit.config import get_settings
+    from agentkit.core.rag.eval import RAGEvalCase, evaluate_retriever
+    from agentkit.core.rag.loaders import load_eval_dataset
+
+    logical_tenant_id, service = _rag_service_for_tenant(tenant_id)
+    default_k = int(getattr(get_settings(), "rag_top_k", 5))
+    cases = [
+        RAGEvalCase.from_dict(raw, default_tenant_id=logical_tenant_id, default_k=default_k)
+        for raw in load_eval_dataset(dataset)
+    ]
+    report = evaluate_retriever(
+        cases,
+        retriever=service.retriever,
+        default_tenant_id=logical_tenant_id,
+    )
+    if as_json:
+        print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+    else:
+        print(
+            f"RAG eval: cases={report.case_count}, hit_rate={report.hit_rate:.2%}, "
+            f"recall={report.mean_recall:.2%}, precision={report.mean_precision:.2%}, "
+            f"mrr={report.mrr:.3f}"
+        )
+    return 0 if report.gate(min_hit_rate=min_hit_rate, min_mrr=min_mrr) else 1
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="agentkit")
     parser.add_argument(
@@ -485,6 +629,38 @@ def main() -> None:
     ev.add_argument("--no-judge", action="store_true", help="Skip LLM-as-judge checks.")
     ev.add_argument("--json", action="store_true", help="Emit the full report as JSON.")
 
+    rag_ingest = sub.add_parser(
+        "rag-ingest",
+        help="Ingest a file or folder into the configured RAG knowledge store.",
+    )
+    rag_ingest.add_argument("path", help="File or folder containing pdf/docx/txt/md/html/json/csv.")
+    rag_ingest.add_argument(
+        "--roles",
+        default="",
+        help="Comma-separated business roles allowed to retrieve these chunks. Empty = all roles.",
+    )
+    rag_ingest.add_argument(
+        "--ocr",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable/disable OCR for scanned PDFs and embedded Word images.",
+    )
+    rag_ingest.add_argument("--json", action="store_true", help="Emit JSON report.")
+
+    rag_query = sub.add_parser("rag-query", help="Query the configured RAG knowledge store.")
+    rag_query.add_argument("text", help="Search query.")
+    rag_query.add_argument("--agent", default="", help="Agent name for diagnostics/filtering.")
+    rag_query.add_argument("--user-id", default="", help="User id for diagnostics.")
+    rag_query.add_argument("--roles", default="", help="Comma-separated trusted business roles.")
+    rag_query.add_argument("--k", type=int, default=None, help="Top-k hits.")
+    rag_query.add_argument("--json", action="store_true", help="Emit JSON hits.")
+
+    rag_eval = sub.add_parser("rag-eval", help="Run deterministic retrieval eval for RAG.")
+    rag_eval.add_argument("dataset", help="JSON/JSONL cases with query and relevant ids.")
+    rag_eval.add_argument("--min-hit-rate", type=float, default=0.0)
+    rag_eval.add_argument("--min-mrr", type=float, default=0.0)
+    rag_eval.add_argument("--json", action="store_true", help="Emit JSON report.")
+
     args = parser.parse_args()
     if args.command == "run-demo":
         _run_demo(tenant_id=args.tenant)
@@ -513,6 +689,38 @@ def main() -> None:
             tenant_id=args.tenant,
         )
         raise SystemExit(code)
+    elif args.command == "rag-ingest":
+        raise SystemExit(
+            _rag_ingest(
+                args.path,
+                tenant_id=args.tenant,
+                roles=args.roles,
+                ocr=args.ocr,
+                as_json=args.json,
+            )
+        )
+    elif args.command == "rag-query":
+        raise SystemExit(
+            _rag_query(
+                args.text,
+                tenant_id=args.tenant,
+                agent=args.agent,
+                user_id=args.user_id,
+                roles=args.roles,
+                k=args.k,
+                as_json=args.json,
+            )
+        )
+    elif args.command == "rag-eval":
+        raise SystemExit(
+            _rag_eval(
+                args.dataset,
+                tenant_id=args.tenant,
+                min_hit_rate=args.min_hit_rate,
+                min_mrr=args.min_mrr,
+                as_json=args.json,
+            )
+        )
 
 
 if __name__ == "__main__":

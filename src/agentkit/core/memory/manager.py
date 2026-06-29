@@ -113,6 +113,7 @@ class ConversationManager:
         persona: str = "",
         tool_catalog: str = "",
         retrieved_memories: Sequence[str] = (),
+        retrieved_knowledge: Sequence[str] = (),
     ) -> ChatReply:
         if conversation_id is None:
             conversation_id = self._store.create_conversation(
@@ -178,6 +179,7 @@ class ConversationManager:
                 persona=persona,
                 tool_catalog=tool_catalog,
                 retrieved_memories=memories,
+                retrieved_knowledge=retrieved_knowledge,
                 summary=summary_text,
                 recent_messages=history,
                 current_text=text,
@@ -222,6 +224,7 @@ class ConversationManager:
                     "included_messages": len(result.included_message_ids),
                     "context_tokens": result.estimated_tokens,
                     "retrieved_memories": len(memories),
+                    "retrieved_knowledge": len(retrieved_knowledge),
                 },
             )
 
@@ -245,6 +248,7 @@ class ConversationManager:
                 "context_tokens": result.estimated_tokens,
                 "summary_changed": result.summary_changed,
                 "retrieved_memories": len(memories),
+                "retrieved_knowledge": len(retrieved_knowledge),
             },
         )
 

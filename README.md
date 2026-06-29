@@ -107,7 +107,7 @@ docker compose up -d --build
 
 - **服务拓扑**：`web`（gunicorn）+ `db`（`pgvector/pgvector:pg16`）。`web` 经 `depends_on: condition: service_healthy` 等 db 就绪后再启动。
 - **PG 自动就绪**：`db` 首次初始化时由 `docker/initdb/01-vector.sql` 执行 `CREATE EXTENSION vector`；审计、会话、checkpoint、`memories` 表由应用幂等创建——**无需手动建表**。
-- **连接自动接线**：compose 在 `web` 上覆盖 `AGENTKIT_STORAGE_BACKEND=postgres`、`AGENTKIT_VECTOR_STORE_BACKEND=postgres`、`AGENTKIT_APPROVAL_CHECKPOINTER=postgres`、`AGENTKIT_PG_HOST=db`、`AGENTKIT_PG_SSLMODE=disable`，其余（库名/用户/密码）从 `.env` 注入；`db` 与 `web` 共用 `.env` 里的同一套 PG 凭据。镜像已含 `psycopg` 与 LangGraph Postgres checkpointer（`.[serve,pg]`）。
+- **连接自动接线**：compose 在 `web` 上覆盖 `AGENTKIT_STORAGE_BACKEND=postgres`、`AGENTKIT_VECTOR_STORE_BACKEND=postgres`、`AGENTKIT_APPROVAL_CHECKPOINTER=postgres`、`AGENTKIT_PG_HOST=db`、`AGENTKIT_PG_SSLMODE=disable`，其余（库名/用户/密码）从 `.env` 注入；`db` 与 `web` 共用 `.env` 里的同一套 PG 凭据。镜像已含 `psycopg`、LangGraph Postgres checkpointer、Chroma 文档 RAG 依赖与 tesseract OCR（`.[serve,pg,rag]`）。
 - **持久化**：Docker 默认把审计、run history、会话/消息、审批 checkpoint、长期语义记忆都写入 PostgreSQL；内置 compose 的 PG 数据落 `pgdata`，外部 compose 则写入你配置的企业 PG。
 - **加固**：两个服务均 `no-new-privileges`；`web` 额外 `cap_drop: ALL` + 只读根文件系统 + `tmpfs:/tmp`，且 **db 不对宿主暴露端口**（仅内部网络可达，需调试再放开注释）。
 - **凭据**：`AGENTKIT_PG_PASSWORD` 为必填（`db` 缺它会拒绝启动）；密钥/令牌只经 `.env` 注入，不进镜像层。
@@ -242,7 +242,7 @@ AGENTKIT_LLM_PROVIDER=fake
 }
 ```
 
-回答型 agent 的上下文按 token 预算组装：`persona + 检索到的长期记忆 + 摘要(summary) + 最近几轮原文 + 当前问题`。行动型 agent 在进入 LangGraph 前会读取同一条 conversation 的 `summary/recent_messages/retrieved_memories` 并写入 `TaskRequest.context.chat_memory`，执行结束后把用户消息和最终回复写回 conversation store。消息整段持久化到 `AGENTKIT_STORAGE_BACKEND` 指定的 SQLite 或 PostgreSQL；每隔 N 轮可用 LLM 抽取「持久事实」存入向量库，后续按余弦相似度检索（去重 + 最低分阈值）。
+回答型 agent 的上下文按 token 预算组装：`persona + Relevant knowledge(RAG) + 检索到的长期记忆 + 摘要(summary) + 最近几轮原文 + 当前问题`。行动型 agent 在进入 LangGraph 前会读取同一条 conversation 的 `summary/recent_messages/retrieved_memories/retrieved_knowledge` 并写入 `TaskRequest.context.chat_memory`，执行结束后把用户消息和最终回复写回 conversation store。消息整段持久化到 `AGENTKIT_STORAGE_BACKEND` 指定的 SQLite 或 PostgreSQL；每隔 N 轮可用 LLM 抽取「持久事实」存入向量库，后续按余弦相似度检索（去重 + 最低分阈值）。
 
 记忆相关全局默认（可被 `chat_agents[].memory` 覆盖）：`AGENTKIT_MEMORY_WINDOW_TURNS`(6)、`AGENTKIT_MEMORY_MAX_CONTEXT_TOKENS`(4000)、`AGENTKIT_MEMORY_RESPONSE_RESERVE_TOKENS`(512)、`AGENTKIT_MEMORY_SUMMARY_CAP_TOKENS`(600)、`AGENTKIT_MEMORY_RETRIEVAL_K`(4)、`AGENTKIT_MEMORY_EXTRACT_EVERY_N_TURNS`(3)、`AGENTKIT_MEMORY_MIN_RETRIEVAL_SCORE`(0.1)、`AGENTKIT_MEMORY_DEDUP_THRESHOLD`(0.92)。
 
@@ -250,17 +250,56 @@ AGENTKIT_LLM_PROVIDER=fake
 
 向量存储/检索后端可插拔（`AGENTKIT_VECTOR_STORE_BACKEND`，默认 `sqlite`，当前支持 `sqlite` / `postgres`）：职责拆分为 **embedding（文本→向量）** 与 **`VectorStore`（向量持久化 + 近邻检索，按 `(tenant, agent, user)` 隔离）** 两层。默认 `SqliteVectorStore` 复用每租户 SQLite 的 `memories` 表做线性 cosine 扫描——检索按用户隔离,单 scope 通常只有几十~几百条事实,精确扫描是亚毫秒级,上 ANN 属过早优化。当单 scope 规模变大、或需要持久化 ANN 索引/大规模元数据过滤/多租户分片时,实现同一个 `VectorStore` 协议接 Chroma / sqlite-vec / Milvus 即可,`MemoryRetriever` 及以上调用方不变（`build_vector_store()` 是唯一切换点）。
 
-### 企业知识库 RAG 框架
+### 企业知识库 RAG
 
-`agentkit.core.rag` 提供后续知识库 RAG 的骨架，当前不带真实企业数据：
+`agentkit.core.rag` 已实现可落地的知识库 RAG：文件夹摄取、结构感知 chunk、embedding、Chroma 持久化、关键词+向量混合召回、可选 query rewrite、可选 rerank、chat 上下文注入和 retrieval eval。
 
-- `KnowledgeDocument` / `KnowledgeChunk` / `RetrievalQuery` / `RetrievalHit`：稳定数据契约，包含 tenant、metadata、URI、ACL roles。
-- `KnowledgeIngestionPipeline` + `SimpleTextChunker`：文本切块、可选 embedding、写入 `KnowledgeStore`。
-- `KeywordRetriever` / `VectorRetriever` / `HybridRetriever`：关键词、向量、混合检索；混合检索做加权 score fusion。
-- `Reranker` / `IdentityReranker`：重排序协议，默认 no-op，后续可接 LLM reranker、cross-encoder 或业务规则 reranker。
-- `InMemoryKnowledgeStore`：测试/本地框架验证用；生产可在同一协议后接 pgvector、OpenSearch/Elasticsearch、Milvus、Chroma 等。
+核心模块：
 
-默认配置是 inert 的：`AGENTKIT_RAG_ENABLED=false`。后续接真实模型和数据后，可按 `AGENTKIT_RAG_CHUNK_MAX_CHARS`、`AGENTKIT_RAG_CHUNK_OVERLAP_CHARS`、`AGENTKIT_RAG_KEYWORD_WEIGHT`、`AGENTKIT_RAG_VECTOR_WEIGHT`、`AGENTKIT_RAG_RERANKER`、`AGENTKIT_RAG_TOP_K` 调整入库/检索策略。
+- `DocumentFolderLoader`：递归加载 `pdf/docx/txt/md/html/json/csv`。PDF 优先抽取文本；扫描件或图片型 PDF 可启用 OCR。Word 会抽取段落、表格，并可对嵌入图片做 OCR。
+- `AdaptiveTextChunker`：按 PDF 页、OCR 块、Word 表格、普通段落等 block 边界切块；超长块才做 overlap split，并保留 `pages/content_kinds/source_path/acl_roles` 元数据。
+- `ChromaKnowledgeStore`：默认 RAG 持久化后端，存储 chunk 文本、metadata、ACL 和 embedding；`InMemoryKnowledgeStore` 保留给测试。
+- `KeywordRetriever` / `VectorRetriever` / `HybridRetriever`：BM25 关键词召回 + 向量召回 + weighted fusion。
+- `LLMQueryRewriter` / `LLMReranker` / `KeywordOverlapReranker`：按场景开启。默认关闭，避免小客户每次检索额外消耗 LLM token。
+- `RAGEvalCase` / `evaluate_retriever`：提供 hit-rate、recall@k、precision@k、MRR 指标，可放进 CI 做回归门禁。
+
+安装与启用：
+
+```bash
+pip install 'agentkit[rag]'
+
+# Docker 镜像已安装 RAG extra 和 tesseract OCR；本地 OCR 还需要系统 tesseract。
+agentkit --tenant company_alpha rag-ingest ./knowledge --ocr --roles support,growth_manager
+agentkit --tenant company_alpha rag-query "退款审批规则是什么" --roles support --k 5
+```
+
+`.env` 关键配置：
+
+```env
+AGENTKIT_RAG_ENABLED=true
+AGENTKIT_RAG_STORE_BACKEND=chroma
+AGENTKIT_RAG_CHROMA_PATH=data/chroma
+AGENTKIT_RAG_TOP_K=5
+AGENTKIT_RAG_KEYWORD_WEIGHT=0.4
+AGENTKIT_RAG_VECTOR_WEIGHT=0.6
+AGENTKIT_RAG_QUERY_REWRITE=none   # none/llm
+AGENTKIT_RAG_RERANKER=none        # none/keyword/llm
+AGENTKIT_RAG_OCR_ENABLED=false
+```
+
+启用后，回答型 agent 会在 `persona + Relevant knowledge + 记忆 + summary + recent turns + 当前问题` 的预算内装载知识片段；行动型 agent 在进入 LangGraph 前也会把 `retrieved_knowledge` 写入 `TaskRequest.context.chat_memory`。检索严格按 tenant 隔离，并按入库时指定的 `acl_roles` 与后端可信解析出的 business roles 做过滤。
+
+评估数据集示例：
+
+```jsonl
+{"query":"退款审批规则是什么","tenant_id":"AI-ABC","roles":["support"],"relevant_document_ids":["AI-ABC:..."],"k":5}
+```
+
+```bash
+agentkit --tenant company_alpha rag-eval evals/rag.jsonl --min-hit-rate 0.8 --min-mrr 0.6
+```
+
+策略建议：小企业默认使用 `query_rewrite=none`、`reranker=none/keyword`，只消耗 embedding；当用户问题很短、口语化、多跳或同义表达多时，再对特定 agent/环境开启 `AGENTKIT_RAG_QUERY_REWRITE=llm` 或 `AGENTKIT_RAG_RERANKER=llm`。
 
 ### PostgreSQL runtime / pgvector 后端
 
