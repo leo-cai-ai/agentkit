@@ -1,7 +1,9 @@
-"""Audit logs for local runtime persistence and tests.
+"""Audit logs for runtime persistence and tests.
 
-`InMemoryAuditLog` is useful for tests. `SQLiteAuditLog` is the default durable
-store for local deployments and persists runs plus all LangGraph node events.
+`InMemoryAuditLog` is useful for tests. `SQLiteAuditLog` is the zero-dependency
+local durable store. `PostgresAuditLog` uses the enterprise PostgreSQL
+connection surface so Docker and external-PG deployments can keep all runtime
+history in the same database.
 """
 
 from __future__ import annotations
@@ -283,5 +285,379 @@ class SQLiteAuditLog:
                 """
                 CREATE INDEX IF NOT EXISTS idx_audit_events_run_id
                 ON audit_events(run_id, id)
+                """
+            )
+
+
+class PostgresAuditLog(SQLiteAuditLog):
+    """PostgreSQL-backed run and event persistence.
+
+    The class intentionally subclasses ``SQLiteAuditLog`` so existing feature
+    checks in the web console keep working while the storage implementation is
+    fully PostgreSQL.
+    """
+
+    def __init__(self, settings: Any = None, *, tenant_id: str | None = None) -> None:
+        self._settings = settings
+        self._tenant_id = tenant_id
+        self._init_schema()
+
+    def start_run(self, *, tenant_id: str, user_id: str, text: str) -> str:
+        run_id = str(uuid.uuid4())
+        now = round(time.time(), 3)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO task_runs (
+                    run_id, tenant_id, user_id, text, status, started_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (run_id, tenant_id, user_id, text, "running", now),
+            )
+        self.record(
+            run_id,
+            "run_started",
+            {"tenant_id": tenant_id, "user_id": user_id, "text": text},
+        )
+        return run_id
+
+    def record(self, run_id: str, event_type: str, payload: dict[str, Any]) -> None:
+        now = round(time.time(), 3)
+        payload_json = json.dumps(payload, ensure_ascii=False, default=str)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO audit_events (run_id, ts, event_type, payload_json)
+                VALUES (%s, %s, %s, %s::jsonb)
+                """,
+                (run_id, now, event_type, payload_json),
+            )
+            if event_type == "run_finished":
+                status = payload.get("status")
+                if not status:
+                    status = "failed" if payload.get("has_error") else "completed"
+                conn.execute(
+                    """
+                    UPDATE task_runs
+                    SET status = %s, finished_at = %s
+                    WHERE run_id = %s
+                    """,
+                    (status, now, run_id),
+                )
+            elif event_type == "run_paused":
+                conn.execute(
+                    """
+                    UPDATE task_runs
+                    SET status = %s, finished_at = NULL
+                    WHERE run_id = %s
+                    """,
+                    (payload.get("status") or "waiting_for_approval", run_id),
+                )
+            elif event_type == "run_resumed":
+                conn.execute(
+                    """
+                    UPDATE task_runs
+                    SET status = %s, finished_at = NULL
+                    WHERE run_id = %s
+                    """,
+                    ("running", run_id),
+                )
+
+    def events_for(self, run_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            if self._tenant_id:
+                rows = conn.execute(
+                    """
+                    SELECT e.ts, e.run_id, e.event_type, e.payload_json
+                    FROM audit_events e
+                    JOIN task_runs r ON r.run_id = e.run_id
+                    WHERE e.run_id = %s AND r.tenant_id = %s
+                    ORDER BY e.id ASC
+                    """,
+                    (run_id, self._tenant_id),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT ts, run_id, event_type, payload_json
+                    FROM audit_events
+                    WHERE run_id = %s
+                    ORDER BY id ASC
+                    """,
+                    (run_id,),
+                ).fetchall()
+        return [
+            {
+                "ts": row[0],
+                "run_id": row[1],
+                "type": row[2],
+                "payload": row[3] if isinstance(row[3], dict) else json.loads(row[3]),
+            }
+            for row in rows
+        ]
+
+    def list_runs(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            if self._tenant_id:
+                rows = conn.execute(
+                    """
+                    SELECT run_id, tenant_id, user_id, text, status, started_at, finished_at
+                    FROM task_runs
+                    WHERE tenant_id = %s
+                    ORDER BY started_at DESC
+                    LIMIT %s
+                    """,
+                    (self._tenant_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT run_id, tenant_id, user_id, text, status, started_at, finished_at
+                    FROM task_runs
+                    ORDER BY started_at DESC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                ).fetchall()
+        return [
+            {
+                "run_id": row[0],
+                "tenant_id": row[1],
+                "user_id": row[2],
+                "text": row[3],
+                "status": row[4],
+                "started_at": row[5],
+                "finished_at": row[6],
+            }
+            for row in rows
+        ]
+
+    def run_counts_by_status(self) -> dict[str, int]:
+        with self._connect() as conn:
+            if self._tenant_id:
+                rows = conn.execute(
+                    """
+                    SELECT status, COUNT(*) AS count
+                    FROM task_runs
+                    WHERE tenant_id = %s
+                    GROUP BY status
+                    """,
+                    (self._tenant_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT status, COUNT(*) AS count
+                    FROM task_runs
+                    GROUP BY status
+                    """
+                ).fetchall()
+        return {str(row[0]): int(row[1]) for row in rows}
+
+    def event_counts_by_type(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            if self._tenant_id:
+                rows = conn.execute(
+                    """
+                    SELECT e.event_type, COUNT(*) AS count
+                    FROM audit_events e
+                    JOIN task_runs r ON r.run_id = e.run_id
+                    WHERE r.tenant_id = %s
+                    GROUP BY e.event_type
+                    ORDER BY count DESC, e.event_type ASC
+                    LIMIT %s
+                    """,
+                    (self._tenant_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT event_type, COUNT(*) AS count
+                    FROM audit_events
+                    GROUP BY event_type
+                    ORDER BY count DESC, event_type ASC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                ).fetchall()
+        return [{"event_type": row[0], "count": int(row[1])} for row in rows]
+
+    def event_timing_summary(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            if self._tenant_id:
+                rows = conn.execute(
+                    """
+                    SELECT e.event_type,
+                           COUNT(*) AS count,
+                           ROUND(
+                             AVG((e.payload_json->>'duration_ms')::double precision)::numeric, 3
+                           ) AS avg_ms
+                    FROM audit_events e
+                    JOIN task_runs r ON r.run_id = e.run_id
+                    WHERE e.payload_json ? 'duration_ms' AND r.tenant_id = %s
+                    GROUP BY e.event_type
+                    ORDER BY avg_ms DESC, e.event_type ASC
+                    """,
+                    (self._tenant_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT event_type,
+                           COUNT(*) AS count,
+                           ROUND(AVG((payload_json->>'duration_ms')::double precision)::numeric, 3)
+                             AS avg_ms
+                    FROM audit_events
+                    WHERE payload_json ? 'duration_ms'
+                    GROUP BY event_type
+                    ORDER BY avg_ms DESC, event_type ASC
+                    """
+                ).fetchall()
+        return [
+            {"event_type": row[0], "count": int(row[1]), "avg_ms": float(row[2])}
+            for row in rows
+        ]
+
+    def cost_summary(self) -> dict[str, Any]:
+        with self._connect() as conn:
+            if self._tenant_id:
+                row = conn.execute(
+                    """
+                    SELECT
+                      COUNT(*) AS calls,
+                      COALESCE(SUM((e.payload_json->>'input_tokens')::bigint), 0)
+                        AS input_tokens,
+                      COALESCE(SUM((e.payload_json->>'output_tokens')::bigint), 0)
+                        AS output_tokens,
+                      COALESCE(SUM((e.payload_json->>'total_tokens')::bigint), 0)
+                        AS total_tokens,
+                      COALESCE(SUM((e.payload_json->>'cost_usd')::double precision), 0.0)
+                        AS cost_usd
+                    FROM audit_events e
+                    JOIN task_runs r ON r.run_id = e.run_id
+                    WHERE e.event_type = 'llm_usage' AND r.tenant_id = %s
+                    """,
+                    (self._tenant_id,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT
+                      COUNT(*) AS calls,
+                      COALESCE(SUM((payload_json->>'input_tokens')::bigint), 0) AS input_tokens,
+                      COALESCE(SUM((payload_json->>'output_tokens')::bigint), 0) AS output_tokens,
+                      COALESCE(SUM((payload_json->>'total_tokens')::bigint), 0) AS total_tokens,
+                      COALESCE(SUM((payload_json->>'cost_usd')::double precision), 0.0) AS cost_usd
+                    FROM audit_events
+                    WHERE event_type = 'llm_usage'
+                    """
+                ).fetchone()
+        return {
+            "calls": int(row[0] or 0),
+            "input_tokens": int(row[1] or 0),
+            "output_tokens": int(row[2] or 0),
+            "total_tokens": int(row[3] or 0),
+            "cost_usd": round(float(row[4] or 0.0), 6),
+        }
+
+    def cost_by_run(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            if self._tenant_id:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        e.run_id,
+                        COUNT(*) AS calls,
+                        COALESCE(SUM((e.payload_json->>'total_tokens')::bigint), 0)
+                          AS total_tokens,
+                        COALESCE(SUM((e.payload_json->>'cost_usd')::double precision), 0.0)
+                          AS cost_usd,
+                        MAX(e.ts) AS last_ts
+                    FROM audit_events e
+                    JOIN task_runs r ON r.run_id = e.run_id
+                    WHERE e.event_type = 'llm_usage' AND r.tenant_id = %s
+                    GROUP BY e.run_id
+                    ORDER BY last_ts DESC
+                    LIMIT %s
+                    """,
+                    (self._tenant_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        run_id,
+                        COUNT(*) AS calls,
+                        COALESCE(SUM((payload_json->>'total_tokens')::bigint), 0)
+                          AS total_tokens,
+                        COALESCE(SUM((payload_json->>'cost_usd')::double precision), 0.0)
+                          AS cost_usd,
+                        MAX(ts) AS last_ts
+                    FROM audit_events
+                    WHERE event_type = 'llm_usage'
+                    GROUP BY run_id
+                    ORDER BY last_ts DESC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                ).fetchall()
+        return [
+            {
+                "run_id": row[0],
+                "calls": int(row[1] or 0),
+                "total_tokens": int(row[2] or 0),
+                "cost_usd": round(float(row[3] or 0.0), 6),
+            }
+            for row in rows
+        ]
+
+    def _connect(self) -> Any:
+        from agentkit.core.pg import connection
+
+        return connection(self._settings)
+
+    def _init_schema(self) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS task_runs (
+                    run_id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    started_at DOUBLE PRECISION NOT NULL,
+                    finished_at DOUBLE PRECISION
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS audit_events (
+                    id BIGSERIAL PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    ts DOUBLE PRECISION NOT NULL,
+                    event_type TEXT NOT NULL,
+                    payload_json JSONB NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_audit_events_run_id
+                ON audit_events(run_id, id)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_audit_events_type
+                ON audit_events(event_type)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_task_runs_tenant_started
+                ON task_runs(tenant_id, started_at DESC)
                 """
             )

@@ -18,7 +18,7 @@ from typing import Any, TypedDict
 from langgraph.errors import NodeInterrupt
 from langgraph.graph import END, START, StateGraph
 
-from .audit import InMemoryAuditLog, SQLiteAuditLog
+from .audit import InMemoryAuditLog, PostgresAuditLog, SQLiteAuditLog
 from .contracts import IntentFrame, RouteDecision, TaskPlan, TaskRequest, TaskResponse
 from .executor import PlanExecutor
 from .governance import HumanApprovalGate, OutputReviewer, PlanReviewer
@@ -49,7 +49,7 @@ class EnterpriseAgentState(TypedDict, total=False):
     combined_route_active: bool
 
 
-AuditLog = InMemoryAuditLog | SQLiteAuditLog
+AuditLog = InMemoryAuditLog | SQLiteAuditLog | PostgresAuditLog
 
 
 class EnterpriseAgentGraph:

@@ -43,7 +43,8 @@ COPY prompts ./prompts
 COPY skills ./skills
 COPY tenants ./tenants
 
-# Runtime data (SQLite audit DBs) is written here; mount a volume over it.
+# Runtime scratch/data path. In Docker compose, durable runtime storage is
+# PostgreSQL; this path remains writable for local files and compatibility.
 RUN mkdir -p /app/data && chown -R appuser:appuser /app
 
 USER appuser

@@ -38,7 +38,7 @@ src/agentkit/
     governance.py                # plan review / approval / output review
     policy.py                    # 角色权限与审批策略
     executor.py                  # skill 执行、batch、tool 调用
-    audit.py                     # SQLite audit/run history
+    audit.py                     # SQLite/PostgreSQL audit/run history
     memory/                      # 会话记忆、向量检索、pgvector 后端
   domain_packs/
     hr_recruitment/pack.py       # HR agent / skill / tool 注册
@@ -56,7 +56,7 @@ src/agentkit/
 tenants/company_alpha.json       # tenant 配置
 prompts/agents/*.md              # persona / system prompt 文件
 skills/candidate-rank/           # Codex/Cursor 风格 skill 包
-data/                            # 运行期 SQLite / checkpoint 文件
+data/                            # 本地 SQLite / scratch data；Docker/企业持久化走 PostgreSQL
 docker-compose.yml               # web + pgvector
 ```
 
@@ -152,7 +152,7 @@ src/agentkit/runtime/bootstrap.py
 加载 tenants/<id>.json
 加载 prompt_files
 创建 AgentRegistry / SkillRegistry / ToolRegistry
-创建 SQLiteAuditLog(data/<tenant>.sqlite)
+按 AGENTKIT_STORAGE_BACKEND 创建 SQLiteAuditLog 或 PostgresAuditLog
 通过 pack_registry 发现并加载启用的 domain packs
 注册平台 agents(router/general)
 把 skills/<folder>/SKILL.md 附到 SkillDefinition
@@ -407,6 +407,7 @@ cost_tracking：把 LLM usage 汇总进 audit
 ```text
 AGENTKIT_APPROVAL_CHECKPOINTER=memory  # 默认，单进程开发
 AGENTKIT_APPROVAL_CHECKPOINTER=sqlite  # data/<tenant>_checkpoints.sqlite，适合多 worker/重启恢复
+AGENTKIT_APPROVAL_CHECKPOINTER=postgres # 写入配置的 PostgreSQL，适合 Docker/企业部署
 AGENTKIT_APPROVAL_CHECKPOINTER=none    # 等待输出 + approval-protected 整体重提交流程
 ```
 
@@ -668,11 +669,15 @@ rank_candidates.merge_batch = merge_candidate_rank_results
 src/agentkit/core/audit.py
 ```
 
-默认 tenant selector 是 `company_alpha`，所以本地 SQLite 位置是：
+如果 `AGENTKIT_STORAGE_BACKEND=sqlite`，默认 tenant selector 是 `company_alpha`，
+所以本地 SQLite 位置是：
 
 ```text
 data/company_alpha.sqlite
 ```
+
+如果 `AGENTKIT_STORAGE_BACKEND=postgres`，审计写入配置的 PostgreSQL
+`task_runs` / `audit_events` 表，行内仍带逻辑 tenant id。
 
 注意 tenant 配置里的逻辑 tenant id 是：
 
@@ -704,7 +709,7 @@ node_timing
 llm_usage / run_cost
 ```
 
-如果开启：
+如果本地开启：
 
 ```env
 AGENTKIT_APPROVAL_CHECKPOINTER=sqlite
@@ -715,6 +720,9 @@ AGENTKIT_APPROVAL_CHECKPOINTER=sqlite
 ```text
 data/company_alpha_checkpoints.sqlite
 ```
+
+如果开启 `AGENTKIT_APPROVAL_CHECKPOINTER=postgres`，checkpoint 写入配置的
+PostgreSQL，与审计、会话和长期记忆共用同一持久化。
 
 ## 17. 看 Flask API 和前端
 

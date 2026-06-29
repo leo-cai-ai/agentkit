@@ -6,7 +6,7 @@ import json
 from dataclasses import asdict
 
 from .artifacts import ArtifactRecord, InMemoryArtifactStore
-from .audit import InMemoryAuditLog, SQLiteAuditLog
+from .audit import InMemoryAuditLog, PostgresAuditLog, SQLiteAuditLog
 from .contracts import IntentFrame, SkillContext, TaskPlan, TaskRequest
 from .conversation import ConversationFallback
 from .llm_client import require_chat_json
@@ -33,7 +33,7 @@ class PlanExecutor:
         skills: SkillRegistry,
         tools: ToolRegistry,
         policy: PolicyGuard,
-        audit: InMemoryAuditLog | SQLiteAuditLog,
+        audit: InMemoryAuditLog | SQLiteAuditLog | PostgresAuditLog,
         prompt_library: PromptLibrary | None = None,
     ) -> None:
         self._tenant_id = tenant_id

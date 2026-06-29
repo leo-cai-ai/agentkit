@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     llm_rate_limiter_backend: Literal["process", "sqlite"] = "process"
     llm_rate_limiter_sqlite_path: str | None = None
 
+    # Durable runtime storage for audit/run history and conversation messages.
+    # SQLite remains the zero-dependency local default; Docker/enterprise
+    # deployments should set this to "postgres" so all durable runtime state
+    # lives in the configured PostgreSQL database.
+    storage_backend: Literal["sqlite", "postgres"] = "sqlite"
+
     # LLM resilience: ordered fallback providers tried when the primary fails,
     # each guarded by a per-provider circuit breaker. Comma-separated provider
     # keys, e.g. "openai" or "openai,fake". Empty -> single-provider (no failover).
@@ -97,11 +103,11 @@ class Settings(BaseSettings):
     combined_intent_route: bool = False
 
     # Human-approval checkpointing. "memory" pauses the graph at the approval
-    # gate and resumes in-place (no full re-run); "sqlite" does the same but
-    # persists checkpoints on disk so a paused task survives restarts and is
-    # resumable across processes/workers; "none" uses waiting output plus a
-    # protected full resubmit to approve.
-    approval_checkpointer: Literal["memory", "sqlite", "none"] = "memory"
+    # gate and resumes in-place (no full re-run); "sqlite"/"postgres" persist
+    # checkpoints so a paused task survives restarts and is resumable across
+    # processes/workers; "none" uses waiting output plus a protected full
+    # resubmit to approve.
+    approval_checkpointer: Literal["memory", "sqlite", "postgres", "none"] = "memory"
 
     # AI provider credentials — vendor-neutral naming (consumed by the
     # customer_band provider). Canonical env vars are AI_CLIENT_ID /

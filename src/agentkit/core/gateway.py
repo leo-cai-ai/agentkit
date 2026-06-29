@@ -7,7 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from .audit import InMemoryAuditLog, SQLiteAuditLog
+from .audit import InMemoryAuditLog, PostgresAuditLog, SQLiteAuditLog
 from .contracts import RouteDecision, TaskPlan, TaskRequest, TaskResponse
 from .executor import PlanExecutor
 from .governance import HumanApprovalGate, OutputReviewer, PlanReviewer
@@ -32,7 +32,7 @@ class AgentGateway:
         agents: AgentRegistry,
         skills: SkillRegistry,
         tools: ToolRegistry,
-        audit: InMemoryAuditLog | SQLiteAuditLog,
+        audit: InMemoryAuditLog | SQLiteAuditLog | PostgresAuditLog,
         checkpointer: Any = _UNSET,
         fastpath: bool | None = None,
         combined_intent_route: bool | None = None,
@@ -186,17 +186,20 @@ class AgentGateway:
         return self._tools
 
     @property
-    def audit(self) -> InMemoryAuditLog | SQLiteAuditLog:
+    def audit(self) -> InMemoryAuditLog | SQLiteAuditLog | PostgresAuditLog:
         return self._audit
 
 
-def build_checkpointer(*, mode: str, sqlite_path: Path | None = None) -> Any:
+def build_checkpointer(
+    *, mode: str, sqlite_path: Path | None = None, settings: Any = None
+) -> Any:
     """Build an approval checkpointer.
 
     - ``memory``: in-process saver (resume works within one process only).
     - ``sqlite``: on-disk saver so paused approvals survive restarts and are
       resumable across processes/workers. Falls back to in-memory when no
       ``sqlite_path`` is supplied (e.g. lightweight direct construction).
+    - ``postgres``: Postgres-backed saver using the configured PG connection.
     - ``none``: disabled (waiting output + protected full resubmit path).
     """
     if mode == "memory":
@@ -217,6 +220,28 @@ def build_checkpointer(*, mode: str, sqlite_path: Path | None = None) -> Any:
         # threads other than the one that created the connection.
         conn = sqlite3.connect(str(sqlite_path), check_same_thread=False)
         saver = SqliteSaver(conn)
+        saver.setup()
+        return saver
+    if mode == "postgres":
+        try:
+            from langgraph.checkpoint.postgres import PostgresSaver
+            from psycopg.rows import dict_row
+        except ImportError as exc:  # pragma: no cover - requires optional extra
+            raise RuntimeError(
+                "Postgres approval checkpointing requires the PostgreSQL extra. "
+                "Install with: pip install 'agentkit[pg]'"
+            ) from exc
+
+        from agentkit.core.pg import build_dsn, require_psycopg
+
+        psycopg = require_psycopg()
+        conn = psycopg.connect(
+            build_dsn(settings),
+            autocommit=True,
+            prepare_threshold=0,
+            row_factory=dict_row,
+        )
+        saver = PostgresSaver(conn)
         saver.setup()
         return saver
     return None

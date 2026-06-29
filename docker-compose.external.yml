@@ -6,13 +6,15 @@
 #
 # Unlike the default stack, this file does NOT override the PG connection: host,
 # port, database, user, password and sslmode all come straight from .env, so you
-# point it wherever you need. It uses host networking, so AGENTKIT_PG_HOST=
-# 127.0.0.1 (or localhost) reaches the host's own localhost — handy when the
-# remote DB is exposed locally via an SSH tunnel (ssh -L 5432:db:5432 ...).
+# point it wherever you need. On Docker Desktop / Windows, use
+# AGENTKIT_PG_HOST=host.docker.internal when the remote DB is exposed through a
+# tunnel or port on the Windows host.
 #
 # Example .env for this file:
+#   AGENTKIT_STORAGE_BACKEND=postgres
 #   AGENTKIT_VECTOR_STORE_BACKEND=postgres
-#   AGENTKIT_PG_HOST=127.0.0.1        # localhost/tunnel, OR a remote IP/hostname
+#   AGENTKIT_APPROVAL_CHECKPOINTER=postgres
+#   AGENTKIT_PG_HOST=<remote IP/DNS>  # or host.docker.internal for host tunnel
 #   AGENTKIT_PG_PORT=5432
 #   AGENTKIT_PG_DATABASE=agentkitdb
 #   AGENTKIT_PG_USER=<user>
@@ -28,20 +30,20 @@ services:
     image: agentkit-web:latest
     env_file:
       - .env
-    # host networking (Linux): the container shares the host's network namespace,
-    # so AGENTKIT_PG_HOST=127.0.0.1 in .env points at the host's localhost. The
-    # app binds the host's :8501 directly (no ports: mapping in this mode).
-    network_mode: "host"
     # Only force the backend; every PG connection detail is taken from .env so you
     # can target any external/shared Postgres without editing this file.
     environment:
+      AGENTKIT_STORAGE_BACKEND: postgres
       AGENTKIT_VECTOR_STORE_BACKEND: postgres
+      AGENTKIT_APPROVAL_CHECKPOINTER: postgres
       # Read-only root FS: keep every runtime write inside the writable tmpfs
       # (/tmp) — no bytecode/cache/HOME writes into /opt/venv or ~/.cache.
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONPYCACHEPREFIX: /tmp/pycache
       HOME: /tmp
       XDG_CACHE_HOME: /tmp/cache
+    ports:
+      - "8501:8501"
     volumes:
       - ./tenants:/app/tenants:ro
       - ./prompts:/app/prompts:ro

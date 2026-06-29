@@ -16,7 +16,7 @@ from agentkit.core.memory.embeddings import build_embedding_provider
 from agentkit.core.memory.extractor import MemoryExtractor
 from agentkit.core.memory.manager import ConversationManager
 from agentkit.core.memory.retrieval import MemoryRetriever
-from agentkit.core.memory.store import ConversationStore
+from agentkit.core.memory.store import build_conversation_store
 from agentkit.core.memory.summarizer import Summarizer
 from agentkit.core.memory.tokenizer import HeuristicTokenEstimator
 from agentkit.core.memory.vector_store import build_vector_store
@@ -55,7 +55,7 @@ class ChatService:
         self._audit = audit
         self._settings = settings
         self._chat_fn = chat_fn
-        self._store = ConversationStore(db_path)
+        self._store = build_conversation_store(settings, db_path)
         self._tokenizer = HeuristicTokenEstimator()
         self._prompts = PromptLibrary.from_tenant_config(tenant_config)
         self._embeddings = embedding_provider or build_embedding_provider(settings)

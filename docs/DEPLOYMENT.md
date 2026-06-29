@@ -11,13 +11,13 @@
 | 组件 | 是否必需 | 说明 |
 | --- | --- | --- |
 | Python 3.11+ | ✅ 必需 | 运行时（Docker 镜像用 3.11） |
-| SQLite | ✅ 自带 | Python 内置，无需安装；存审计/会话/检查点 |
+| SQLite | ✅ 自带 | Python 内置；本地零依赖存储 |
 | LLM 提供方 | ✅ 必需(可用 `fake`) | `customer_band` / `openai` 内网或外部端点；首跑可用离线 `fake` |
-| PostgreSQL + pgvector | ⬜ 可选 | 仅当长期语义记忆走向量库时需要 |
+| PostgreSQL + pgvector | ⬜ 可选，Docker/企业推荐 | 统一承载审计、会话、审批 checkpoint、长期语义记忆 |
 | Docker / Docker Compose | ⬜ 可选 | 推荐的一键部署方式 |
 | Redis | ❌ 不需要 | 代码未使用（仅文档中作为未来可选项提及） |
 
-**核心结论**：最小可跑只需 Python，零外部依赖（全 SQLite）。Postgres 仅用于长期向量记忆；即使开启 PG，审计 / 会话历史 / 审批检查点仍走 SQLite，所以 `data/` 目录始终要可写。
+**核心结论**：本地最小可跑只需 Python（全 SQLite）。Docker/企业部署推荐 `AGENTKIT_STORAGE_BACKEND=postgres` + `AGENTKIT_VECTOR_STORE_BACKEND=postgres` + `AGENTKIT_APPROVAL_CHECKPOINTER=postgres`，这样审计、run history、会话、审批 checkpoint、长期语义记忆都进入同一个 PostgreSQL。
 
 ---
 
@@ -30,7 +30,7 @@
 | extra | 内容 | 何时需要 |
 | --- | --- | --- |
 | `serve` | gunicorn | 生产 WSGI 部署 |
-| `pg` | psycopg | 接 PostgreSQL/pgvector |
+| `pg` | psycopg + LangGraph Postgres checkpointer | 接 PostgreSQL/pgvector |
 | `otel` | OpenTelemetry SDK + OTLP exporter | 需要分布式链路追踪 |
 | `dev` | pytest / ruff / mypy / pre-commit | 开发与测试 |
 
@@ -90,14 +90,18 @@ AGENTKIT_LLM_PROVIDER=fake
 # AGENTKIT_OPENAI_MODEL=...
 ```
 
-### 向量记忆后端
+### Runtime storage / 向量记忆后端
 
 ```env
 # 默认 SQLite（零外部依赖）
+AGENTKIT_STORAGE_BACKEND=sqlite
+AGENTKIT_APPROVAL_CHECKPOINTER=sqlite
 AGENTKIT_VECTOR_STORE_BACKEND=sqlite
 
-# 或 PostgreSQL + pgvector
+# 或 PostgreSQL + pgvector（Docker/企业推荐）
+# AGENTKIT_STORAGE_BACKEND=postgres
 # AGENTKIT_VECTOR_STORE_BACKEND=postgres
+# AGENTKIT_APPROVAL_CHECKPOINTER=postgres
 # AGENTKIT_PG_DSN=postgresql://agentkit:密码@host:5432/agentkit?sslmode=require
 #   或分项：
 # AGENTKIT_PG_HOST=localhost
@@ -126,7 +130,7 @@ AGENTKIT_VECTOR_STORE_BACKEND=sqlite
 
 只需保证 `data/` 目录可写。
 
-### 4.2 PostgreSQL + pgvector（可选）
+### 4.2 PostgreSQL + pgvector（Docker/企业推荐）
 
 1) 安装带扩展的 Postgres（推荐镜像 `pgvector/pgvector:pg16`，或在已有 PG 上装 pgvector）。
 
@@ -135,12 +139,21 @@ AGENTKIT_VECTOR_STORE_BACKEND=sqlite
 ```sql
 CREATE DATABASE agentkitdb;
 CREATE USER agentkit WITH PASSWORD '你的强密码';
-GRANT ALL PRIVILEGES ON DATABASE agentkit TO agentkit;
+GRANT ALL PRIVILEGES ON DATABASE agentkitdb TO agentkit;
 -- 连到 agentkitdb 库后：
 CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
-3) `memories` 表**首次写入/检索时自动创建**，无需手动建。若要按最小权限预建（可选）：
+3) 审计、会话、checkpoint 与 `memories` 表由 `agentkit init-db` 或首次使用时自动创建，通常无需手动建。若要按最小权限预建，先运行：
+
+```bash
+AGENTKIT_STORAGE_BACKEND=postgres \
+AGENTKIT_VECTOR_STORE_BACKEND=postgres \
+AGENTKIT_APPROVAL_CHECKPOINTER=postgres \
+agentkit init-db
+```
+
+`memories` 表结构示例：
 
 ```sql
 CREATE TABLE IF NOT EXISTS memories (
@@ -165,7 +178,7 @@ agentkit init-db
 ```
 
 - 校验 `data/` 可写；
-- 后端为 `postgres` 时：连库、确保 `vector` 扩展与 `memories` 表就绪；
+- 后端为 `postgres` 时：连库、确保 `vector` 扩展、审计表、会话表与 `memories` 表就绪；
 - 成功退出码 `0`，失败 `1`（适合放进部署/CI 的就绪门禁）。
 
 容器内执行：`docker compose run --rm web agentkit init-db`。
@@ -191,7 +204,7 @@ pip install -e ".[serve]"
 gunicorn --bind 0.0.0.0:8501 --workers 2 --timeout 120 agentkit.web.app:app
 ```
 
-> 多 worker 时若要限流总速率不被放大，设 `AGENTKIT_LLM_RATE_LIMITER_BACKEND=sqlite`（详见第 7 节）。
+> 多 worker 时若要限流总速率不被放大，当前可设 `AGENTKIT_LLM_RATE_LIMITER_BACKEND=sqlite`（详见第 7 节）；跨主机部署建议后续接 Redis/集中式限流后端。
 
 ### 5.3 Docker Compose（推荐：web + pgvector 一键）
 
@@ -222,12 +235,12 @@ docker compose up -d --build
 
 要点：
 - `web`（gunicorn）+ `db`（`pgvector/pgvector:pg16`），`web` 经健康检查依赖等 db 就绪后再启动。
-- `db` 首次初始化由 `docker/initdb/01-vector.sql` 执行 `CREATE EXTENSION vector`；`memories` 表惰性自动创建。
-- compose 在 `web` 上覆盖 `AGENTKIT_VECTOR_STORE_BACKEND=postgres`、`AGENTKIT_PG_HOST=db`、`AGENTKIT_PG_SSLMODE=disable`，其余 PG 凭据从 `.env` 注入；镜像已含 `psycopg`（`.[serve,pg]`）。
-- 持久化：SQLite 落命名卷 `agentkit_data`（`/app/data`），PG 数据落 `pgdata`。
+- `db` 首次初始化由 `docker/initdb/01-vector.sql` 执行 `CREATE EXTENSION vector`；审计、会话、checkpoint、`memories` 表由应用幂等创建。
+- compose 在 `web` 上覆盖 `AGENTKIT_STORAGE_BACKEND=postgres`、`AGENTKIT_VECTOR_STORE_BACKEND=postgres`、`AGENTKIT_APPROVAL_CHECKPOINTER=postgres`、`AGENTKIT_PG_HOST=db`、`AGENTKIT_PG_SSLMODE=disable`，其余 PG 凭据从 `.env` 注入；镜像已含 `psycopg` 与 Postgres checkpointer（`.[serve,pg]`）。
+- 持久化：审计、会话、checkpoint、长期语义记忆都写入 PG；默认 compose 的 PG 数据落 `pgdata`，外部 PG 模式写入企业 PG。
 - `db` 默认不对宿主暴露端口（仅内部网络）。
 
-**纯 SQLite 部署**：把 `.env` 的 `AGENTKIT_VECTOR_STORE_BACKEND` 设为 `sqlite`，删掉 compose 里的 `db` 服务与 `web` 的 PG 覆盖即可。
+**纯 SQLite 部署**：仅建议本地开发使用。把 `.env` 的 `AGENTKIT_STORAGE_BACKEND`、`AGENTKIT_APPROVAL_CHECKPOINTER`、`AGENTKIT_VECTOR_STORE_BACKEND` 设为 `sqlite`，并不要使用默认 Docker compose 的 PG 覆盖。
 
 ---
 
@@ -248,7 +261,7 @@ agentkit new-pack billing.invoices       # 脚手架生成新领域包
 
 ## 7. 可观测性与限流
 
-- **审计**：每次 run 落 SQLite，带 `run_id` 关联日志；各节点记录 `node_timing`（含 `duration_ms`/`ok`）。
+- **审计**：每次 run 落到配置的 SQLite 或 PostgreSQL，带 `run_id` 关联日志；各节点记录 `node_timing`（含 `duration_ms`/`ok`）。
 - **链路追踪（可选）**：装 `otel` 并设 `AGENTKIT_TRACING_ENABLED=true`；OTLP 端点读标准 `OTEL_EXPORTER_OTLP_ENDPOINT`；本地调试可设 `AGENTKIT_TRACING_CONSOLE_EXPORT=true`。
 - **成本/Token 计量（可选）**：`AGENTKIT_COST_TRACKING_ENABLED`、`AGENTKIT_LLM_PRICE_INPUT_PER_1K` / `_OUTPUT_PER_1K`、`AGENTKIT_LLM_RUN_BUDGET_USD`（超预算 fail-closed）。
 - **限流（多 worker 关键）**：`AGENTKIT_LLM_RATE_LIMITER_BACKEND` 默认 `process`（进程内令牌桶，N worker 实际速率 = N × rps）。多 worker 部署在限速端点后时设为 `sqlite`，所有 worker 共享一个令牌桶守住配置速率。
@@ -273,8 +286,9 @@ agentkit new-pack billing.invoices       # 脚手架生成新领域包
 - [ ] 内容安全护栏默认开启（`AGENTKIT_SAFETY_ENABLED=true`）；高风险注入可设 `AGENTKIT_SAFETY_BLOCK_ON_INJECTION=true`。
 - [ ] 出站白名单：`AGENTKIT_EGRESS_ALLOWED_DOMAINS`（工具 HTTP 默认仅 https + 公网 IP，禁私网/SSRF）。
 - [ ] Postgres 用最小权限账号 + `sslmode=require`；密码经 `.env`/密管注入，不入镜像。
-- [ ] 多 worker 设 `AGENTKIT_APPROVAL_CHECKPOINTER=sqlite` + `AGENTKIT_LLM_RATE_LIMITER_BACKEND=sqlite`。
-- [ ] 备份 `data/`（SQLite）与 `pgdata`（Postgres）卷。
+- [ ] Docker/企业部署设 `AGENTKIT_STORAGE_BACKEND=postgres`、`AGENTKIT_VECTOR_STORE_BACKEND=postgres`、`AGENTKIT_APPROVAL_CHECKPOINTER=postgres`。
+- [ ] 多 worker 若使用本机限流，设 `AGENTKIT_LLM_RATE_LIMITER_BACKEND=sqlite`；跨主机后续接 Redis/集中式限流。
+- [ ] 备份 PostgreSQL（默认 compose 备份 `pgdata` volume；外部 PG 按企业备份策略执行）。
 
 ---
 
@@ -286,7 +300,7 @@ agentkit new-pack billing.invoices       # 脚手架生成新领域包
 | `init-db` 报连接错误 | 检查 PG host/port/凭据/`sslmode`、网络可达 5432、`vector` 扩展是否启用 |
 | 登录后立刻退出 | 纯 http 下把 `AGENTKIT_WEB_COOKIE_SECURE=false` |
 | 多 worker 限速被击穿 | 设 `AGENTKIT_LLM_RATE_LIMITER_BACKEND=sqlite` |
-| 审批暂停后重启丢失 | 设 `AGENTKIT_APPROVAL_CHECKPOINTER=sqlite` |
+| 审批暂停后重启丢失 | Docker/企业设 `AGENTKIT_APPROVAL_CHECKPOINTER=postgres`；本地设 `sqlite` |
 | LLM 调用超时/失败 | 检查出网到 LLM 端点；可配 `AGENTKIT_LLM_FALLBACK_PROVIDERS` 故障转移 |
 
 ---
@@ -301,4 +315,4 @@ agentkit init-db                   # 校验存储（表为幂等自动迁移/创
 docker compose up -d --build
 ```
 
-数据存储（SQLite / pgvector 表）均为运行时幂等创建，无独立迁移工具；升级一般无需手动改表。
+数据存储（SQLite / PostgreSQL / pgvector 表）均为运行时幂等创建，无独立迁移工具；升级一般无需手动改表。

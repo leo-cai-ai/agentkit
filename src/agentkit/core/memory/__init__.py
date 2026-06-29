@@ -18,8 +18,9 @@ from .embeddings import (
 )
 from .extractor import MemoryExtractor
 from .manager import ChatReply, ConversationManager
+from .pg_store import PgConversationStore
 from .retrieval import MemoryRetriever, cosine
-from .store import ConversationStore
+from .store import ConversationStore, build_conversation_store
 from .summarizer import Summarizer
 from .tokenizer import HeuristicTokenEstimator, TokenEstimator
 from .vector_store import (
@@ -36,6 +37,8 @@ __all__ = [
     "ContextBuilder",
     "ConversationManager",
     "ConversationStore",
+    "PgConversationStore",
+    "build_conversation_store",
     "EmbeddingProvider",
     "FakeEmbeddingProvider",
     "HeuristicTokenEstimator",

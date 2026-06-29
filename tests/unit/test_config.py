@@ -144,6 +144,27 @@ def test_invalid_vector_store_backend_rejected(monkeypatch):
     assert raised
 
 
+def test_storage_backend_env_overrides(monkeypatch):
+    s = _fresh_settings(
+        monkeypatch,
+        AGENTKIT_STORAGE_BACKEND="postgres",
+        AGENTKIT_APPROVAL_CHECKPOINTER="postgres",
+    )
+    assert s.storage_backend == "postgres"
+    assert s.approval_checkpointer == "postgres"
+
+
+def test_invalid_storage_backend_rejected(monkeypatch):
+    import pydantic
+
+    raised = False
+    try:
+        _fresh_settings(monkeypatch, AGENTKIT_STORAGE_BACKEND="s3")
+    except pydantic.ValidationError:
+        raised = True
+    assert raised
+
+
 def test_memory_defaults(monkeypatch):
     s = _fresh_settings(monkeypatch)
     assert s.memory_window_turns == 6

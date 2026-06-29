@@ -40,7 +40,9 @@ def _run_web() -> None:
 
 
 def _check_postgres(settings: Any) -> bool:
-    """Verify PG connectivity and ensure the pgvector extension + schema exist."""
+    """Verify PG connectivity and ensure configured Postgres schemas exist."""
+    from agentkit.core.audit import PostgresAuditLog
+    from agentkit.core.memory.pg_store import PgConversationStore
     from agentkit.core.memory.pg_vector_store import PgVectorStore
     from agentkit.core.pg import connection, require_psycopg
 
@@ -62,23 +64,32 @@ def _check_postgres(settings: Any) -> bool:
         with connection(settings) as conn:
             version = conn.execute("SELECT version()").fetchone()[0]
             print(f"[ok] connected: {version}")
-            has_ext = conn.execute(
-                "SELECT 1 FROM pg_extension WHERE extname = 'vector'"
-            ).fetchone()
-            if has_ext is None:
-                print("[..] pgvector extension missing; attempting CREATE EXTENSION")
-                conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-                print("[ok] pgvector extension created")
-            else:
-                print("[ok] pgvector extension present")
+            if str(getattr(settings, "vector_store_backend", "sqlite")).lower() == "postgres":
+                has_ext = conn.execute(
+                    "SELECT 1 FROM pg_extension WHERE extname = 'vector'"
+                ).fetchone()
+                if has_ext is None:
+                    print("[..] pgvector extension missing; attempting CREATE EXTENSION")
+                    conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                    print("[ok] pgvector extension created")
+                else:
+                    print("[ok] pgvector extension present")
     except Exception as exc:  # noqa: BLE001 - report any driver/connection error
         print(f"[FAIL] postgres connectivity error: {exc}", file=sys.stderr)
         return False
     try:
-        PgVectorStore(settings)._ensure_schema()
-        print("[ok] memories table + index ready")
+        storage_backend = str(getattr(settings, "storage_backend", "sqlite")).lower()
+        vector_backend = str(getattr(settings, "vector_store_backend", "sqlite")).lower()
+        if storage_backend == "postgres":
+            PostgresAuditLog(settings)
+            print("[ok] audit tables + indexes ready")
+            PgConversationStore(settings)
+            print("[ok] conversation tables + indexes ready")
+        if vector_backend == "postgres":
+            PgVectorStore(settings)._ensure_schema()
+            print("[ok] pgvector memories table + index ready")
     except Exception as exc:  # noqa: BLE001
-        print(f"[FAIL] could not ensure memories schema: {exc}", file=sys.stderr)
+        print(f"[FAIL] could not ensure postgres schemas: {exc}", file=sys.stderr)
         return False
     return True
 
@@ -105,12 +116,14 @@ def _init_db() -> int:
         ok = False
         print(f"[FAIL] data dir not writable: {DATA_DIR}: {exc}", file=sys.stderr)
 
-    backend = settings.vector_store_backend
-    print(f"[..] vector_store_backend = {backend}")
-    if backend == "postgres":
+    storage_backend = settings.storage_backend
+    vector_backend = settings.vector_store_backend
+    print(f"[..] storage_backend = {storage_backend}")
+    print(f"[..] vector_store_backend = {vector_backend}")
+    if storage_backend == "postgres" or vector_backend == "postgres":
         ok = _check_postgres(settings) and ok
     else:
-        print("[ok] sqlite vector store (no external database required)")
+        print("[ok] sqlite runtime storage + vector store (no external database required)")
 
     if ok:
         print("\ninit-db OK")

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from agentkit.config import get_settings
-from agentkit.core.audit import SQLiteAuditLog
+from agentkit.core.audit import PostgresAuditLog, SQLiteAuditLog
 from agentkit.core.contracts import AgentProfile
 from agentkit.core.gateway import AgentGateway, build_checkpointer
 from agentkit.core.prompts import load_prompt_files
@@ -121,7 +121,21 @@ def build_runtime(
     agents = AgentRegistry()
     skills = SkillRegistry()
     tools = ToolRegistry()
-    audit = SQLiteAuditLog(db_path)
+    settings = get_settings()
+    storage_backend = str(getattr(settings, "storage_backend", "sqlite")).lower()
+    audit: SQLiteAuditLog
+    if storage_backend in ("postgres", "pg"):
+        audit = PostgresAuditLog(
+            settings,
+            tenant_id=str(tenant_config.get("tenant_id") or resolved_tenant_id),
+        )
+    elif storage_backend in ("", "sqlite"):
+        audit = SQLiteAuditLog(db_path)
+    else:
+        raise ValueError(
+            f"Unsupported storage_backend: {storage_backend!r}. "
+            "Supported backends: 'sqlite', 'postgres'."
+        )
 
     # Load only the domain packs this tenant enabled. Packs are discovered at
     # runtime (in-repo scan + installed entry points), so adding a business
@@ -160,10 +174,10 @@ def build_runtime(
         for skill in skills.all()
     ]
 
-    settings = get_settings()
     checkpointer = build_checkpointer(
         mode=settings.approval_checkpointer,
         sqlite_path=db_path.with_name(f"{resolved_tenant_id}_checkpoints.sqlite"),
+        settings=settings,
     )
     gateway = AgentGateway(
         tenant_id=tenant_config["tenant_id"],

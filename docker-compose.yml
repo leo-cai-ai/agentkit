@@ -46,7 +46,9 @@ services:
     # Container-network overrides win over .env so the app always reaches the
     # bundled db service regardless of the host/sslmode set for local use.
     environment:
+      AGENTKIT_STORAGE_BACKEND: postgres
       AGENTKIT_VECTOR_STORE_BACKEND: postgres
+      AGENTKIT_APPROVAL_CHECKPOINTER: postgres
       AGENTKIT_PG_HOST: db
       AGENTKIT_PG_PORT: "5432"
       AGENTKIT_PG_SSLMODE: disable
@@ -64,15 +66,17 @@ services:
       - ./tenants:/app/tenants:ro
       - ./prompts:/app/prompts:ro
       - ./skills:/app/skills:ro
-      # Audit / conversation / checkpoint SQLite DBs persist in a named volume.
+      # Runtime filesystem scratch/data. Durable audit, conversation, checkpoint,
+      # and semantic memory data live in PostgreSQL when AGENTKIT_STORAGE_BACKEND
+      # and AGENTKIT_APPROVAL_CHECKPOINTER are set to postgres.
       - agentkit_data:/app/data
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    # Read-only root FS is safe: the only runtime writes are the audit/checkpoint
-    # SQLite DBs under /app/data (the agentkit_data volume) and any cache/HOME
-    # writes, which the env vars above redirect to the writable /tmp tmpfs.
+    # Read-only root FS is safe: durable runtime state is in PostgreSQL; local
+    # scratch/data writes go to the agentkit_data volume, and cache/HOME writes
+    # are redirected to the writable /tmp tmpfs.
     read_only: true
     tmpfs:
       - /tmp

@@ -148,7 +148,7 @@ def overview():
     runs = _safe_runs(audit, limit=8)
 
     metrics = [
-        {"label": "Runs Completed", "value": completed, "helper": "SQLite-backed"},
+        {"label": "Runs Completed", "value": completed, "helper": "Durable audit"},
         {"label": "Success Rate", "value": f"{success_rate}%", "helper": "Latest environment"},
         {"label": "Active Runs", "value": running, "helper": "Currently executing"},
         {
