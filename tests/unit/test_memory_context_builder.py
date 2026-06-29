@@ -93,3 +93,24 @@ def test_window_caps_messages_considered():
     # window_turns=2 -> at most 4 messages considered
     assert len(result.included_message_ids) == 4
     assert result.included_message_ids == [7, 8, 9, 10]
+
+
+def test_assistant_reasoning_is_not_replayed_into_context():
+    builder = ContextBuilder(
+        tokenizer=HeuristicTokenEstimator(),
+        budget_tokens=10_000,
+        window_turns=6,
+    )
+    result = builder.build(
+        recent_messages=[
+            {"id": 1, "role": "assistant", "content": "<think>hidden</think>\nVisible answer."},
+            {"id": 2, "role": "assistant", "content": "</think>\nSecond answer."},
+        ],
+        current_text="next",
+        summarize_fn=lambda existing, turns: existing,
+    )
+    assert "<think" not in result.system_text
+    assert "</think" not in result.system_text
+    assert "hidden" not in result.system_text
+    assert "Visible answer." in result.system_text
+    assert "Second answer." in result.system_text

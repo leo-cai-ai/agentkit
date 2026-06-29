@@ -71,6 +71,14 @@ def test_extract_json_handles_think_and_fence():
     assert llm_client._extract_json(raw) == {"a": 2}
 
 
+def test_strip_reasoning_tags_for_conversation_context():
+    assert llm_client.strip_reasoning_tags("<think>private</think>\nVisible answer.") == (
+        "Visible answer."
+    )
+    assert llm_client.strip_reasoning_tags("</think>\nVisible answer.") == "Visible answer."
+    assert llm_client.strip_reasoning_tags("<think>private only</think>") == ""
+
+
 def test_extract_json_scans_first_valid_object_without_greedy_capture():
     raw = 'prefix {"a": 1} trailing {"b": 2}'
     assert llm_client._extract_json(raw) == {"a": 1}

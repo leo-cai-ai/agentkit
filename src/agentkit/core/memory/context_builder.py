@@ -17,6 +17,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from agentkit.core.llm_client import strip_reasoning_tags
+
 from .tokenizer import TokenEstimator
 
 SummarizeFn = Callable[[str, Sequence[dict[str, Any]]], str]
@@ -36,9 +38,14 @@ class BuildResult:
 
 
 def _render_turns(turns: Sequence[dict[str, Any]]) -> str:
-    return "\n".join(
-        f"{turn.get('role', 'user')}: {str(turn.get('content', '')).strip()}" for turn in turns
-    )
+    lines: list[str] = []
+    for turn in turns:
+        role = str(turn.get("role", "user"))
+        content = str(turn.get("content", "")).strip()
+        if role == "assistant":
+            content = strip_reasoning_tags(content)
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines)
 
 
 class ContextBuilder:
