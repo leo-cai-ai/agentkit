@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from agentkit.core.cost import cost_tracking
+from agentkit.core.llm_client import strip_reasoning_tags
 from agentkit.core.log_context import bind_run_id
 from agentkit.core.safety import REFUSAL_MESSAGE, build_safety_guard
 
@@ -203,12 +204,13 @@ class ConversationManager:
                 )
 
             reply = self._chat()(result.system_text, result.user_text)
+            stored_reply = strip_reasoning_tags(reply)
 
             self._store.add_message(
                 conversation_id=conversation_id,
                 role="assistant",
-                content=reply,
-                token_estimate=self._tokenizer.estimate(reply),
+                content=stored_reply,
+                token_estimate=self._tokenizer.estimate(stored_reply),
                 run_id=run_id,
             )
             self._record(
@@ -229,7 +231,7 @@ class ConversationManager:
                 user_id=user_id,
                 conversation_id=conversation_id,
                 user_text=text,
-                assistant_text=reply,
+                assistant_text=stored_reply,
                 run_id=run_id,
             )
 
@@ -297,11 +299,12 @@ class ConversationManager:
                 token_estimate=self._tokenizer.estimate(user_text),
                 run_id=run_id,
             )
+        stored_assistant_text = strip_reasoning_tags(assistant_text)
         self._store.add_message(
             conversation_id=conversation_id,
             role="assistant",
-            content=assistant_text,
-            token_estimate=self._tokenizer.estimate(assistant_text),
+            content=stored_assistant_text,
+            token_estimate=self._tokenizer.estimate(stored_assistant_text),
             run_id=run_id,
         )
         if run_id:
@@ -320,7 +323,7 @@ class ConversationManager:
             user_id=user_id,
             conversation_id=conversation_id,
             user_text=user_text or "",
-            assistant_text=assistant_text,
+            assistant_text=stored_assistant_text,
             run_id=run_id or "",
         )
 

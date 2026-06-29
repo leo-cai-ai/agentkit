@@ -56,6 +56,7 @@ __all__ = [
     "clear_provider_cache",
     "chat",
     "chat_json",
+    "strip_reasoning_tags",
 ]
 
 
@@ -265,6 +266,22 @@ def _strip_think(raw: str) -> str:
     # Stray closing tag with no matching open (the open block was dropped).
     cleaned = re.sub(r"^.*?</think>", "", cleaned, flags=re.S | re.I)
     return cleaned
+
+
+def strip_reasoning_tags(raw: str) -> str:
+    """Return text safe to store or feed back as conversation context.
+
+    User-facing streaming may show the current turn's reasoning block, but prior
+    assistant reasoning must not be replayed into later prompts. Replaying raw
+    ``<think>`` tags can make reasoning models continue or close a stale block
+    on the next turn.
+    """
+    cleaned = _strip_think(str(raw)).strip()
+    if cleaned:
+        return cleaned
+    if TRUNCATED_RESPONSE_MESSAGE in str(raw):
+        return TRUNCATED_RESPONSE_MESSAGE
+    return ""
 
 
 def _extract_json(raw: str) -> dict[str, Any] | None:

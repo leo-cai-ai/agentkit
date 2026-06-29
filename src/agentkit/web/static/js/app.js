@@ -153,6 +153,9 @@ function renderAssistantHtml(raw) {
     lastIndex = thinkRe.lastIndex;
   }
   let rest = text.slice(lastIndex);
+  // Some reasoning model chat templates can emit a stray closing tag on later
+  // turns. Do not render that implementation artifact as user-visible text.
+  rest = rest.replace(/^[\s\S]*?<\/think\s*>/i, "");
   const openMatch = rest.match(/<think\b[^>]*>/i);
   if (openMatch) {
     const before = rest.slice(0, openMatch.index);

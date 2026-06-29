@@ -125,6 +125,30 @@ def test_memory_recall_across_conversations(tmp_path):
     assert any("the user's name is Sam" in s for s in captured["systems"])
 
 
+def test_chat_stores_assistant_reply_without_reasoning_tags(tmp_path):
+    captured: dict = {}
+    raw = "<think>private chain of thought</think>\nVisible answer."
+
+    def chat_fn(system, user):
+        captured.setdefault("systems", []).append(system)
+        return raw
+
+    svc = ChatService(
+        tenant_id="AI-ABC",
+        tenant_config=_tenant_config(),
+        db_path=tmp_path / "t.sqlite",
+        agents=_agents(),
+        audit=InMemoryAuditLog(),
+        settings=_settings(),
+        chat_fn=chat_fn,
+        embedding_provider=FakeEmbeddingProvider(dim=128),
+    )
+    out = svc.chat(agent="customer_service", user_id="u1", message="hello")
+    assert out["assistant_text"] == raw
+    msgs = svc.messages(conversation_id=out["conversation_id"], user_id="u1")
+    assert msgs[-1]["content"] == "Visible answer."
+
+
 def test_messages_scoped_to_user(tmp_path):
     svc = _service(tmp_path, {})
     out = svc.chat(agent="customer_service", user_id="u1", message="hi")
