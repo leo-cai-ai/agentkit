@@ -514,9 +514,10 @@ The console provides:
 The bundled sample tenant includes three independent domains:
 
 - `hr.recruitment`: ranks candidates through `candidate.rank`.
-- `marketing.social_growth`: researches Xiaohongshu cases, compares patterns,
-  drafts an article, and prepares a publishing package through
-  `xhs.growth.campaign`.
+- `marketing.social_growth`: runs a multi-skill Xiaohongshu workflow through
+  `xhs.growth.campaign`, including trend research, signal extraction, case
+  comparison, strategy planning, copy generation, copy review, draft publishing,
+  and KPI tracking.
 - `support.customer_service`: answer-only chat agent with conversation history
   and semantic memory.
 
@@ -524,8 +525,8 @@ The chat console exposes these top-level agents:
 
 - `hr_recruiter`: action-capable chat agent that can only use recruitment skills
   such as `candidate.rank`.
-- `xhs_growth`: action-capable chat agent that can only use social-growth skills such as
-  `xhs.growth.campaign`.
+- `xhs_growth`: action-capable chat agent that can use the social-growth
+  workflow and its scoped subskills.
 - `customer_service`: answer-only chat agent that uses memory and does not enter
   the task graph.
 
@@ -775,16 +776,27 @@ logical tenant id used in gateway/audit records still comes from the
 per resolved tenant id.
 
 `src/agentkit/domain_packs/social_growth/pack.py` is the second executable reference. It
-registers its own agent profiles (`xhs_growth`, `xhs_researcher`,
-`xhs_content_strategist`, and `xhs_publisher`), a workflow-style skill, and
-separate tools for top-note research and publishing-package creation. The
-tenant config grants the matching permissions via the `growth_manager` role.
+registers agent profiles (`xhs_growth`, `xhs_researcher`,
+`xhs_content_strategist`, and `xhs_publisher`), a top-level workflow skill
+(`xhs.growth.campaign`), scoped subskills (`xhs.trend.research`,
+`xhs.case.extract`, `xhs.case.compare`, `xhs.strategy.plan`,
+`xhs.copy.generate`, `xhs.copy.review`, `xhs.publish.prepare`,
+`xhs.metrics.track`), and RPA-style tools for research, draft publishing, and
+metrics. The tenant config grants the matching permissions via the
+`growth_manager` role.
 
-The current implementation does not yet perform agent-to-agent messaging. The
-agent registry, selected-agent context, and internal social-growth pipeline are
-the intended future seam for A2A: a supervisor can route to one business agent,
-then that agent can delegate substeps to collaborators with explicit handoff,
-message, approval, and audit events.
+The social-growth pack keeps registration and orchestration in
+`src/agentkit/domain_packs/social_growth/pack.py`. External-system boundaries
+live in `src/agentkit/domain_packs/social_growth/providers.py`, and the
+AgentKit tool adapters live in `src/agentkit/domain_packs/social_growth/tools.py`.
+Production Xiaohongshu/RPA/metrics integrations should replace those providers
+or pass a provider bundle into the tool-definition builder while keeping the
+same tool names and approval semantics.
+
+The workflow uses `WorkflowRunner` plus run-scoped artifacts: each step executes
+with only its allowed tools and writes a compact summary plus `artifact_id`.
+Downstream steps consume summaries and selected artifacts instead of carrying
+every raw note/video/result through the LLM context.
 
 ## Filesystem Skill Format
 

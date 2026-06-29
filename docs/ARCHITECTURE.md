@@ -294,16 +294,37 @@ flowchart TB
 - `pack_registry.discover_packs`：仓库内扫描 + 安装的 entry points，自动发现领域包。
 - `pack_registry.validate_pack_contracts`：复用发现机制，在隔离 registry 中执行每个 pack 的 `register(...)`，校验 agents/skills/tools、JSON Schema、handler callable、list 字段、`batch_key`、tool 元数据与引用完整性；CLI `agentkit validate-packs [domain...] [--json]` 可作为外部插件包的 CI smoke gate。
 - `agentkit doctor`：部署预检命令，组合 storage、pack contract、runtime build、tenant `chat_agents`/审批/routing/role 配置引用检查，不调用 LLM，适合 CI 或容器启动前门禁。
-- 内置包：`hr_recruitment`（候选人排序）、`social_growth`（小红书涨粉）、`customer_service`（回答型客服，带记忆）。
+- 内置包：`hr_recruitment`（候选人排序）、`social_growth`（小红书多 skill 涨粉 workflow）、`customer_service`（回答型客服，带记忆）。
 - 租户配置（`tenants/<id>.json`）关键字段：`enabled_domains`、`chat_agents`（`mode: chat` + `actions_enabled`）、`role_permissions`、`approval_required_skills`、`routing_hints`、`prompt_files`、各包专属配置。
 
-### 14.1 扩展方式
+### 14.1 Workflow 与 Artifact Handoff
+
+复杂业务流程不要把所有 skill 说明、上游结果、RPA payload 都塞进同一个 LLM
+上下文。`agentkit.core.workflow.WorkflowRunner` 提供顺序 workflow 的轻量执行框架：
+
+- 每个 step 重新构造 `SkillContext`，只暴露该 step 允许的 tools。
+- 每个 step 可写入 run-scoped artifact，返回给下游的是 `summary + artifact_id`。
+- artifact 写入会产生 `artifact_written` 审计事件，便于追溯。
+- 当前默认实现是 `InMemoryArtifactStore`，生产可替换为 SQLite/Postgres/object store。
+
+`social_growth` 是参考实现：`xhs.growth.campaign` 编排
+`xhs.trend.research -> xhs.case.extract -> xhs.case.compare -> xhs.strategy.plan
+-> xhs.copy.generate -> xhs.copy.review -> xhs.publish.prepare -> xhs.metrics.track`。
+该包的 `pack.py` 只负责注册和编排；外部系统边界在
+`src/agentkit/domain_packs/social_growth/providers.py`，tool adapter 在
+`src/agentkit/domain_packs/social_growth/tools.py`。接真实小红书/RPA/指标系统时，
+替换 provider 或向 tool-definition builder 注入 provider bundle，保持 tool 名称、
+审批和审计语义不变。
+
+### 14.2 扩展方式
 
 | 要加什么 | 怎么做 |
 | --- | --- |
 | 新业务域 | `agentkit new-pack <domain>`，实现 `pack.py` 注册技能/工具，租户 `enabled_domains` 加一行 |
 | 新技能 | 在包内定义 `SkillDefinition`（输入/输出 Schema + handler） |
 | 新工具/连接器 | 定义 `ToolDefinition`（标注 `idempotent`/超时），经 `SkillContext.call_tool` 调用 |
+| 新 workflow | 定义顶层 workflow skill，用 `WorkflowRunner` 顺序调用 scoped subskills，并通过 artifacts 交接 |
+| 新 RPA/API provider | 在业务包内实现 provider 协议，经 tool adapter 注册为稳定 `ToolDefinition` |
 | 新 LLM provider | 实现 `LLMProvider` 协议，在 `llm/factory.py` 加分支 |
 | 新向量后端 | 实现 `VectorStore` 协议，在 `build_vector_store` 加分支 |
 | 新 RAG 检索后端 | 实现 `KnowledgeStore` / `Retriever` / `Reranker` 协议，接入 `agentkit.core.rag` |
@@ -318,6 +339,7 @@ flowchart TB
 | 会话历史/消息 | SQLite（per-tenant） | — |
 | 长期语义记忆 | SQLite `memories` 表 | PostgreSQL + pgvector |
 | 企业知识库 RAG | `agentkit.core.rag` 内存框架 | pgvector / OpenSearch / Milvus / Chroma / reranker |
+| Workflow artifacts | run-scoped `InMemoryArtifactStore` + 审计引用 | SQLite / PostgreSQL / object store |
 | 审批检查点 | 内存 / SQLite | — |
 | 限流令牌桶 | 进程内 / SQLite | （接缝可接 Redis） |
 

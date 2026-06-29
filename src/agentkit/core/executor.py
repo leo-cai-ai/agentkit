@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 
+from .artifacts import ArtifactRecord, InMemoryArtifactStore
 from .audit import InMemoryAuditLog, SQLiteAuditLog
 from .contracts import IntentFrame, SkillContext, TaskPlan, TaskRequest
 from .conversation import ConversationFallback
@@ -63,6 +64,9 @@ class PlanExecutor:
         # a run-scoped idempotency cache (so the same key isn't re-executed within
         # the run, and never reused across runs).
         invoker = self._build_tool_invoker(run_id)
+        artifacts = InMemoryArtifactStore(
+            on_write=lambda record: self._record_artifact(run_id, record)
+        )
 
         if not plan.steps:
             self._audit.record(
@@ -132,6 +136,7 @@ class PlanExecutor:
                 tools=self._tools.subset(skill.tools),
                 request=request,
                 invoker=invoker,
+                artifacts=artifacts,
             )
             if step.mode == "batch" and skill.batch_key:
                 result = self._execute_batch(ctx=ctx, skill_name=skill.name, args=step.args)
@@ -158,8 +163,12 @@ class PlanExecutor:
         return {
             "steps": step_outputs,
             "final": step_outputs[-1] if step_outputs else {},
+            "artifacts": [record.ref() for record in artifacts.list()],
             "execution_brief": execution_brief,
         }
+
+    def _record_artifact(self, run_id: str, record: ArtifactRecord) -> None:
+        self._audit.record(run_id, "artifact_written", record.ref())
 
     def _build_tool_invoker(self, run_id: str) -> ToolExecutor:
         timeout = 30.0

@@ -91,6 +91,26 @@ def test_builtin_pack_contracts_pass() -> None:
     assert all(result.passed for result in results), [result.to_dict() for result in results]
 
 
+def test_social_growth_pack_registers_workflow_skills() -> None:
+    packs = pack_registry.discover_packs()
+    result = pack_registry.validate_pack_contract(
+        "marketing.social_growth",
+        packs["marketing.social_growth"],
+    )
+    assert result.passed, result.to_dict()
+    assert {
+        "xhs.growth.campaign",
+        "xhs.trend.research",
+        "xhs.case.extract",
+        "xhs.case.compare",
+        "xhs.strategy.plan",
+        "xhs.copy.generate",
+        "xhs.copy.review",
+        "xhs.publish.prepare",
+        "xhs.metrics.track",
+    }.issubset(set(result.skills))
+
+
 def test_pack_contract_reports_missing_agent_skill() -> None:
     def bad_register(**kwargs: object) -> None:
         agents = kwargs["agents"]

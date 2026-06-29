@@ -1,8 +1,9 @@
-"""Example social-growth skill pack.
+"""Xiaohongshu social-growth workflow pack.
 
-This pack is business-specific. It simulates a Xiaohongshu growth workflow:
-collect top cases, compare patterns, draft an article, and prepare a governed
-publishing package.
+The pack models a full campaign path as isolated skills coordinated by the
+top-level ``xhs.growth.campaign`` workflow skill:
+
+research -> extract -> compare -> strategy -> copy -> review -> publish -> metrics
 """
 
 from __future__ import annotations
@@ -10,33 +11,284 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from agentkit.connectors.mock_xhs import MockXhsConnector
-from agentkit.core.contracts import AgentProfile, SkillContext, SkillDefinition, ToolDefinition
+from agentkit.core.contracts import AgentProfile, SkillContext, SkillDefinition
 from agentkit.core.registry import AgentRegistry, SkillRegistry, ToolRegistry
+from agentkit.core.workflow import WorkflowRunner
+from agentkit.domain_packs.social_growth.tools import build_xhs_tool_definitions
 
 DOMAIN = "marketing.social_growth"
 
+WORKFLOW_SKILL = "xhs.growth.campaign"
+RESEARCH_SKILL = "xhs.trend.research"
+EXTRACT_SKILL = "xhs.case.extract"
+COMPARE_SKILL = "xhs.case.compare"
+STRATEGY_SKILL = "xhs.strategy.plan"
+COPY_SKILL = "xhs.copy.generate"
+REVIEW_SKILL = "xhs.copy.review"
+PUBLISH_SKILL = "xhs.publish.prepare"
+METRICS_SKILL = "xhs.metrics.track"
 
-xhs = MockXhsConnector()
+XHS_WORKFLOW_SKILLS = [
+    WORKFLOW_SKILL,
+    RESEARCH_SKILL,
+    EXTRACT_SKILL,
+    COMPARE_SKILL,
+    STRATEGY_SKILL,
+    COPY_SKILL,
+    REVIEW_SKILL,
+    PUBLISH_SKILL,
+    METRICS_SKILL,
+]
 
+def run_growth_campaign(ctx: SkillContext, args: dict) -> dict:
+    base = campaign_inputs(ctx=ctx, args=args)
+    runner = WorkflowRunner(ctx)
 
-def get_top_notes_tool(args: dict) -> dict:
+    research = runner.run_step(
+        step_name=RESEARCH_SKILL,
+        handler=research_trends,
+        args=base,
+        allowed_tools=["xhs.rpa.search_top_notes"],
+        artifact_kind="xhs.trend.research",
+        metadata={"topic": base["topic"]},
+    )
+    extracted = runner.run_step(
+        step_name=EXTRACT_SKILL,
+        handler=extract_case_signals,
+        args={**base, "top_cases": research.output["top_cases"]},
+        allowed_tools=[],
+        artifact_kind="xhs.case.extract",
+    )
+    compared = runner.run_step(
+        step_name=COMPARE_SKILL,
+        handler=compare_case_patterns,
+        args={**base, "cases": extracted.output["cases"]},
+        allowed_tools=[],
+        artifact_kind="xhs.case.compare",
+    )
+    strategy = runner.run_step(
+        step_name=STRATEGY_SKILL,
+        handler=plan_growth_strategy,
+        args={**base, "comparison": compared.output["comparison"]},
+        allowed_tools=[],
+        artifact_kind="xhs.strategy.plan",
+    )
+    copy = runner.run_step(
+        step_name=COPY_SKILL,
+        handler=generate_copy,
+        args={
+            **base,
+            "top_cases": research.output["top_cases"],
+            "comparison": compared.output["comparison"],
+            "strategy": strategy.output["strategy"],
+        },
+        allowed_tools=[],
+        artifact_kind="xhs.copy.generate",
+    )
+    review = runner.run_step(
+        step_name=REVIEW_SKILL,
+        handler=review_copy,
+        args={**base, "article": copy.output["article"], "strategy": strategy.output["strategy"]},
+        allowed_tools=[],
+        artifact_kind="xhs.copy.review",
+    )
+    publish = runner.run_step(
+        step_name=PUBLISH_SKILL,
+        handler=prepare_publish,
+        args={
+            **base,
+            "article": copy.output["article"],
+            "review": review.output["review"],
+        },
+        allowed_tools=["xhs.rpa.create_publish_package"],
+        artifact_kind="xhs.publish.prepare",
+    )
+    metrics = runner.run_step(
+        step_name=METRICS_SKILL,
+        handler=track_metrics,
+        args={**base, "publish": publish.output["publish"]},
+        allowed_tools=["xhs.metrics.fetch"],
+        artifact_kind="xhs.metrics.track",
+    )
+
     return {
-        "notes": xhs.get_top_notes(
-            topic=str(args.get("topic") or "enterprise AI agents"),
-            limit=int(args.get("limit") or 5),
-        )
+        "campaign_id": base["campaign_id"],
+        "platform": "xiaohongshu",
+        "topic": base["topic"],
+        "top_n": base["top_n"],
+        "growth_goal": base["goal"],
+        "cadence": base["cadence"],
+        "campaign_summary": (
+            f"Prepared a {base['goal']['days']}-day Xiaohongshu workflow targeting "
+            f"{base['goal']['target_followers']} new followers with {base['cadence']} publishing."
+        ),
+        "workflow_trace": runner.compact_trace(),
+        "top_cases": research.output["top_cases"],
+        "comparison": compared.output["comparison"],
+        "strategy": strategy.output["strategy"],
+        "article": copy.output["article"],
+        "review": review.output["review"],
+        "publish": publish.output["publish"],
+        "metrics": metrics.output["metrics"],
     }
 
 
-def publish_note_tool(args: dict) -> dict:
-    return xhs.create_publish_package(
-        article=args.get("article", {}),
-        mode=str(args.get("mode") or "draft"),
+def research_trends(ctx: SkillContext, args: dict) -> dict:
+    payload = ctx.call_tool(
+        "xhs.rpa.search_top_notes",
+        {"topic": args["topic"], "limit": int(args["top_n"])},
     )
+    top_cases = compact_cases(list(payload.get("notes", [])))
+    return {
+        "summary": f"Collected {len(top_cases)} top Xiaohongshu cases for {args['topic']}.",
+        "topic": args["topic"],
+        "top_n": args["top_n"],
+        "top_cases": top_cases,
+    }
 
 
-def run_growth_campaign(ctx: SkillContext, args: dict) -> dict:
+def extract_case_signals(ctx: SkillContext, args: dict) -> dict:
+    cases = []
+    for case in list(args.get("top_cases", [])):
+        cases.append(
+            {
+                "note_id": case.get("note_id"),
+                "title": case.get("title"),
+                "content_type": case.get("content_type", "note"),
+                "hook": case.get("hook", ""),
+                "structure": case.get("structure", ""),
+                "engagement": {
+                    "likes": int(case.get("likes", 0)),
+                    "saves": int(case.get("saves", 0)),
+                    "comments": int(case.get("comments", 0)),
+                },
+                "insight": case.get("insight", ""),
+            }
+        )
+    return {
+        "summary": f"Extracted hooks, structures, and engagement signals from {len(cases)} cases.",
+        "cases": cases,
+    }
+
+
+def compare_case_patterns(ctx: SkillContext, args: dict) -> dict:
+    comparison = compare_cases(list(args.get("cases", [])))
+    return {
+        "summary": f"Identified {len(comparison)} reusable growth patterns.",
+        "comparison": comparison,
+    }
+
+
+def plan_growth_strategy(ctx: SkillContext, args: dict) -> dict:
+    recommendations = [item.get("recommendation", "") for item in args.get("comparison", [])]
+    strategy = {
+        "goal": args["goal"],
+        "cadence": args["cadence"],
+        "positioning": f"{args['topic']} practical growth series",
+        "content_pillars": [
+            "daily case teardown",
+            "repeatable workflow template",
+            "before/after operating result",
+        ],
+        "daily_loop": [
+            "research top cases",
+            "publish one grounded note",
+            "track saves/comments/follows",
+            "adjust next topic from metrics",
+        ],
+        "recommendations": recommendations,
+    }
+    return {
+        "summary": (
+            f"Planned {args['goal']['days']} days of {args['cadence']} publishing for "
+            f"{args['goal']['target_followers']} new followers."
+        ),
+        "strategy": strategy,
+    }
+
+
+def generate_copy(ctx: SkillContext, args: dict) -> dict:
+    article = draft_article(
+        topic=args["topic"],
+        top_cases=list(args.get("top_cases", [])),
+        comparison=list(args.get("comparison", [])),
+        goal=args["goal"],
+        cadence=str(args["cadence"]),
+    )
+    article = _maybe_llm_article(
+        article=article,
+        topic=args["topic"],
+        goal=args["goal"],
+        cadence=str(args["cadence"]),
+        comparison=list(args.get("comparison", [])),
+        top_cases=list(args.get("top_cases", [])),
+        language=detect_language(ctx.request.text),
+    )
+    article["kpi"] = args["goal"]
+    return {
+        "summary": f"Generated publishable copy for {args['topic']}.",
+        "article": article,
+    }
+
+
+def review_copy(ctx: SkillContext, args: dict) -> dict:
+    article = dict(args.get("article", {}))
+    findings = []
+    if not str(article.get("title") or "").strip():
+        findings.append({"severity": "error", "message": "missing title"})
+    if len(str(article.get("body") or "")) < 80:
+        findings.append({"severity": "warning", "message": "body is short for a growth note"})
+    if "guarantee" in str(article.get("body") or "").lower():
+        findings.append({"severity": "error", "message": "avoid guaranteed growth claims"})
+    status = "failed" if any(item["severity"] == "error" for item in findings) else "approved"
+    return {
+        "summary": f"Copy review status: {status}.",
+        "review": {
+            "status": status,
+            "findings": findings,
+            "brand_safe": status == "approved",
+            "requires_human_approval": True,
+        },
+    }
+
+
+def prepare_publish(ctx: SkillContext, args: dict) -> dict:
+    review = dict(args.get("review", {}))
+    if review.get("status") == "failed":
+        return {
+            "summary": "Publish package blocked by copy review.",
+            "publish": {
+                "status": "blocked",
+                "reason": "copy review failed",
+                "review": review,
+            },
+        }
+    config: dict[str, Any] = ctx.tenant_config.get("social_growth", {})
+    publish = ctx.call_tool(
+        "xhs.rpa.create_publish_package",
+        {
+            "article": args.get("article", {}),
+            "mode": config.get("publishing_mode", "draft"),
+        },
+    )
+    return {
+        "summary": f"Prepared Xiaohongshu publish package in {publish.get('mode', 'draft')} mode.",
+        "publish": publish,
+    }
+
+
+def track_metrics(ctx: SkillContext, args: dict) -> dict:
+    metrics = ctx.call_tool(
+        "xhs.metrics.fetch",
+        {"campaign_id": args["campaign_id"], "publish": args.get("publish", {})},
+    )
+    return {
+        "summary": "Initialized KPI tracking for the campaign.",
+        "metrics": metrics,
+    }
+
+
+def campaign_inputs(*, ctx: SkillContext, args: dict) -> dict:
     config: dict[str, Any] = ctx.tenant_config.get("social_growth", {})
     text = ctx.request.text
     top_n = extract_top_n(text=text, fallback=args.get("top_n") or config.get("default_top_n", 5))
@@ -47,60 +299,12 @@ def run_growth_campaign(ctx: SkillContext, args: dict) -> dict:
         if "daily" in text.lower() or "\u6bcf\u5929" in text
         else config.get("cadence", "daily")
     )
-
-    top_cases_payload = ctx.call_tool(
-        "xhs.get_top_notes",
-        {"topic": topic, "limit": top_n},
-    )
-    top_cases = list(top_cases_payload.get("notes", []))
-    comparison = compare_cases(top_cases)
-    article = draft_article(
-        topic=topic,
-        top_cases=top_cases,
-        comparison=comparison,
-        goal=goal,
-        cadence=str(cadence),
-    )
-    article = _maybe_llm_article(
-        article=article,
-        topic=topic,
-        goal=goal,
-        cadence=str(cadence),
-        comparison=comparison,
-        top_cases=top_cases,
-        language=detect_language(text),
-    )
-    publish = ctx.call_tool(
-        "xhs.publish_note",
-        {
-            "article": article,
-            "mode": config.get("publishing_mode", "draft"),
-        },
-    )
-
     return {
         "campaign_id": f"XHS-{goal['days']}D-{goal['target_followers']}",
-        "platform": "xiaohongshu",
         "topic": topic,
         "top_n": top_n,
-        "growth_goal": goal,
-        "cadence": cadence,
-        "campaign_summary": (
-            f"Prepared a {goal['days']}-day Xiaohongshu growth workflow targeting "
-            f"{goal['target_followers']} new followers with {cadence} publishing."
-        ),
-        "agent_pipeline": [
-            {"agent": "xhs_researcher", "responsibility": "collect top cases and signals"},
-            {
-                "agent": "xhs_content_strategist",
-                "responsibility": "compare patterns and draft article",
-            },
-            {"agent": "xhs_publisher", "responsibility": "prepare governed publishing package"},
-        ],
-        "top_cases": compact_cases(top_cases),
-        "comparison": comparison,
-        "article": article,
-        "publish": publish,
+        "goal": goal,
+        "cadence": str(cadence),
     }
 
 
@@ -157,16 +361,16 @@ def compare_cases(top_cases: list[dict]) -> list[dict]:
     return [
         {
             "pattern": "Outcome-first hook",
-            "evidence": top_cases[0]["hook"],
+            "evidence": top_cases[0].get("hook") or top_cases[0].get("title"),
             "recommendation": (
                 "Open with the 30-day growth target and a concrete before/after result."
             ),
         },
         {
             "pattern": "Reusable template",
-            "evidence": top_cases[1]["structure"]
+            "evidence": top_cases[1].get("structure")
             if len(top_cases) > 1
-            else top_cases[0]["structure"],
+            else top_cases[0].get("structure", ""),
             "recommendation": "Turn the article into a checklist readers can save and reuse.",
         },
         {
@@ -206,7 +410,7 @@ def draft_article(
             "Close with a follow/comment CTA.",
         ],
         "body": body,
-        "source_case_ids": [case["note_id"] for case in top_cases],
+        "source_case_ids": [case.get("note_id") for case in top_cases],
     }
 
 
@@ -260,15 +464,71 @@ def _maybe_llm_article(
 def compact_cases(cases: list[dict]) -> list[dict]:
     return [
         {
-            "note_id": case["note_id"],
-            "title": case["title"],
-            "likes": case["likes"],
-            "saves": case["saves"],
-            "comments": case["comments"],
-            "insight": case["insight"],
+            "note_id": case.get("note_id"),
+            "title": case.get("title"),
+            "content_type": case.get("content_type", "note"),
+            "hook": case.get("hook", ""),
+            "structure": case.get("structure", ""),
+            "likes": case.get("likes", 0),
+            "saves": case.get("saves", 0),
+            "comments": case.get("comments", 0),
+            "insight": case.get("insight", ""),
         }
         for case in cases
     ]
+
+
+def _schema(properties: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {"type": "object", "properties": properties or {}}
+
+
+def _register_agent(
+    agents: AgentRegistry,
+    *,
+    name: str,
+    description: str,
+    allowed_skills: list[str],
+    allowed_tools: list[str],
+    prompt_file: str,
+) -> None:
+    agents.register(
+        AgentProfile(
+            name=name,
+            domain=DOMAIN,
+            description=description,
+            allowed_skills=allowed_skills,
+            allowed_tools=allowed_tools,
+            prompt_file=prompt_file,
+        )
+    )
+
+
+def _register_skill(
+    skills: SkillRegistry,
+    *,
+    name: str,
+    description: str,
+    permissions: list[str],
+    execution_mode: str,
+    tools: list[str],
+    handler: Any,
+    keywords: list[str],
+    output_properties: dict[str, Any] | None = None,
+) -> None:
+    skills.register(
+        SkillDefinition(
+            name=name,
+            domain=DOMAIN,
+            description=description,
+            input_schema=_schema(),
+            output_schema=_schema(output_properties),
+            permissions=permissions,
+            execution_mode=execution_mode,  # type: ignore[arg-type]
+            tools=tools,
+            handler=handler,
+            keywords=keywords,
+        )
+    )
 
 
 def register(
@@ -280,112 +540,160 @@ def register(
 ) -> None:
     prompt_file = tenant_config.get("prompt_files", {}).get("agents.social_growth", "")
 
-    agents.register(
-        AgentProfile(
-            name="xhs_growth",
-            domain=DOMAIN,
-            description=(
-                "Growth agent for Xiaohongshu research, article drafting, "
-                "and publishing preparation."
-            ),
-            allowed_skills=["xhs.growth.campaign"],
-            allowed_tools=["xhs.get_top_notes", "xhs.publish_note"],
-            prompt_file=prompt_file,
-        )
+    _register_agent(
+        agents,
+        name="xhs_growth",
+        description=(
+            "Growth workflow agent for Xiaohongshu research, strategy, copy, "
+            "publishing preparation, and KPI tracking."
+        ),
+        allowed_skills=XHS_WORKFLOW_SKILLS,
+        allowed_tools=[
+            "xhs.rpa.search_top_notes",
+            "xhs.rpa.create_publish_package",
+            "xhs.metrics.fetch",
+        ],
+        prompt_file=prompt_file,
     )
-    agents.register(
-        AgentProfile(
-            name="xhs_researcher",
-            domain=DOMAIN,
-            description="Finds daily Xiaohongshu top cases and extracts reusable growth patterns.",
-            allowed_skills=["xhs.growth.campaign"],
-            allowed_tools=["xhs.get_top_notes"],
-            prompt_file=prompt_file,
-        )
+    _register_agent(
+        agents,
+        name="xhs_researcher",
+        description="Finds daily Xiaohongshu top cases and extracts reusable growth signals.",
+        allowed_skills=[RESEARCH_SKILL, EXTRACT_SKILL, COMPARE_SKILL],
+        allowed_tools=["xhs.rpa.search_top_notes"],
+        prompt_file=prompt_file,
     )
-    agents.register(
-        AgentProfile(
-            name="xhs_content_strategist",
-            domain=DOMAIN,
-            description="Compares cases and turns patterns into publishable article drafts.",
-            allowed_skills=["xhs.growth.campaign"],
-            allowed_tools=["xhs.get_top_notes"],
-            prompt_file=prompt_file,
-        )
+    _register_agent(
+        agents,
+        name="xhs_content_strategist",
+        description="Turns case patterns into strategy, article drafts, and copy review.",
+        allowed_skills=[COMPARE_SKILL, STRATEGY_SKILL, COPY_SKILL, REVIEW_SKILL],
+        allowed_tools=[],
+        prompt_file=prompt_file,
     )
-    agents.register(
-        AgentProfile(
-            name="xhs_publisher",
-            domain=DOMAIN,
-            description="Prepares governed publishing packages for Xiaohongshu growth campaigns.",
-            allowed_skills=["xhs.growth.campaign"],
-            allowed_tools=["xhs.publish_note"],
-            prompt_file=prompt_file,
-        )
+    _register_agent(
+        agents,
+        name="xhs_publisher",
+        description="Prepares publishing packages and tracks post-publish KPI metrics.",
+        allowed_skills=[PUBLISH_SKILL, METRICS_SKILL],
+        allowed_tools=["xhs.rpa.create_publish_package", "xhs.metrics.fetch"],
+        prompt_file=prompt_file,
     )
 
-    tools.register(
-        ToolDefinition(
-            name="xhs.get_top_notes",
-            domain="marketing.social_growth",
-            description="Fetch top Xiaohongshu notes and case signals for a topic.",
-            handler=get_top_notes_tool,
-            supports_batch=True,
-        )
-    )
-    tools.register(
-        ToolDefinition(
-            name="xhs.publish_note",
-            domain="marketing.social_growth",
-            description="Create a governed Xiaohongshu publishing package.",
-            handler=publish_note_tool,
-        )
-    )
+    for tool in build_xhs_tool_definitions(domain=DOMAIN):
+        tools.register(tool)
 
-    skills.register(
-        SkillDefinition(
-            name="xhs.growth.campaign",
-            domain="marketing.social_growth",
-            description=(
-                "Research top Xiaohongshu cases, compare patterns, "
-                "draft an article, and prepare publishing."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "topic": {"type": "string"},
-                    "top_n": {"type": "integer"},
-                    "goal_days": {"type": "integer"},
-                    "target_followers": {"type": "integer"},
-                },
-            },
-            output_schema={
-                "type": "object",
-                "properties": {
-                    "campaign_summary": {"type": "string"},
-                    "top_cases": {"type": "array"},
-                    "comparison": {"type": "array"},
-                    "article": {"type": "object"},
-                    "publish": {"type": "object"},
-                },
-            },
-            permissions=["content.research", "content.write", "content.publish"],
-            execution_mode="workflow",
-            tools=["xhs.get_top_notes", "xhs.publish_note"],
-            handler=run_growth_campaign,
-            keywords=[
-                "xiaohongshu",
-                "xhs",
-                "rednote",
-                "growth",
-                "followers",
-                "content",
-                "publish",
-                "\u5c0f\u7ea2\u4e66",
-                "\u6da8\u7c89",
-                "\u7206\u6b3e",
-                "\u6587\u7ae0",
-                "\u53d1\u5e03",
-            ],
-        )
+    _register_skill(
+        skills,
+        name=WORKFLOW_SKILL,
+        description=(
+            "Run the full Xiaohongshu growth workflow: research top content, "
+            "extract and compare patterns, plan a 30-day KPI strategy, generate copy, "
+            "prepare a draft publish package, and initialize metrics tracking."
+        ),
+        permissions=["content.research", "content.write", "content.publish"],
+        execution_mode="workflow",
+        tools=[
+            "xhs.rpa.search_top_notes",
+            "xhs.rpa.create_publish_package",
+            "xhs.metrics.fetch",
+        ],
+        handler=run_growth_campaign,
+        keywords=[
+            "xiaohongshu",
+            "xhs",
+            "rednote",
+            "growth",
+            "followers",
+            "campaign",
+            "publish",
+            "\u5c0f\u7ea2\u4e66",
+            "\u6da8\u7c89",
+            "\u7206\u6b3e",
+            "\u53d1\u5e03",
+        ],
+        output_properties={"workflow_trace": {"type": "array"}, "publish": {"type": "object"}},
+    )
+    _register_skill(
+        skills,
+        name=RESEARCH_SKILL,
+        description="Research today's top N Xiaohongshu notes/videos for a topic.",
+        permissions=["content.research"],
+        execution_mode="plan_execute",
+        tools=["xhs.rpa.search_top_notes"],
+        handler=research_trends,
+        keywords=["top", "research", "notes", "videos", "\u7206\u6b3e", "\u6848\u4f8b"],
+    )
+    _register_skill(
+        skills,
+        name=EXTRACT_SKILL,
+        description="Extract hooks, structure, engagement, and content signals from top cases.",
+        permissions=["content.research"],
+        execution_mode="no_tool",
+        tools=[],
+        handler=extract_case_signals,
+        keywords=["extract", "signals", "hook", "\u63d0\u70bc", "\u5356\u70b9"],
+    )
+    _register_skill(
+        skills,
+        name=COMPARE_SKILL,
+        description="Compare top cases and identify reusable growth patterns.",
+        permissions=["content.research"],
+        execution_mode="no_tool",
+        tools=[],
+        handler=compare_case_patterns,
+        keywords=["compare", "patterns", "\u5bf9\u6bd4", "\u603b\u7ed3"],
+    )
+    _register_skill(
+        skills,
+        name=STRATEGY_SKILL,
+        description="Plan a 30-day content strategy for a follower-growth KPI.",
+        permissions=["content.research", "content.write"],
+        execution_mode="no_tool",
+        tools=[],
+        handler=plan_growth_strategy,
+        keywords=["strategy", "kpi", "30 days", "\u7b56\u7565", "\u6da8\u7c89"],
+    )
+    _register_skill(
+        skills,
+        name=COPY_SKILL,
+        description=(
+            "Generate Xiaohongshu copy, title, outline, and CTA from strategy "
+            "and case evidence."
+        ),
+        permissions=["content.write"],
+        execution_mode="no_tool",
+        tools=[],
+        handler=generate_copy,
+        keywords=["copy", "article", "draft", "\u6587\u6848", "\u6587\u7ae0"],
+    )
+    _register_skill(
+        skills,
+        name=REVIEW_SKILL,
+        description="Review generated copy for brand safety, groundedness, and risky claims.",
+        permissions=["content.write"],
+        execution_mode="no_tool",
+        tools=[],
+        handler=review_copy,
+        keywords=["review", "brand", "compliance", "\u5ba1\u6838"],
+    )
+    _register_skill(
+        skills,
+        name=PUBLISH_SKILL,
+        description="Prepare a governed Xiaohongshu draft publishing package via RPA.",
+        permissions=["content.publish"],
+        execution_mode="plan_execute",
+        tools=["xhs.rpa.create_publish_package"],
+        handler=prepare_publish,
+        keywords=["publish", "draft", "\u53d1\u5e03", "\u8349\u7a3f"],
+    )
+    _register_skill(
+        skills,
+        name=METRICS_SKILL,
+        description="Initialize or fetch campaign KPI metrics and next tracking checkpoint.",
+        permissions=["content.research"],
+        execution_mode="plan_execute",
+        tools=["xhs.metrics.fetch"],
+        handler=track_metrics,
+        keywords=["metrics", "kpi", "followers", "\u6570\u636e", "\u6307\u6807"],
     )

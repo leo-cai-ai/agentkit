@@ -95,12 +95,33 @@ class SkillContext:
     # absent (e.g. unit tests building a context directly), tool calls fall back
     # to invoking the handler in-process with no extra governance.
     invoker: Any = None
+    # Optional run-scoped artifact store. Workflow skills use it to hand off
+    # large step outputs by reference instead of putting everything in prompt
+    # context.
+    artifacts: Any = None
 
     def call_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         tool = self.tools[name]
         if self.invoker is not None:
             return self.invoker.call(tool, args)
         return tool.handler(args)
+
+    def write_artifact(
+        self,
+        *,
+        kind: str,
+        payload: Any,
+        summary: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        if self.artifacts is None:
+            return None
+        return self.artifacts.put(
+            kind=kind,
+            payload=payload,
+            summary=summary,
+            metadata=metadata,
+        ).ref()
 
 
 @dataclass(frozen=True)
