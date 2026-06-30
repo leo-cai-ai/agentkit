@@ -13,17 +13,26 @@ from agentkit.domain_packs.social_growth.providers import (
     default_provider_bundle,
 )
 
-_DEFAULT_PROVIDERS = default_provider_bundle()
+MAX_SEARCH_LIMIT = 20
+MAX_QUERY_LENGTH = 200
 
 
 def search_top_notes_tool(
     args: dict[str, Any], provider: XhsResearchProvider | None = None
 ) -> dict:
-    selected = provider or _DEFAULT_PROVIDERS.research
+    selected = provider or default_provider_bundle().research
+    try:
+        requested_limit = int(args.get("limit") or 5)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("XHS search limit must be an integer") from exc
+    limit = min(max(requested_limit, 1), MAX_SEARCH_LIMIT)
+    topic = str(args.get("topic") or "enterprise AI agents").strip()
+    if len(topic) > MAX_QUERY_LENGTH:
+        raise ValueError(f"XHS search topic must be at most {MAX_QUERY_LENGTH} characters")
     return {
         "notes": selected.search_top_notes(
-            topic=str(args.get("topic") or "enterprise AI agents"),
-            limit=int(args.get("limit") or 5),
+            topic=topic,
+            limit=limit,
         )
     }
 
@@ -31,15 +40,29 @@ def search_top_notes_tool(
 def create_publish_package_tool(
     args: dict[str, Any], provider: XhsPublishingProvider | None = None
 ) -> dict:
-    selected = provider or _DEFAULT_PROVIDERS.publishing
+    selected = provider or default_provider_bundle().publishing
     return selected.create_publish_package(
         article=dict(args.get("article") or {}),
         mode=str(args.get("mode") or "draft"),
     )
 
 
+def publish_note_tool(args: dict[str, Any], provider: XhsPublishingProvider | None = None) -> dict:
+    selected = provider or default_provider_bundle().publishing
+    package = dict(args.get("package") or {})
+    idempotency_key = str(args.get("idempotency_key") or "").strip()
+    expected_hash = str(args.get("expected_content_hash") or "").strip()
+    if not idempotency_key or not expected_hash:
+        raise ValueError("XHS publish requires idempotency_key and expected_content_hash")
+    return selected.publish_note(
+        package=package,
+        idempotency_key=idempotency_key,
+        expected_content_hash=expected_hash,
+    )
+
+
 def fetch_metrics_tool(args: dict[str, Any], provider: XhsMetricsProvider | None = None) -> dict:
-    selected = provider or _DEFAULT_PROVIDERS.metrics
+    selected = provider or default_provider_bundle().metrics
     return selected.fetch_campaign_metrics(campaign_id=str(args.get("campaign_id") or "draft"))
 
 
@@ -47,15 +70,15 @@ def build_xhs_tool_definitions(
     *,
     domain: str,
     providers: XhsProviderBundle | None = None,
+    provider_config: dict[str, Any] | None = None,
 ) -> list[ToolDefinition]:
-    selected = providers or _DEFAULT_PROVIDERS
+    selected = providers or default_provider_bundle(provider_config=provider_config)
     return [
         ToolDefinition(
             name="xhs.rpa.search_top_notes",
             domain=domain,
             description=(
-                "Search today's top Xiaohongshu notes/videos through the configured "
-                "RPA provider."
+                "Search current Xiaohongshu notes/videos through the configured " "RPA provider."
             ),
             handler=lambda args: search_top_notes_tool(args, selected.research),
             supports_batch=True,
@@ -68,6 +91,19 @@ def build_xhs_tool_definitions(
             description="Create a draft publishing package through the configured RPA provider.",
             handler=lambda args: create_publish_package_tool(args, selected.publishing),
             timeout_seconds=120,
+        ),
+        ToolDefinition(
+            name="xhs.rpa.publish_note",
+            domain=domain,
+            description=(
+                "Publish one immutable, reviewed Xiaohongshu package after human approval."
+            ),
+            handler=lambda args: publish_note_tool(args, selected.publishing),
+            # Publication is a non-idempotent external side effect. Keep it on the
+            # calling thread so a timeout cannot leave an orphaned browser click,
+            # and never let ToolExecutor retry it automatically.
+            idempotent=False,
+            timeout_seconds=0,
         ),
         ToolDefinition(
             name="xhs.metrics.fetch",

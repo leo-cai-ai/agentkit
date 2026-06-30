@@ -11,6 +11,7 @@ function readUiConfig() {
 const UI_CONFIG = readUiConfig();
 const DEMO_PROMPT = UI_CONFIG.demo_prompt || "Rank the top 3 candidates for JOB-001 and explain why.";
 let pendingApproval = null;
+let pendingInput = null;
 let currentConversationId = null;
 let conversationCache = [];
 let chatBusy = false;
@@ -183,11 +184,16 @@ function finalizeAssistantBubble(bubble, text) {
 // The server owns trusted identity/RBAC and routes the selected agent to
 // answer-only memory or the governed action graph.
 function collectChatPayload(message, extraContext = {}) {
+  const selectedAgent = getSelectedAgentName();
   const context = {
-    agent: getSelectedAgentName(),
+    agent: selectedAgent,
     message,
     ...extraContext,
   };
+  if (pendingInput?.agent === selectedAgent) {
+    context.skill = pendingInput.skill_name;
+    context.skill_args = { ...(pendingInput.arguments || {}) };
+  }
   if (currentConversationId) context.conversation_id = currentConversationId;
   return {
     user_id: UI_CONFIG.default_user_id || "",
@@ -628,15 +634,37 @@ function approvalActionHtml(waitingForApproval, approval) {
   if (!waitingForApproval) return "";
   const skills = approval?.skills || [];
   const skillText = skills.length ? skills.join(", ") : "selected skill";
+  const isPublication = approval?.phase === "post_execution";
+  const description = isPublication
+    ? "Approve the frozen content shown above and publish it directly to Xiaohongshu."
+    : `Approve execution for <code>${escapeHtml(skillText)}</code>. The runtime will resume the paused task with an approval token in the request context.`;
+  const approveLabel = isPublication ? "Approve & Publish" : "Approve & Run";
+  const previewUrls = Array.isArray(approval?.preview?.media_preview_urls)
+    ? approval.preview.media_preview_urls
+    : [];
+  const mediaPreview = previewUrls.length
+    ? `<div class="approval-media">${previewUrls.map((url) => (
+      `<img src="${escapeHtml(url)}" alt="Publication media preview">`
+    )).join("")}</div>`
+    : "";
+  const preview = approval?.preview || {};
+  const textImagePreview = preview.media_strategy === "xhs_text_image"
+    ? `<div class="approval-text-image">
+        <p><strong>Media</strong> Xiaohongshu text cards · <strong>Style</strong> ${escapeHtml(preview.card_style || "-")}</p>
+        <blockquote>${escapeHtml(preview.card_text || "")}</blockquote>
+      </div>`
+    : "";
   return `
     <div class="approval-box">
       <div>
-        <strong>Human approval required</strong>
-        <p>Approve execution for <code>${escapeHtml(skillText)}</code>. The runtime will resume the paused task with an approval token in the request context.</p>
+        <strong>${isPublication ? "Publication approval required" : "Human approval required"}</strong>
+        <p>${description}</p>
+        ${mediaPreview}
+        ${textImagePreview}
       </div>
       <div class="approval-actions">
         <button class="secondary danger" type="button" data-reject-pending>Reject</button>
-        <button class="primary" type="button" data-approve-pending>Approve & Run</button>
+        <button class="primary" type="button" data-approve-pending>${approveLabel}</button>
       </div>
     </div>
   `;
@@ -825,16 +853,31 @@ function finalizeActionResult(result, requestPayload, bubble, selectedAgent, str
     };
     addApprovalChatMessage(result.assistant_text, approval, getSelectedAgentLabel());
   } else if (bubble) {
-    // Re-render the bubble with collapsible thinking + markdown. Prefer the
-    // live-streamed answer (e.g. the article body / recommendation) and fall
-    // back to the server summary only when nothing streamed this turn; the
-    // structured result panel below carries the rest of the detail.
-    finalizeAssistantBubble(bubble, streamed || result.assistant_text || "");
+    // Tokens emitted inside an action workflow may be an intermediate artifact
+    // (for example, only the generated article body). Once the workflow ends,
+    // prefer the server's complete evidence/report response.
+    finalizeAssistantBubble(bubble, result.assistant_text || streamed || "");
   }
-  setExecutionState(status === "waiting_for_approval" ? "Waiting for approval" : "Completed", status === "waiting_for_approval" ? 2 : 5, status !== "waiting_for_approval");
-  setAgentStatus(selectedAgent, status === "waiting_for_approval" ? "waiting" : "completed");
+  if (status === "needs_clarification") {
+    const resolution = response.output?.input_resolution || {};
+    pendingInput = {
+      agent: selectedAgent,
+      skill_name: resolution.skill_name || "",
+      arguments: { ...(resolution.arguments || {}) },
+    };
+  } else {
+    pendingInput = null;
+  }
+  const waiting = status === "waiting_for_approval" || status === "needs_clarification";
+  const stateLabel = status === "needs_clarification"
+    ? "Needs input"
+    : (status === "waiting_for_approval" ? "Waiting for approval" : "Completed");
+  setExecutionState(stateLabel, waiting ? 2 : 5, !waiting);
+  setAgentStatus(selectedAgent, waiting ? "waiting" : "completed");
   const intentType = response.output?.governance?.intent?.intent_type || final.intent_type || "";
-  const hidePrimaryPanel = Boolean(final.conversation) || ["waiting_for_approval", "rejected"].includes(status) || ["platform_question", "chit_chat", "unknown"].includes(intentType);
+  const hidePrimaryPanel = Boolean(final.conversation)
+    || ["waiting_for_approval", "needs_clarification", "rejected"].includes(status)
+    || ["platform_question", "chit_chat", "unknown"].includes(intentType);
   renderResult(result, requestPayload, { hidePrimaryPanel });
 }
 
@@ -1028,7 +1071,7 @@ async function approvePendingTask() {
     pruneDuplicateApprovalMessages();
     pendingApproval = null;
     clearPendingResult();
-    finalizeAssistantBubble(bubble, streamed || result.assistant_text || "");
+    finalizeAssistantBubble(bubble, result.assistant_text || streamed || "");
     renderResult(result, originalRequest);
     succeeded = true;
   } catch (error) {

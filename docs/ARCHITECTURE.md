@@ -105,13 +105,21 @@ flowchart LR
   SR --> PC[prepare_context]
   PC --> UI[understand_intent]
   UI --> RT[route_request]
-  RT --> PL[plan_step]
+  RT --> RI[resolve_inputs]
+  RI -- 参数完整 --> PL[plan_step]
+  RI -- 缺必填参数 --> CI[clarify_inputs]
+  CI --> FIN
   PL --> RP[review_plan]
   RP --> HA{human_approval}
   HA -- 通过/无需审批 --> EX[execute]
   HA -- 等待/拒绝 --> RO[review_output]
   HA -. NodeInterrupt 暂停 .-> PAUSE([等待人工])
-  EX --> RO
+  EX --> PEA{post_execution_approval}
+  PEA -- 无延迟动作 --> RO
+  PEA -- 等待发布审批 --> PAUSE2([审核冻结内容])
+  PEA -- 批准且哈希一致 --> DEA[execute_deferred_action]
+  PEA -- 拒绝 --> RO
+  DEA --> RO
   RO --> FIN[finalize]
   FIN --> END([END])
 ```
@@ -124,17 +132,22 @@ flowchart LR
 | `prepare_context` | 组装运行时上下文（租户、角色、上下文键） |
 | `understand_intent` | LLM 意图拆解为 `IntentFrame`（含快路径/合并路径分支） |
 | `route_request` | 将意图路由到具体技能 `RouteDecision` |
+| `resolve_inputs` | 依据 skill `input_schema` 合并结构化参数、意图实体、语义抽取和默认值；记录来源与置信度 |
+| `clarify_inputs` | 必填参数仍缺失时返回 `needs_clarification`，在审批和工具执行前停止 |
 | `plan_step` | 生成 `TaskPlan`（技能步骤 + 模式 + 依赖） |
 | `review_plan` | 计划评审（治理建议） |
 | `human_approval` | 审批门：需要时 `NodeInterrupt` 暂停，等人工决策 |
 | `execute` | `PlanExecutor` 执行技能（经策略守卫 + 工具调用） |
+| `post_execution_approval` | 对 review 后产生的冻结副作用执行二阶段审批；批准绑定内容哈希 |
+| `execute_deferred_action` | 只执行原 skill 声明的延迟 tools；不重新生成内容，保留幂等和审计 |
 | `review_output` | 输出评审 |
 | `finalize` | 汇总治理信息、状态、审计，产出 `TaskResponse` |
 
-### 4.1 治理组件（`core/governance.py`、`intent.py`、`router.py`、`planner.py`、`executor.py`、`policy.py`）
+### 4.1 治理组件（`core/governance.py`、`intent.py`、`router.py`、`input_resolution.py`、`planner.py`、`executor.py`、`policy.py`）
 
 - `IntentDecomposer`：把自然语言转成 `IntentFrame`；提供确定性版本供快路径用。
 - `IntentRouter`：基于 `routing_hints` + LLM 选技能；提供确定性路由 + 置信度。
+- `SkillInputResolver`：把自由文本映射到已选 skill 的 JSON Schema；必填项低置信/缺失时澄清，不静默使用业务默认值。
 - `Planner`：把路由结果展开为可执行计划。
 - `PlanReviewer` / `OutputReviewer` / `HumanApprovalGate`：治理评审与审批评估。
 - `PlanExecutor` + `PolicyGuard`：按 RBAC/权限校验后执行技能，技能通过 `SkillContext.call_tool` 调工具。
@@ -145,7 +158,7 @@ flowchart LR
 
 两个可选开关，在保持治理可见性的前提下减少 LLM 往返：
 
-- **确定性快路径**（`AGENTKIT_DETERMINISTIC_FASTPATH=true`）：当规则路由以**高置信度**解析出技能时，跳过 intent/route/plan/plan_review/审批评估的咨询性 LLM 调用，直接用确定性结果（0 次 LLM）。无法高置信解析的请求仍走完整 LLM 管线。
+- **确定性快路径**（`AGENTKIT_DETERMINISTIC_FASTPATH=true`）：当规则路由以**高置信度**解析出技能时，跳过 intent/route/plan/plan_review/审批评估的咨询性 LLM 调用。参数已完整时为 0 次 LLM；参数需从自由文本语义抽取时增加 1 次 slot extraction。无法高置信解析的请求仍走完整 LLM 管线。
 - **意图+路由合并**（`AGENTKIT_COMBINED_INTENT_ROUTE=true`）：必须走 LLM 时，把 IntentFrame 与路由在**一次** LLM 调用内解析，route 节点只做确定性校验（2 次往返 → 1 次）。
 
 两者互补：快路径处理规则可解析的请求，合并路径为其余请求减半往返。
@@ -313,12 +326,22 @@ flowchart TB
 
 `social_growth` 是参考实现：`xhs.growth.campaign` 编排
 `xhs.trend.research -> xhs.case.extract -> xhs.case.compare -> xhs.strategy.plan
--> xhs.copy.generate -> xhs.copy.review -> xhs.publish.prepare -> xhs.metrics.track`。
+-> xhs.copy.generate -> xhs.copy.review -> xhs.publish.prepare -> 人工审批
+-> xhs.rpa.publish_note -> xhs.metrics.track`。
 该包的 `pack.py` 只负责注册和编排；外部系统边界在
 `src/agentkit/domain_packs/social_growth/providers.py`，tool adapter 在
 `src/agentkit/domain_packs/social_growth/tools.py`。接真实小红书/RPA/指标系统时，
 替换 provider 或向 tool-definition builder 注入 provider bundle，保持 tool 名称、
 审批和审计语义不变。
+
+真实网页研究与发布由 `connectors/browser_search.py` 管理 Playwright 生命周期、持久会话、
+并发锁和错误分类；`connectors/xhs_playwright.py` 只保存小红书 URL/DOM 协议和结果
+标准化逻辑；`connectors/xhs_publisher_playwright.py` 保存创作中心发布协议、冻结媒体生成和
+发布 ledger。新增网站时实现 `SiteSearchAdapter` 并注入业务 provider，不需要复制浏览器
+启动、超时和资源清理代码。小红书搜索默认仍使用 mock，通过
+`AGENTKIT_XHS_RESEARCH_PROVIDER=playwright` 或 tenant `social_growth.research_provider`
+显式启用搜索；真实发布还必须单独设置
+`AGENTKIT_XHS_PUBLISHING_PROVIDER=playwright`。详细说明见 `docs/XHS_WEB_SEARCH.md`。
 
 ### 14.2 扩展方式
 

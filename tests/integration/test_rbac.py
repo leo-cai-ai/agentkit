@@ -132,7 +132,7 @@ def test_operator_can_run_and_approve(client):
     # Operator has task:run; the task pauses for approval (CSRF is proxy-owned).
     waiting = client.post(
         "/api/tasks",
-        json={"agent": "hr_recruiter", "text": "Rank the top candidate for JOB-001."},
+        json={"agent": "hr_recruiter", "text": "Rank candidate C-100 for JOB-001."},
         headers=_headers("olly", "operator"),
     )
     assert waiting.status_code == 200

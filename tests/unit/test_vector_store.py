@@ -60,9 +60,10 @@ def test_query_respects_scope_isolation(vectors):
 
 def test_query_zero_k_returns_empty(vectors):
     embedder = FakeEmbeddingProvider(dim=32)
-    assert vectors.query(
-        scope=MemoryScope("t1", "cs", "u1"), embedding=embedder.embed(["x"])[0], k=0
-    ) == []
+    assert (
+        vectors.query(scope=MemoryScope("t1", "cs", "u1"), embedding=embedder.embed(["x"])[0], k=0)
+        == []
+    )
 
 
 def test_build_vector_store_default_is_sqlite(store):

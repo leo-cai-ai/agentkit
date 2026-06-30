@@ -29,6 +29,21 @@ def _fresh_settings(monkeypatch, **env):
         "AGENTKIT_RAG_STORE_BACKEND",
         "AGENTKIT_RAG_QUERY_REWRITE",
         "AGENTKIT_RAG_RERANKER",
+        "AGENTKIT_XHS_RESEARCH_PROVIDER",
+        "AGENTKIT_XHS_BASE_URL",
+        "AGENTKIT_XHS_ENRICH_DETAILS",
+        "AGENTKIT_XHS_DETAIL_LIMIT",
+        "AGENTKIT_XHS_DETAIL_TIMEOUT_SECONDS",
+        "AGENTKIT_XHS_DETAIL_PAUSE_SECONDS",
+        "AGENTKIT_WEB_SEARCH_BROWSER",
+        "AGENTKIT_WEB_SEARCH_HEADLESS",
+        "AGENTKIT_WEB_SEARCH_TIMEOUT_SECONDS",
+        "AGENTKIT_WEB_SEARCH_MAX_SCROLLS",
+        "AGENTKIT_WEB_SEARCH_SCROLL_PAUSE_SECONDS",
+        "AGENTKIT_WEB_SEARCH_PROFILE_ROOT",
+        "AGENTKIT_WEB_SEARCH_STORAGE_STATE_ROOT",
+        "AGENTKIT_WEB_SEARCH_BROWSER_CHANNEL",
+        "AGENTKIT_WEB_SEARCH_EXECUTABLE_PATH",
         "AGENTKIT_MEMORY_WINDOW_TURNS",
         "AGENTKIT_MEMORY_MAX_CONTEXT_TOKENS",
     ]:
@@ -49,6 +64,15 @@ def test_defaults(monkeypatch):
     assert s.tool_max_workers == 32
     assert s.web_token_business_roles == ""
     assert s.auth_proxy_business_roles_header == "X-Forwarded-Business-Roles"
+    assert s.xhs_research_provider == "mock"
+    assert s.xhs_publish_media_strategy == "upload"
+    assert s.xhs_text_image_style == "涂鸦"
+    assert s.xhs_text_image_generation_timeout_seconds == 120.0
+    assert s.xhs_detail_timeout_seconds == 6.0
+    assert s.web_search_browser == "chromium"
+    assert s.web_search_headless is True
+    assert s.web_search_profile_root == "data/browser-profiles"
+    assert s.web_search_storage_state_root is None
 
 
 def test_rate_limit_env_overrides(monkeypatch):
@@ -216,6 +240,26 @@ def test_rag_defaults(monkeypatch):
     assert s.rag_top_k == 5
     assert s.rag_context_cap_tokens == 1000
     assert s.rag_ocr_enabled is False
+
+
+def test_browser_search_env_overrides(monkeypatch):
+    s = _fresh_settings(
+        monkeypatch,
+        AGENTKIT_XHS_RESEARCH_PROVIDER="playwright",
+        AGENTKIT_XHS_PUBLISH_MEDIA_STRATEGY="xhs_text_image",
+        AGENTKIT_XHS_TEXT_IMAGE_STYLE="清新",
+        AGENTKIT_XHS_TEXT_IMAGE_GENERATION_TIMEOUT_SECONDS="90",
+        AGENTKIT_WEB_SEARCH_HEADLESS="false",
+        AGENTKIT_WEB_SEARCH_PROFILE_ROOT="data/test-profiles",
+        AGENTKIT_WEB_SEARCH_STORAGE_STATE_ROOT="data/test-browser-state",
+    )
+    assert s.xhs_research_provider == "playwright"
+    assert s.xhs_publish_media_strategy == "xhs_text_image"
+    assert s.xhs_text_image_style == "清新"
+    assert s.xhs_text_image_generation_timeout_seconds == 90.0
+    assert s.web_search_headless is False
+    assert s.web_search_profile_root == "data/test-profiles"
+    assert s.web_search_storage_state_root == "data/test-browser-state"
 
 
 def test_get_settings_cached(monkeypatch):

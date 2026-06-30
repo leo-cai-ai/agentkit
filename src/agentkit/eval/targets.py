@@ -95,9 +95,7 @@ def make_gateway_trace_target(
             "status": response.get("output", {}).get("status", "completed"),
             "initial_response": initial_response,
             "response": response,
-            "audit_event_types": [
-                event.get("type") for event in events if isinstance(event, dict)
-            ],
+            "audit_event_types": [event.get("type") for event in events if isinstance(event, dict)],
         }
         return json.dumps(envelope, ensure_ascii=False, default=str)
 

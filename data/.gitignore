@@ -1,4 +1,6 @@
 *.sqlite
 *.sqlite-*
+browser-profiles/
+browser-state/
+xhs-publish-assets/
 !.gitignore
-

@@ -12,6 +12,7 @@ from .contracts import RouteDecision, TaskPlan, TaskRequest, TaskResponse
 from .executor import PlanExecutor
 from .governance import HumanApprovalGate, OutputReviewer, PlanReviewer
 from .hooks import AgentLifecycleHooks
+from .input_resolution import SkillInputResolver
 from .intent import IntentDecomposer
 from .langgraph_agent import EnterpriseAgentGraph
 from .planner import Planner
@@ -55,6 +56,11 @@ class AgentGateway:
             prompt_library=prompt_library,
         )
         self._planner = Planner(tenant_config=tenant_config, skills=skills)
+        self._input_resolver = SkillInputResolver(
+            tenant_config=tenant_config,
+            skills=skills,
+            prompt_library=prompt_library,
+        )
         self._executor = PlanExecutor(
             tenant_id=tenant_id,
             tenant_config=tenant_config,
@@ -69,6 +75,7 @@ class AgentGateway:
             tenant_config=tenant_config,
             intent_decomposer=self._intent_decomposer,
             router=self._router,
+            input_resolver=self._input_resolver,
             planner=self._planner,
             executor=self._executor,
             audit=audit,
@@ -190,9 +197,7 @@ class AgentGateway:
         return self._audit
 
 
-def build_checkpointer(
-    *, mode: str, sqlite_path: Path | None = None, settings: Any = None
-) -> Any:
+def build_checkpointer(*, mode: str, sqlite_path: Path | None = None, settings: Any = None) -> Any:
     """Build an approval checkpointer.
 
     - ``memory``: in-process saver (resume works within one process only).
@@ -219,9 +224,9 @@ def build_checkpointer(
         # check_same_thread=False: the Flask/gunicorn worker pool resumes from
         # threads other than the one that created the connection.
         conn = sqlite3.connect(str(sqlite_path), check_same_thread=False)
-        saver = SqliteSaver(conn)
-        saver.setup()
-        return saver
+        sqlite_saver = SqliteSaver(conn)
+        sqlite_saver.setup()
+        return sqlite_saver
     if mode == "postgres":
         try:
             from langgraph.checkpoint.postgres import PostgresSaver
@@ -241,9 +246,9 @@ def build_checkpointer(
             prepare_threshold=0,
             row_factory=dict_row,
         )
-        saver = PostgresSaver(conn)
-        saver.setup()
-        return saver
+        postgres_saver = PostgresSaver(conn)
+        postgres_saver.setup()
+        return postgres_saver
     return None
 
 

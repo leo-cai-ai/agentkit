@@ -2,7 +2,7 @@
 
 The graph is deliberately business-agnostic:
 
-    start_run -> prepare_context -> understand_intent -> route -> plan
+    start_run -> prepare_context -> understand_intent -> route -> resolve_inputs -> plan
       -> review_plan -> human_approval -> execute -> review_output -> finalize
 
 Business behavior is provided by registered skills and tools. Persistence is
@@ -23,6 +23,7 @@ from .contracts import IntentFrame, RouteDecision, TaskPlan, TaskRequest, TaskRe
 from .executor import PlanExecutor
 from .governance import HumanApprovalGate, OutputReviewer, PlanReviewer
 from .hooks import AgentLifecycleHooks
+from .input_resolution import InputResolution, SkillInputResolver
 from .intent import IntentDecomposer
 from .log_context import bind_run_id, set_run_id
 from .logging_config import get_logger
@@ -43,10 +44,12 @@ class EnterpriseAgentState(TypedDict, total=False):
     plan_review: dict[str, Any]
     approval: dict[str, Any]
     output: dict[str, Any]
+    deferred_action: dict[str, Any]
     output_review: dict[str, Any]
     response: TaskResponse
     fastpath_active: bool
     combined_route_active: bool
+    input_resolution: InputResolution
 
 
 AuditLog = InMemoryAuditLog | SQLiteAuditLog | PostgresAuditLog
@@ -62,6 +65,7 @@ class EnterpriseAgentGraph:
         tenant_config: dict[str, Any],
         intent_decomposer: IntentDecomposer,
         router: IntentRouter,
+        input_resolver: SkillInputResolver,
         planner: Planner,
         executor: PlanExecutor,
         audit: AuditLog,
@@ -79,6 +83,7 @@ class EnterpriseAgentGraph:
         self._combiner = combiner
         self._intent_decomposer = intent_decomposer
         self._router = router
+        self._input_resolver = input_resolver
         self._planner = planner
         self._executor = executor
         self._audit = audit
@@ -131,6 +136,9 @@ class EnterpriseAgentGraph:
             context["rejected_skills"] = list(rejected_skills)
         if decision_context:
             context["approval_decision"] = dict(decision_context)
+        last_approval = self._last_approval(run_id)
+        if approved_skills and last_approval.get("phase") == "post_execution":
+            context["approved_content_hash"] = str(last_approval.get("content_hash") or "")
         resumed_request = TaskRequest(
             user_id=request.user_id,
             roles=request.roles,
@@ -173,8 +181,7 @@ class EnterpriseAgentGraph:
         overlap = approved & rejected
         if overlap:
             raise RuntimeError(
-                "skills cannot be both approved and rejected: "
-                + ", ".join(sorted(overlap))
+                "skills cannot be both approved and rejected: " + ", ".join(sorted(overlap))
             )
 
         approval = self._last_approval(run_id)
@@ -201,22 +208,30 @@ class EnterpriseAgentGraph:
     def _build_waiting_response(self, values: dict[str, Any], thread_id: str) -> TaskResponse:
         run_id = values["run_id"]
         approval = self._last_approval(run_id)
-        output = {
-            "status": "waiting_for_approval",
-            "approval": approval,
-            "thread_id": thread_id,
-            "final": {
-                "message": "This run is waiting for human approval before execution.",
+        is_post_execution = approval.get("phase") == "post_execution"
+        output = dict(values.get("output", {})) if is_post_execution else {}
+        final = dict(output.get("final") or {})
+        final["message"] = (
+            self._post_execution_approval_message(approval)
+            if is_post_execution
+            else "This run is waiting for human approval before execution."
+        )
+        final["approval"] = approval
+        output.update(
+            {
+                "status": "waiting_for_approval",
                 "approval": approval,
-            },
-            "governance": {
-                "runtime_context": values.get("runtime_context", {}),
-                "intent": asdict(values["intent"]) if "intent" in values else {},
-                "plan_review": values.get("plan_review", {}),
-                "approval": approval,
-                "output_review": {},
-            },
-        }
+                "thread_id": thread_id,
+                "final": final,
+                "governance": {
+                    "runtime_context": values.get("runtime_context", {}),
+                    "intent": asdict(values["intent"]) if "intent" in values else {},
+                    "plan_review": values.get("plan_review", {}),
+                    "approval": approval,
+                    "output_review": {},
+                },
+            }
+        )
         self._audit.record(
             run_id,
             "run_paused",
@@ -227,6 +242,43 @@ class EnterpriseAgentGraph:
             plan=values["plan"],
             audit_events=self._audit.events_for(run_id),
         )
+
+    @staticmethod
+    def _post_execution_approval_message(approval: dict[str, Any]) -> str:
+        preview = approval.get("preview")
+        preview = preview if isinstance(preview, dict) else {}
+        review = preview.get("review")
+        review = review if isinstance(review, dict) else {}
+        findings = review.get("findings")
+        finding_lines = []
+        if isinstance(findings, list):
+            for item in findings:
+                if isinstance(item, dict) and item.get("message"):
+                    finding_lines.append(f"- [{item.get('severity', 'info')}] {item['message']}")
+        tags = " ".join(f"#{tag}" for tag in preview.get("tags", []) if str(tag).strip())
+        media = "\n".join(f"- {path}" for path in preview.get("media_paths", []))
+        sections = [
+            "### 发布前审核",
+            f"**标题：{preview.get('title', '')}**",
+            "",
+            str(preview.get("body") or ""),
+            "",
+            f"标签：{tags or '无'}",
+            f"机器审核：{review.get('status', approval.get('review_status', 'unknown'))}",
+        ]
+        if finding_lines:
+            sections.extend(["", "审核发现：", *finding_lines])
+        if media:
+            sections.extend(["", "待发布媒体：", media])
+        sections.extend(
+            [
+                "",
+                f"内容指纹：`{approval.get('content_hash', '')}`",
+                "",
+                "批准后将直接提交到小红书创作服务平台，不会重新生成或修改上述内容。",
+            ]
+        )
+        return "\n".join(sections)
 
     def _last_approval(self, run_id: str) -> dict[str, Any]:
         for event in reversed(self._audit.events_for(run_id)):
@@ -241,10 +293,14 @@ class EnterpriseAgentGraph:
         graph.add_node("prepare_context", self._prepare_context_node)
         graph.add_node("understand_intent", self._understand_intent_node)
         graph.add_node("route_request", self._route_node)
+        graph.add_node("resolve_inputs", self._resolve_inputs_node)
+        graph.add_node("clarify_inputs", self._clarify_inputs_node)
         graph.add_node("plan_step", self._plan_node)
         graph.add_node("review_plan", self._review_plan_node)
         graph.add_node("human_approval", self._human_approval_node)
         graph.add_node("execute", self._execute_node)
+        graph.add_node("post_execution_approval", self._post_execution_approval_node)
+        graph.add_node("execute_deferred_action", self._execute_deferred_action_node)
         graph.add_node("review_output", self._review_output_node)
         graph.add_node("finalize", self._finalize_node)
 
@@ -252,7 +308,16 @@ class EnterpriseAgentGraph:
         graph.add_edge("start_run", "prepare_context")
         graph.add_edge("prepare_context", "understand_intent")
         graph.add_edge("understand_intent", "route_request")
-        graph.add_edge("route_request", "plan_step")
+        graph.add_edge("route_request", "resolve_inputs")
+        graph.add_conditional_edges(
+            "resolve_inputs",
+            self._next_after_input_resolution,
+            {
+                "plan_step": "plan_step",
+                "clarify_inputs": "clarify_inputs",
+            },
+        )
+        graph.add_edge("clarify_inputs", "finalize")
         graph.add_edge("plan_step", "review_plan")
         graph.add_edge("review_plan", "human_approval")
         graph.add_conditional_edges(
@@ -263,7 +328,16 @@ class EnterpriseAgentGraph:
                 "review_output": "review_output",
             },
         )
-        graph.add_edge("execute", "review_output")
+        graph.add_edge("execute", "post_execution_approval")
+        graph.add_conditional_edges(
+            "post_execution_approval",
+            self._next_after_post_execution_approval,
+            {
+                "execute_deferred_action": "execute_deferred_action",
+                "review_output": "review_output",
+            },
+        )
+        graph.add_edge("execute_deferred_action", "review_output")
         graph.add_edge("review_output", "finalize")
         graph.add_edge("finalize", END)
         return graph.compile(checkpointer=self._checkpointer)
@@ -385,13 +459,74 @@ class EnterpriseAgentGraph:
         self._hooks.after_route(run_id=run_id, request=state["request"], route=route)
         return {"route": route}
 
+    def _resolve_inputs_node(self, state: EnterpriseAgentState) -> EnterpriseAgentState:
+        run_id = state["run_id"]
+        with timed_event(self._audit, run_id, "node_timing", node="resolve_inputs"):
+            resolution = self._input_resolver.resolve(
+                request=state["request"],
+                intent=state["intent"],
+                route=state["route"],
+            )
+        self._audit.record(run_id, "skill_inputs_resolved", resolution.to_audit())
+        if resolution.llm_used:
+            self._audit.record(run_id, "llm_node_completed", {"node": "resolve_inputs"})
+        self._audit.record(run_id, "graph_node_finished", {"node": "resolve_inputs"})
+        return {"input_resolution": resolution}
+
+    def _next_after_input_resolution(self, state: EnterpriseAgentState) -> str:
+        resolution = state["input_resolution"]
+        return "plan_step" if resolution.complete else "clarify_inputs"
+
+    def _clarify_inputs_node(self, state: EnterpriseAgentState) -> EnterpriseAgentState:
+        run_id = state["run_id"]
+        resolution = state["input_resolution"]
+        plan = TaskPlan(
+            route=state["route"],
+            steps=[],
+            warnings=[
+                "Skill inputs require clarification: missing="
+                + ",".join(resolution.missing_required)
+                + "; invalid="
+                + ",".join(resolution.invalid_fields)
+            ],
+        )
+        pending_input = {
+            "skill_name": resolution.skill_name,
+            "arguments": dict(resolution.arguments),
+            "missing_required": list(resolution.missing_required),
+            "invalid_fields": list(resolution.invalid_fields),
+        }
+        output = {
+            "status": "needs_clarification",
+            "input_resolution": pending_input,
+            "final": {
+                "message": resolution.clarification,
+                "clarification": True,
+                "missing_required": list(resolution.missing_required),
+                "invalid_fields": list(resolution.invalid_fields),
+            },
+        }
+        self._audit.record(
+            run_id,
+            "input_clarification_requested",
+            {
+                "skill_name": resolution.skill_name,
+                "missing_required": list(resolution.missing_required),
+                "invalid_fields": list(resolution.invalid_fields),
+            },
+        )
+        self._audit.record(run_id, "graph_node_finished", {"node": "clarify_inputs"})
+        return {"plan": plan, "output": output}
+
     def _plan_node(self, state: EnterpriseAgentState) -> EnterpriseAgentState:
         run_id = state["run_id"]
+        resolved_args = state["input_resolution"].arguments
         if state.get("fastpath_active"):
             with timed_event(self._audit, run_id, "node_timing", node="plan"):
                 plan = self._planner.deterministic_plan(
                     request=state["request"],
                     route=state["route"],
+                    resolved_args=resolved_args,
                 )
         else:
             with timed_event(self._audit, run_id, "node_timing", node="plan"):
@@ -399,6 +534,7 @@ class EnterpriseAgentGraph:
                     request=state["request"],
                     route=state["route"],
                     intent=state["intent"],
+                    resolved_args=resolved_args,
                 )
         self._audit.record(
             run_id,
@@ -497,6 +633,125 @@ class EnterpriseAgentGraph:
             request=state["request"],
             output=output,
         )
+        final = output.get("final")
+        deferred_action: dict[str, Any] = {}
+        if isinstance(final, dict) and isinstance(final.get("deferred_action"), dict):
+            deferred_action = dict(final.pop("deferred_action"))
+        result: EnterpriseAgentState = {"output": output}
+        if deferred_action:
+            result["deferred_action"] = deferred_action
+        return result
+
+    def _post_execution_approval_node(self, state: EnterpriseAgentState) -> EnterpriseAgentState:
+        action = state.get("deferred_action")
+        if not action:
+            return {}
+        run_id = state["run_id"]
+        approval_skill = str(action.get("approval_skill") or "")
+        content_hash = str(action.get("content_hash") or "")
+        review_status = str(action.get("review_status") or "")
+        preview = action.get("preview") if isinstance(action.get("preview"), dict) else {}
+        planned_skills = {step.skill_name for step in state["plan"].steps}
+        if (
+            not approval_skill
+            or approval_skill not in planned_skills
+            or not content_hash
+            or review_status == "failed"
+        ):
+            approval = {
+                "phase": "post_execution",
+                "status": "rejected",
+                "required": False,
+                "skills": [approval_skill] if approval_skill else [],
+                "reason": "invalid or failed-review deferred publication",
+                "content_hash": content_hash,
+                "review_status": review_status,
+            }
+            self._audit.record(run_id, "human_approval_checked", approval)
+            return {
+                "approval": approval,
+                "output": {
+                    **state["output"],
+                    "status": "rejected",
+                    "final": {
+                        **dict(state["output"].get("final") or {}),
+                        "message": "Publication was blocked before human approval.",
+                    },
+                },
+            }
+
+        approved = {str(item) for item in state["request"].context.get("approved_skills", [])}
+        rejected = {str(item) for item in state["request"].context.get("rejected_skills", [])}
+        approved_hash = str(state["request"].context.get("approved_content_hash") or "")
+        if approval_skill in rejected:
+            status = "rejected"
+            reason = "human rejected the frozen publication"
+        elif approval_skill in approved and approved_hash == content_hash:
+            status = "approved"
+            reason = "human approved the frozen publication content"
+        else:
+            status = "waiting_for_approval"
+            reason = "human approval is required for the frozen publication content"
+        approval = {
+            "phase": "post_execution",
+            "status": status,
+            "required": True,
+            "skills": [approval_skill],
+            "reason": reason,
+            "action_id": action.get("action_id"),
+            "content_hash": content_hash,
+            "review_status": review_status,
+            "preview": preview,
+        }
+        self._audit.record(run_id, "human_approval_checked", approval)
+        self._audit.record(
+            run_id,
+            "graph_node_finished",
+            {"node": "post_execution_approval", "status": status},
+        )
+        if status == "waiting_for_approval" and self._checkpointer is not None:
+            raise NodeInterrupt(approval)
+        if status in {"waiting_for_approval", "rejected"}:
+            return {
+                "approval": approval,
+                "output": {
+                    **state["output"],
+                    "status": status,
+                    "approval": approval,
+                    "final": {
+                        **dict(state["output"].get("final") or {}),
+                        "message": self._post_execution_approval_message(approval),
+                    },
+                },
+            }
+        return {"approval": approval}
+
+    def _next_after_post_execution_approval(self, state: EnterpriseAgentState) -> str:
+        if not state.get("deferred_action"):
+            return "review_output"
+        if state.get("approval", {}).get("status") == "approved":
+            return "execute_deferred_action"
+        return "review_output"
+
+    def _execute_deferred_action_node(self, state: EnterpriseAgentState) -> EnterpriseAgentState:
+        with timed_event(
+            self._audit,
+            state["run_id"],
+            "node_timing",
+            node="execute_deferred_action",
+        ):
+            output = self._executor.execute_deferred_action(
+                run_id=state["run_id"],
+                request=state["request"],
+                plan=state["plan"],
+                output=state["output"],
+                action=state["deferred_action"],
+            )
+        self._audit.record(
+            state["run_id"],
+            "graph_node_finished",
+            {"node": "execute_deferred_action"},
+        )
         return {"output": output}
 
     def _review_output_node(self, state: EnterpriseAgentState) -> EnterpriseAgentState:
@@ -543,7 +798,7 @@ class EnterpriseAgentGraph:
         output_status = output.get("status")
         if has_error:
             run_status = "failed"
-        elif output_status in {"waiting_for_approval", "rejected"}:
+        elif output_status in {"waiting_for_approval", "rejected", "needs_clarification"}:
             run_status = output_status
         else:
             run_status = "completed"

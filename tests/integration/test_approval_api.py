@@ -88,7 +88,7 @@ def test_task_pauses_then_resume_completes(client):
     token = _login_and_csrf(client)
     waiting = client.post(
         "/api/tasks",
-        json={"agent": "hr_recruiter", "text": "Rank the top candidate for JOB-001."},
+        json={"agent": "hr_recruiter", "text": "Rank candidate C-100 for JOB-001."},
         headers={"X-CSRF-Token": token},
     ).get_json()
     assert waiting["response"]["output"]["status"] == "waiting_for_approval"
@@ -149,7 +149,7 @@ def test_approval_resubmit_endpoint_completes_with_preapproval(client):
         "/api/tasks/approve",
         json={
             "agent": "hr_recruiter",
-            "text": "Rank the top candidate for JOB-001.",
+            "text": "Rank candidate C-100 for JOB-001.",
             "approved_skills": ["candidate.rank"],
         },
         headers={"X-CSRF-Token": token},

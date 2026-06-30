@@ -515,8 +515,7 @@ class PostgresAuditLog(SQLiteAuditLog):
                     """
                 ).fetchall()
         return [
-            {"event_type": row[0], "count": int(row[1]), "avg_ms": float(row[2])}
-            for row in rows
+            {"event_type": row[0], "count": int(row[1]), "avg_ms": float(row[2])} for row in rows
         ]
 
     def cost_summary(self) -> dict[str, Any]:

@@ -23,6 +23,8 @@ def _label(system: str) -> str:
         return "intent"
     if "routing node" in s:
         return "route"
+    if "extract input arguments" in s:
+        return "input_resolution"
     if "planning node" in s:
         return "plan"
     if "plan-review node" in s:
@@ -52,6 +54,15 @@ def _payload(label: str) -> str:
         )
     if label == "route":
         return json.dumps({"skill_name": "candidate.rank", "reason": "match", "confidence": "high"})
+    if label == "input_resolution":
+        return json.dumps(
+            {
+                "arguments": {},
+                "confidence": {},
+                "missing_required": ["candidate_ids"],
+                "clarification": "Please provide candidate IDs.",
+            }
+        )
     if label == "plan":
         return json.dumps(
             {
@@ -150,6 +161,27 @@ def test_fastpath_disabled_runs_full_pipeline(monkeypatch, tmp_path):
     assert {"intent", "route", "plan", "plan_review"} <= set(pre_approval)
 
 
+def test_fastpath_stops_for_missing_required_skill_inputs(monkeypatch, tmp_path):
+    request = TaskRequest(
+        user_id="u-1",
+        roles=["recruiter"],
+        text="Rank candidates for JOB-001.",
+        context={"agent": "hr_recruiter"},
+    )
+    response, calls, _, resumed = _run_with_fastpath(
+        monkeypatch,
+        tmp_path,
+        enabled=True,
+        request=request,
+    )
+
+    assert response["output"]["status"] == "needs_clarification"
+    assert response["output"]["input_resolution"]["missing_required"] == ["candidate_ids"]
+    assert response["plan"]["steps"] == []
+    assert calls == ["input_resolution"]
+    assert resumed is None
+
+
 def test_fastpath_falls_back_when_route_not_high_confidence(monkeypatch, tmp_path):
     # No action keywords -> deterministic route cannot resolve a skill with high
     # confidence, so the full LLM pipeline must run even with fast-path enabled.
@@ -162,4 +194,5 @@ def test_fastpath_falls_back_when_route_not_high_confidence(monkeypatch, tmp_pat
     _, pre_approval, _, _ = _run_with_fastpath(
         monkeypatch, tmp_path, enabled=True, request=ambiguous
     )
-    assert {"intent", "route", "plan", "plan_review"} <= set(pre_approval)
+    assert {"intent", "route", "input_resolution"} <= set(pre_approval)
+    assert not ({"plan", "plan_review", "approval"} & set(pre_approval))

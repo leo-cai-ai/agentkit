@@ -14,10 +14,12 @@ RUN pip install --no-cache-dir uv && python -m venv "$VIRTUAL_ENV"
 WORKDIR /app
 
 # Install dependencies first (better layer caching), then the package itself.
-# 'pg' bundles the psycopg driver; 'rag' bundles Chroma + document parsers.
+# 'pg' bundles the psycopg driver; 'rag' bundles Chroma + document parsers;
+# 'browser' installs the Playwright Python API. Browser binaries remain isolated
+# in the optional browser-runtime target below.
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
-RUN uv pip install --python "$VIRTUAL_ENV/bin/python" ".[serve,pg,rag]"
+RUN uv pip install --python "$VIRTUAL_ENV/bin/python" ".[serve,pg,rag,browser]"
 
 # ---- runtime: minimal image, non-root ----
 FROM python:3.12.10-slim AS runtime
@@ -62,3 +64,18 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD ["python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8501/healthz', timeout=3).status==200 else 1)"]
 
 CMD ["gunicorn", "--bind", "0.0.0.0:8501", "--workers", "2", "--timeout", "120", "agentkit.web.app:app"]
+
+# Optional browser-enabled runtime. Build explicitly with
+# `--target browser-runtime`; the normal final target stays small and does not
+# download Chromium. Authentication state should be supplied through a mounted
+# storage-state directory, never baked into the image.
+FROM runtime AS browser-runtime
+
+USER root
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN python -m playwright install --with-deps chromium \
+    && chown -R appuser:appuser /ms-playwright
+USER appuser
+
+# Keep the default docker build on the minimal runtime target.
+FROM runtime AS final

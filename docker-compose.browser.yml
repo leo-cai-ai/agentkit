@@ -1,0 +1,13 @@
+# Overlay for browser-backed website research and approved publication:
+# docker compose -f docker-compose.yml -f docker-compose.browser.yml up -d --build
+services:
+  web:
+    build:
+      context: .
+      target: browser-runtime
+    environment:
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+    volumes:
+      # Portable Playwright cookies/local-storage created by `browser-login`.
+      - ./data/browser-state:/app/data/browser-state
+    shm_size: "1gb"

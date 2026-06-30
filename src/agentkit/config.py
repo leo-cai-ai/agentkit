@@ -224,6 +224,33 @@ class Settings(BaseSettings):
     rag_ocr_enabled: bool = False
     rag_ocr_languages: str = "eng+chi_sim"
 
+    # Browser-backed public-web research. Browser lifecycle is shared across
+    # site adapters; each site gets an isolated persistent profile directory so
+    # login cookies are not mixed between connectors. Playwright is optional and
+    # imported only when a browser provider is selected.
+    xhs_research_provider: Literal["mock", "playwright"] = "mock"
+    xhs_publishing_provider: Literal["mock", "playwright"] = "mock"
+    xhs_base_url: str = "https://www.xiaohongshu.com"
+    xhs_publish_url: str = "https://creator.xiaohongshu.com/publish/publish?source=official"
+    xhs_publish_asset_root: str = "data/xhs-publish-assets"
+    xhs_publish_ledger_path: str = "data/xhs-publish-ledger.sqlite"
+    xhs_publish_media_strategy: Literal["upload", "xhs_text_image"] = "upload"
+    xhs_text_image_style: str = "涂鸦"
+    xhs_text_image_generation_timeout_seconds: float = Field(default=120.0, gt=0.0)
+    xhs_enrich_details: bool = True
+    xhs_detail_limit: int = Field(default=5, ge=0, le=20)
+    xhs_detail_timeout_seconds: float = Field(default=6.0, gt=0.0)
+    xhs_detail_pause_seconds: float = Field(default=0.5, ge=0.0)
+    web_search_browser: Literal["chromium", "firefox", "webkit"] = "chromium"
+    web_search_headless: bool = True
+    web_search_timeout_seconds: float = Field(default=30.0, gt=0.0)
+    web_search_max_scrolls: int = Field(default=6, ge=0, le=50)
+    web_search_scroll_pause_seconds: float = Field(default=0.75, ge=0.0)
+    web_search_profile_root: str | None = "data/browser-profiles"
+    web_search_storage_state_root: str | None = None
+    web_search_browser_channel: str | None = None
+    web_search_executable_path: str | None = None
+
     # PostgreSQL connection (used when a backend is set to 'postgres', e.g.
     # vector_store_backend=postgres with the pgvector extension). Either set a
     # full DSN/URL via AGENTKIT_PG_DSN, or the individual parts below. Requires

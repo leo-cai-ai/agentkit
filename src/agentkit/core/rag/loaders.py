@@ -93,9 +93,7 @@ class DocumentFolderLoader:
         self._options = options or DocumentLoadOptions()
         self._image_analyzer = image_analyzer
         if self._options.ocr_enabled and self._image_analyzer is None:
-            self._image_analyzer = TesseractImageAnalyzer(
-                languages=self._options.ocr_languages
-            )
+            self._image_analyzer = TesseractImageAnalyzer(languages=self._options.ocr_languages)
 
     def load_path(
         self,

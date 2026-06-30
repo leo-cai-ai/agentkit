@@ -111,8 +111,7 @@ def test_output_review_fail_closed_does_not_return_blocked_payload(monkeypatch, 
     out = runtime.gateway.handle(request).to_dict()
     assert out["output"]["error"] == "output_review_failed"
     assert (
-        out["output"]["final"]["message"]
-        == "The response was blocked by output governance review."
+        out["output"]["final"]["message"] == "The response was blocked by output governance review."
     )
     assert "blocked_output" not in out["output"]
     assert "ranked_candidates" not in json.dumps(out["output"], ensure_ascii=False)

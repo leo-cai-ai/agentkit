@@ -39,6 +39,69 @@ def _run_web() -> None:
     app.run(host="127.0.0.1", port=8501)
 
 
+def _browser_login(
+    site: str,
+    *,
+    query: str,
+    target: str,
+    tenant_id: str | None = None,
+) -> int:
+    """Open a persistent headed browser profile for a human-managed site login."""
+
+    configure_logging()
+    if site != "xhs":
+        print(f"Unsupported browser site: {site}", file=sys.stderr)
+        return 2
+
+    from agentkit.config import get_settings
+    from agentkit.domain_packs.social_growth.providers import (
+        build_playwright_publishing_provider,
+        build_playwright_research_provider,
+    )
+    from agentkit.runtime.bootstrap import load_tenant_config, resolve_tenant_id
+
+    tenant_config = load_tenant_config(resolve_tenant_id(tenant_id))
+    social_growth_config = tenant_config.get("social_growth", {})
+    provider_config = social_growth_config if isinstance(social_growth_config, dict) else {}
+    if target == "publish":
+        from agentkit.connectors.xhs_publisher_playwright import (
+            PlaywrightXhsPublishingProvider,
+        )
+
+        publish_provider = build_playwright_publishing_provider(get_settings(), provider_config)
+        if not isinstance(publish_provider, PlaywrightXhsPublishingProvider):  # pragma: no cover
+            print("Could not build the XHS Playwright publishing provider.", file=sys.stderr)
+            return 2
+        client = publish_provider.client
+        site_key = publish_provider.adapter.site_key
+        url = publish_provider.adapter.publish_url
+        readiness_check = publish_provider.adapter.interactive_login_complete
+    else:
+        from agentkit.connectors.xhs_playwright import PlaywrightXhsResearchProvider
+
+        research_provider = build_playwright_research_provider(get_settings(), provider_config)
+        if not isinstance(research_provider, PlaywrightXhsResearchProvider):  # pragma: no cover
+            print("Could not build the XHS Playwright research provider.", file=sys.stderr)
+            return 2
+        client = research_provider.client
+        site_key = research_provider.adapter.site_key
+        url = research_provider.adapter.search_url(query)
+        readiness_check = research_provider.adapter.interactive_login_complete
+    print(
+        "A persistent Xiaohongshu browser profile is open. Complete login or human "
+        "verification in that window. The window stays open until the target page "
+        "is authenticated and ready; press Ctrl+C here to cancel."
+    )
+
+    client.open_interactive(
+        site_key=site_key,
+        url=url,
+        readiness_check=readiness_check,
+    )
+    print("Authenticated target page detected. Browser profile saved.")
+    return 0
+
+
 def _check_postgres(settings: Any) -> bool:
     """Verify PG connectivity and ensure configured Postgres schemas exist."""
     from agentkit.core.audit import PostgresAuditLog
@@ -170,10 +233,7 @@ def _validate_packs(*, domains: list[str], as_json: bool) -> int:
                 f"{len(result.skills)} skills, "
                 f"{len(result.tools)} tools"
             )
-            print(
-                f"[{status}] {result.domain}: "
-                f"{summary}"
-            )
+            print(f"[{status}] {result.domain}: " f"{summary}")
             for error in result.errors:
                 print(f"  error: {error}")
             for warning in result.warnings:
@@ -573,6 +633,22 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("run-demo", help="Run the HR ranking demo task.")
     sub.add_parser("web", help="Start the Flask management console.")
+    browser_login = sub.add_parser(
+        "browser-login",
+        help="Open a persistent browser profile for an interactive site login.",
+    )
+    browser_login.add_argument("site", choices=["xhs"], help="Site adapter to authenticate.")
+    browser_login.add_argument(
+        "--query",
+        default="AI Agent",
+        help="Search query used to verify the authenticated result page.",
+    )
+    browser_login.add_argument(
+        "--target",
+        choices=["search", "publish"],
+        default="search",
+        help="Open the search page or Creator Center publish page.",
+    )
     sub.add_parser(
         "init-db",
         help="Create/verify storage (data dir + Postgres pgvector schema) and check connectivity.",
@@ -668,6 +744,15 @@ def main() -> None:
         if args.tenant:
             os.environ["AGENTKIT_TENANT_ID"] = args.tenant
         _run_web()
+    elif args.command == "browser-login":
+        raise SystemExit(
+            _browser_login(
+                args.site,
+                query=args.query,
+                target=args.target,
+                tenant_id=args.tenant,
+            )
+        )
     elif args.command == "init-db":
         raise SystemExit(_init_db())
     elif args.command == "doctor":

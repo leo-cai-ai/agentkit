@@ -1,7 +1,21 @@
+import pytest
+
 from agentkit.core.artifacts import InMemoryArtifactStore
 from agentkit.core.contracts import SkillContext, TaskRequest, ToolDefinition
 from agentkit.domain_packs.social_growth.pack import (
+    _maybe_llm_article,
+    _parse_generated_article,
+    assess_research_quality,
+    compare_cases,
+    extract_topic,
+    review_copy,
     run_growth_campaign,
+    topic_source_for,
+)
+from agentkit.domain_packs.social_growth.providers import (
+    MockXhsMetricsProvider,
+    MockXhsProvider,
+    default_provider_bundle,
 )
 from agentkit.domain_packs.social_growth.tools import (
     create_publish_package_tool,
@@ -10,10 +24,206 @@ from agentkit.domain_packs.social_growth.tools import (
 )
 
 
+class _LimitProvider:
+    def __init__(self):
+        self.limit = 0
+
+    def search_top_notes(self, *, topic: str, limit: int):
+        self.limit = limit
+        return [{"note_id": "n", "topic": topic}]
+
+
+def test_xhs_search_tool_validates_and_caps_limit():
+    provider = _LimitProvider()
+
+    result = search_top_notes_tool({"topic": "AI", "limit": 999}, provider)
+
+    assert provider.limit == 20
+    assert result["notes"][0]["topic"] == "AI"
+
+    with pytest.raises(ValueError, match="at most 200"):
+        search_top_notes_tool({"topic": "x" * 201}, provider)
+
+
+def test_xhs_provider_bundle_accepts_tenant_playwright_override(monkeypatch, tmp_path):
+    import agentkit.domain_packs.social_growth.providers as providers_module
+    from agentkit.config import Settings
+    from agentkit.connectors.xhs_playwright import PlaywrightXhsResearchProvider
+
+    settings = Settings(_env_file=None, xhs_research_provider="mock")
+    monkeypatch.setattr(providers_module, "get_settings", lambda: settings)
+
+    bundle = default_provider_bundle(
+        provider_config={
+            "research_provider": "playwright",
+            "browser_headless": "false",
+            "browser_profile_root": str(tmp_path),
+            "enrich_details": "false",
+        }
+    )
+
+    assert isinstance(bundle.research, PlaywrightXhsResearchProvider)
+    assert bundle.research.client.config.headless is False
+    assert bundle.research.adapter.enrich_details is False
+
+
+def test_xhs_provider_bundle_builds_playwright_publisher(monkeypatch, tmp_path):
+    import agentkit.domain_packs.social_growth.providers as providers_module
+    from agentkit.config import Settings
+    from agentkit.connectors.xhs_publisher_playwright import (
+        PlaywrightXhsPublishingProvider,
+    )
+
+    settings = Settings(_env_file=None, xhs_publishing_provider="mock")
+    monkeypatch.setattr(providers_module, "get_settings", lambda: settings)
+
+    bundle = default_provider_bundle(
+        provider_config={
+            "publishing_provider": "playwright",
+            "browser_profile_root": str(tmp_path / "profiles"),
+            "publish_asset_root": str(tmp_path / "assets"),
+            "publish_ledger_path": str(tmp_path / "publish.sqlite"),
+            "publishing_media_strategy": "xhs_text_image",
+            "text_image_style": "涂鸦",
+            "text_image_generation_timeout_seconds": 90,
+        }
+    )
+
+    assert isinstance(bundle.publishing, PlaywrightXhsPublishingProvider)
+    assert bundle.publishing.client.config.profile_root == str(tmp_path / "profiles")
+    assert bundle.publishing.ledger.path == (tmp_path / "publish.sqlite").resolve()
+    assert bundle.publishing.adapter.media_strategy == "xhs_text_image"
+    assert bundle.publishing.adapter.text_image_style == "涂鸦"
+    assert bundle.publishing.adapter.text_image_generation_timeout_ms == 90_000
+
+
+def test_research_quality_reports_default_topic_and_card_only_evidence():
+    quality = assess_research_quality(
+        [
+            {
+                "note_id": "n1",
+                "likes": 10,
+                "saves": 0,
+                "comments": 0,
+                "detail_enriched": False,
+                "published_at": "",
+            }
+        ],
+        requested_top_n=5,
+        topic_source="tenant_default",
+    )
+
+    assert quality["status"] == "insufficient"
+    assert quality["observed_count"] == 1
+    assert quality["official_daily_rank"] is False
+    assert quality["recurring_schedule_configured"] is False
+    assert any("tenant default" in item for item in quality["warnings"])
+    assert any("search-card" in item for item in quality["warnings"])
+
+
+def test_compare_cases_uses_observed_metrics_without_inventing_saves():
+    cases = [
+        {
+            "title": "AI Agent learning checklist",
+            "hook": "checklist",
+            "engagement": {"likes": 120, "saves": 0, "comments": 0},
+            "detail_enriched": False,
+        },
+        {
+            "title": "Enterprise AI Agent architecture",
+            "hook": "architecture",
+            "engagement": {"likes": 20, "saves": 0, "comments": 0},
+            "detail_enriched": False,
+        },
+    ]
+    comparison = compare_cases(cases)
+
+    assert comparison[0]["pattern"] == "Observed engagement leader"
+    assert "likes=120" in comparison[0]["evidence"]
+    assert "High saves" not in str(comparison)
+    assert comparison[2]["pattern"] == "Evidence coverage"
+    assert "search-card" in comparison[2]["evidence"]
+
+    chinese = compare_cases(cases, language="zh-CN")
+    assert chinese[0]["pattern"] == "互动领先案例"
+    assert "点赞=120" in chinese[0]["evidence"]
+    assert chinese[2]["pattern"] == "证据覆盖度"
+
+
+def test_copy_prompt_keeps_campaign_kpi_internal(monkeypatch):
+    captured = {}
+
+    def fake_stream(system, user):
+        captured["system"] = system
+        captured["user"] = user
+        return "TITLE: 企业级 Agent 落地先看这一点\nBODY: 一条基于真实案例的正文。"
+
+    import agentkit.core.llm_client as llm_client
+
+    monkeypatch.setattr(llm_client, "require_chat_streaming", fake_stream)
+    article = _maybe_llm_article(
+        article={"title": "fallback", "body": "fallback"},
+        topic="enterprise AI agents",
+        goal={"days": 30, "target_followers": 10000},
+        cadence="daily",
+        comparison=[],
+        top_cases=[{"note_id": "n1", "title": "case"}],
+        language="zh-CN",
+        research_quality={"status": "limited"},
+    )
+
+    assert article["title"] == "企业级 Agent 落地先看这一点"
+    assert article["body"] == "一条基于真实案例的正文。"
+    assert "INTERNAL KPI" in captured["system"]
+    assert "do not quote this as a reader-facing claim" in captured["user"]
+
+
+def test_extracts_chinese_quoted_topic_from_original_request():
+    text = (
+        "围绕“暑假带娃旅游”，研究当前小红书搜索结果 Top 5，比较标题、内容角度和互动数据，"
+        "生成今天的一篇草稿并准备发布。"
+    )
+
+    assert extract_topic(text=text, config={"default_topic": "enterprise AI agents"}) == (
+        "暑假带娃旅游"
+    )
+    assert topic_source_for(text=text) == "request"
+
+
+def test_generated_article_parser_accepts_title_without_body_label():
+    title, body = _parse_generated_article(
+        "TITLE: 暑假带娃怎么选目的地\n\n第一段正文。\n第二段正文。",
+        fallback_title="fallback",
+    )
+
+    assert title == "暑假带娃怎么选目的地"
+    assert body == "第一段正文。\n第二段正文。"
+
+
+def test_copy_review_preserves_draft_but_requires_evidence_review():
+    out = review_copy(
+        None,  # type: ignore[arg-type]
+        {
+            "article": {
+                "title": "title",
+                "body": "body " * 30,
+                "source_case_ids": ["n1"],
+            },
+            "top_cases": [{"note_id": "n1"}],
+            "research_quality": {"warnings": ["detail evidence is incomplete"]},
+        },
+    )
+
+    assert out["review"]["status"] == "approved_with_warnings"
+    assert out["review"]["brand_safe"] is True
+
+
 def test_xhs_growth_campaign_runs_isolated_workflow(monkeypatch):
     import agentkit.core.llm_client as llm_client
 
     monkeypatch.setattr(llm_client, "require_chat_streaming", lambda system, user: "LLM body")
+    mock_xhs = MockXhsProvider()
+    mock_metrics = MockXhsMetricsProvider()
     artifacts = InMemoryArtifactStore()
     ctx = SkillContext(
         tenant_id="AI-ABC",
@@ -31,19 +241,19 @@ def test_xhs_growth_campaign_runs_isolated_workflow(monkeypatch):
                 name="xhs.rpa.search_top_notes",
                 domain="marketing.social_growth",
                 description="",
-                handler=search_top_notes_tool,
+                handler=lambda args: search_top_notes_tool(args, mock_xhs),
             ),
             "xhs.rpa.create_publish_package": ToolDefinition(
                 name="xhs.rpa.create_publish_package",
                 domain="marketing.social_growth",
                 description="",
-                handler=create_publish_package_tool,
+                handler=lambda args: create_publish_package_tool(args, mock_xhs),
             ),
             "xhs.metrics.fetch": ToolDefinition(
                 name="xhs.metrics.fetch",
                 domain="marketing.social_growth",
                 description="",
-                handler=fetch_metrics_tool,
+                handler=lambda args: fetch_metrics_tool(args, mock_metrics),
             ),
         },
         request=TaskRequest(
@@ -54,11 +264,23 @@ def test_xhs_growth_campaign_runs_isolated_workflow(monkeypatch):
         artifacts=artifacts,
     )
 
-    out = run_growth_campaign(ctx, {})
+    out = run_growth_campaign(
+        ctx,
+        {
+            "topic": "enterprise AI agents",
+            "top_n": 3,
+            "goal_days": 30,
+            "target_followers": 10000,
+            "cadence": "daily",
+        },
+    )
 
     assert out["campaign_id"] == "XHS-30D-10000"
     assert out["article"]["body"] == "LLM body"
     assert out["publish"]["status"] == "draft_created"
+    assert out["research_quality"]["status"] == "limited"
+    assert out["review"]["status"] == "approved_with_warnings"
+    assert out["publish"]["readiness"] == "needs_evidence_review"
     assert out["metrics"]["status"] == "tracking_scheduled"
     assert [step["step"] for step in out["workflow_trace"]] == [
         "xhs.trend.research",

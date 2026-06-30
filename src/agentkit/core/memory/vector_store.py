@@ -136,6 +136,7 @@ class SqliteVectorStore:
         scored.sort(key=lambda hit: hit.score, reverse=True)
         return scored[:k]
 
+
 def build_vector_store(settings: object, store: ConversationStore) -> VectorStore:
     """Build the configured VectorStore (default: SQLite linear scan).
 

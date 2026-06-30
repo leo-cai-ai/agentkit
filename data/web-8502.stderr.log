@@ -1,0 +1,17 @@
+C:\Users\lecai\Documents\GitRepos\agentkit\.venv\Lib\site-packages\langgraph\checkpoint\base\__init__.py:18: LangChainPendingDeprecationWarning: The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., allowed_objects='messages' or allowed_objects='core') to suppress this warning.
+  from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
+ * Running on http://127.0.0.1:8502
+Press CTRL+C to quit
+127.0.0.1 - - [30/Jun/2026 19:55:11] "GET /chat HTTP/1.1" 200 -
+127.0.0.1 - - [30/Jun/2026 19:55:11] "GET /static/js/app.js HTTP/1.1" 200 -
+127.0.0.1 - - [30/Jun/2026 19:55:11] "GET /static/css/app.css HTTP/1.1" 200 -
+127.0.0.1 - - [30/Jun/2026 19:55:11] "GET /api/conversations?agent=hr_recruiter HTTP/1.1" 200 -
+127.0.0.1 - - [30/Jun/2026 19:57:04] "GET /chat HTTP/1.1" 200 -
+127.0.0.1 - - [30/Jun/2026 19:57:04] "GET /static/css/app.css HTTP/1.1" 304 -
+127.0.0.1 - - [30/Jun/2026 19:57:04] "GET /static/js/app.js HTTP/1.1" 304 -
+127.0.0.1 - - [30/Jun/2026 19:57:04] "GET /api/conversations?agent=hr_recruiter HTTP/1.1" 200 -
+127.0.0.1 - - [30/Jun/2026 20:05:04] "GET /api/conversations?agent=xhs_growth HTTP/1.1" 200 -
+127.0.0.1 - - [30/Jun/2026 20:05:13] "GET /api/conversations/2bdff0c1-06d9-4455-9d1b-cc93134a17a7/messages HTTP/1.1" 200 -
+127.0.0.1 - - [30/Jun/2026 20:07:49] "POST /api/chat/stream HTTP/1.1" 200 -
+tool 'xhs.rpa.search_top_notes' failed (attempt 1/1): xiaohongshu browser search failed: TargetClosedError: Page.evaluate: Target page, context or browser has been closed

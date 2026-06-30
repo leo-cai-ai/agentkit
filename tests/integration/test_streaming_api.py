@@ -112,7 +112,7 @@ def test_tasks_stream_pauses_then_resume_streams_tokens(client):
     # First call pauses for approval: a final frame, no token frames yet.
     waiting = client.post(
         "/api/tasks/stream",
-        json={"agent": "hr_recruiter", "text": "Rank the top candidate for JOB-001."},
+        json={"agent": "hr_recruiter", "text": "Rank candidate C-100 for JOB-001."},
         headers={"X-CSRF-Token": token},
     )
     assert waiting.mimetype == "text/event-stream"
@@ -151,7 +151,7 @@ def test_chat_stream_routes_action_agent_and_resumes_approval(client):
         "user_id": "browser-user",
         "context": {
             "agent": "hr_recruiter",
-            "message": "Rank the top candidate for JOB-001.",
+            "message": "Rank candidate C-100 for JOB-001.",
         },
     }
 
@@ -219,7 +219,7 @@ def test_fail_closed_output_review_suppresses_task_token_frames(client):
 
     waiting = client.post(
         "/api/tasks/stream",
-        json={"agent": "hr_recruiter", "text": "Rank the top candidate for JOB-001."},
+        json={"agent": "hr_recruiter", "text": "Rank candidate C-100 for JOB-001."},
         headers={"X-CSRF-Token": token},
     )
     frames = _parse_frames(waiting.get_data(as_text=True))

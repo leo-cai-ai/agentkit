@@ -153,10 +153,28 @@ def register(
             input_schema={
                 "type": "object",
                 "required": ["job_id", "candidate_ids"],
+                "x-agentkit-infer-from-message": True,
                 "properties": {
-                    "job_id": {"type": "string"},
-                    "candidate_ids": {"type": "array", "items": {"type": "string"}},
-                    "top_n": {"type": "integer"},
+                    "job_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "ATS job requisition identifier.",
+                        "x-agentkit-label": "职位编号",
+                    },
+                    "candidate_ids": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {"type": "string", "minLength": 1},
+                        "description": "Candidate identifiers to rank.",
+                        "x-agentkit-label": "候选人编号",
+                    },
+                    "top_n": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "default": 5,
+                        "description": "Maximum number of ranked candidates to return.",
+                        "x-agentkit-label": "返回人数",
+                    },
                 },
             },
             output_schema={

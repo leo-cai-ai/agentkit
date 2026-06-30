@@ -126,14 +126,17 @@ class KnowledgeService:
         k: int = 5,
         filters: dict[str, Any] | None = None,
     ) -> list[str]:
-        return [format_hit_for_context(hit) for hit in self.retrieve(
-            text,
-            user_id=user_id,
-            agent=agent,
-            roles=roles,
-            k=k,
-            filters=filters,
-        )]
+        return [
+            format_hit_for_context(hit)
+            for hit in self.retrieve(
+                text,
+                user_id=user_id,
+                agent=agent,
+                roles=roles,
+                k=k,
+                filters=filters,
+            )
+        ]
 
 
 def build_knowledge_service(

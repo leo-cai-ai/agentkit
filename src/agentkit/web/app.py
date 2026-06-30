@@ -14,7 +14,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, Response, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, send_from_directory
 
 from agentkit.config import get_settings
 from agentkit.core.audit import SQLiteAuditLog
@@ -97,6 +97,20 @@ def get_runtime():
 def clear_runtime_cache() -> None:
     """Drop cached runtimes so tenant configs, prompts, and packs reload."""
     _build_runtime_cached.cache_clear()
+
+
+@app.get("/api/xhs/publish-assets/<path:filename>")
+@require_permission(CHAT_USE)
+def api_xhs_publish_asset(filename: str):
+    safe_name = Path(filename).name
+    if safe_name != filename or not safe_name.lower().endswith((".png", ".jpg", ".jpeg")):
+        return jsonify({"error": "invalid publish asset path"}), 400
+    runtime = get_runtime()
+    social_config = runtime.tenant_config.get("social_growth", {})
+    root = (
+        social_config.get("publish_asset_root") if isinstance(social_config, dict) else None
+    ) or get_settings().xhs_publish_asset_root
+    return send_from_directory(Path(str(root)).expanduser().resolve(), safe_name)
 
 
 @app.context_processor
@@ -390,9 +404,7 @@ def _trusted_business_roles(
 
     # Some proxies send business roles and console roles in the same header. Treat
     # only roles that exist in tenant role_permissions as business roles.
-    overlapping = [
-        str(role) for role in principal.roles if str(role) in known_business_roles
-    ]
+    overlapping = [str(role) for role in principal.roles if str(role) in known_business_roles]
     if overlapping:
         return overlapping, "principal.roles"
 
@@ -462,12 +474,6 @@ def _task_request_from_payload(
     text = str(payload.get("text") or ui["demo_prompt"])
     user_id = _effective_user_id(payload, ui)
     roles, roles_source = _trusted_business_roles(tenant_config=tenant_config, ui=ui)
-    candidate_ids = _list_or_default(payload.get("candidate_ids"), ui["default_candidate_ids"])
-    job_id = str(payload.get("job_id") or ui["default_job_id"])
-    try:
-        top_n = int(payload.get("top_n") or ui["default_top_n"])
-    except (TypeError, ValueError) as exc:
-        raise ValueError("top_n must be an integer.") from exc
     agent = str(payload.get("agent") or ui.get("default_agent") or "")
     if allowed_agents is not None and agent not in allowed_agents:
         allowed = ", ".join(sorted(allowed_agents)) or "(none)"
@@ -477,12 +483,16 @@ def _task_request_from_payload(
         allow_approval_context=allow_approval_context,
     )
 
-    context: dict[str, Any] = {
-        "agent": agent,
-        "job_id": job_id,
-        "candidate_ids": candidate_ids,
-        "top_n": top_n,
-    }
+    context: dict[str, Any] = {"agent": agent}
+    if payload.get("job_id") is not None and payload.get("job_id") != "":
+        context["job_id"] = str(payload["job_id"])
+    if "candidate_ids" in payload:
+        context["candidate_ids"] = _list_or_default(payload.get("candidate_ids"), [])
+    if payload.get("top_n") is not None and payload.get("top_n") != "":
+        try:
+            context["top_n"] = int(payload["top_n"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("top_n must be an integer.") from exc
     extra_context = payload.get("context")
     if isinstance(extra_context, dict):
         reserved_context_keys = {
@@ -1294,12 +1304,86 @@ def format_chat_response(response: dict[str, Any]) -> str:
         if final.get("campaign_summary"):
             article = final.get("article", {})
             publish = final.get("publish", {})
+            quality = final.get("research_quality", {})
+            topic_source = final.get("topic_source", "unknown")
+            topic_source_label = {
+                "request": "用户明确指定",
+                "request_keyword": "用户关键词推断",
+                "plan_args": "规划参数",
+                "tenant_default": "租户默认",
+            }.get(str(topic_source), str(topic_source))
             lines = [
-                str(final["campaign_summary"]),
-                f"Draft: {article.get('title', 'untitled')}",
-                f"Publish package: {publish.get('status', 'not prepared')} "
-                f"on {publish.get('channel', 'configured channel')}.",
+                "### 研究结果",
+                f"- 选题：{final.get('topic', '未指定')}（来源：{topic_source_label}）",
+                (
+                    f"- 样本：{quality.get('observed_count', len(final.get('top_cases', [])))}"
+                    f"/{quality.get('requested_count', final.get('top_n', 0))}；"
+                    f"证据状态：{quality.get('status', 'unknown')}"
+                ),
+                "- 说明：这是当前搜索页可见样本，不是小红书官方全量日榜。",
+                "",
+                "### Top 案例",
             ]
+            for index, case in enumerate(final.get("top_cases", []), start=1):
+                metrics = (
+                    f"赞 {case.get('likes', 0)} / 藏 {case.get('saves', 0)} / "
+                    f"评 {case.get('comments', 0)}"
+                )
+                title = str(case.get("title") or "未命名案例")
+                url = str(case.get("url") or "")
+                title_text = f"[{title}]({url})" if url else title
+                lines.append(
+                    f"{index}. {title_text}；作者：{case.get('author') or '未知'}；{metrics}"
+                )
+
+            lines.extend(["", "### 对比结论"])
+            for item in final.get("comparison", []):
+                lines.append(
+                    f"- **{item.get('pattern', '模式')}**：{item.get('evidence', '')} "
+                    f"建议：{item.get('recommendation', '')}"
+                )
+
+            warnings = list(quality.get("warnings", []))
+            if warnings:
+                lines.extend(["", "### 证据与执行限制"])
+                lines.extend(f"- {warning}" for warning in warnings)
+
+            lines.extend(
+                [
+                    "",
+                    "### 生成草稿",
+                    f"**{article.get('title', '未命名草稿')}**",
+                    "",
+                    str(article.get("body") or "未生成正文"),
+                    "",
+                    "### 发布准备",
+                    (
+                        f"- 状态：{publish.get('status', 'not_prepared')}；"
+                        f"readiness：{publish.get('readiness', 'unknown')}；"
+                        f"review：{publish.get('review_status', 'unknown')}"
+                    ),
+                    (
+                        f"- 媒体：小红书文字配图；风格：{publish.get('card_style', '未指定')}。"
+                        if publish.get("media_strategy") == "xhs_text_image"
+                        else "- 媒体：本地图片上传。"
+                    ),
+                    (
+                        "- 当前为 mock 模拟发布，未向真实小红书提交。"
+                        if publish.get("provider") == "mock"
+                        else (
+                            "- 已提交到："
+                            + str(publish.get("post_url") or publish.get("channel", "xiaohongshu"))
+                            if publish.get("status") == "published"
+                            else (
+                                "- 当前为模拟/待替换 connector，尚未向真实小红书发布。"
+                                if publish.get("requires_real_connector")
+                                else f"- 渠道：{publish.get('channel', 'configured channel')}"
+                            )
+                        )
+                    ),
+                    "- KPI 是内部运营目标，不构成涨粉结果保证。",
+                ]
+            )
             return "\n".join(lines)
         message = response.get("output", {}).get("message")
         return str(

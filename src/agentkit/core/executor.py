@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
+from typing import Any
 
 from .artifacts import ArtifactRecord, InMemoryArtifactStore
 from .audit import InMemoryAuditLog, PostgresAuditLog, SQLiteAuditLog
@@ -166,6 +167,163 @@ class PlanExecutor:
             "artifacts": [record.ref() for record in artifacts.list()],
             "execution_brief": execution_brief,
         }
+
+    def execute_deferred_action(
+        self,
+        *,
+        run_id: str,
+        request: TaskRequest,
+        plan: TaskPlan,
+        output: dict[str, Any],
+        action: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Execute a frozen post-review side effect after checkpoint approval."""
+
+        final = dict(output.get("final") or {})
+        approval_skill = str(action.get("approval_skill") or "")
+        content_hash = str(action.get("content_hash") or "")
+        approved_hash = str(request.context.get("approved_content_hash") or "")
+        approved_skills = {str(item) for item in request.context.get("approved_skills", [])}
+        if (
+            not approval_skill
+            or approval_skill not in approved_skills
+            or not content_hash
+            or approved_hash != content_hash
+        ):
+            return {
+                **output,
+                "error": "deferred_action_not_approved",
+                "reason": "deferred action approval or approved content hash is missing",
+            }
+
+        parent_skills = {
+            step.skill_name for step in plan.steps if self._skills.has(step.skill_name)
+        }
+        if approval_skill not in parent_skills:
+            return {
+                **output,
+                "error": "invalid_deferred_action",
+                "reason": "deferred approval skill is outside the approved plan",
+            }
+        allowed_tools: set[str] = set()
+        for skill_name in parent_skills:
+            allowed_tools.update(self._skills.get(skill_name).tools)
+
+        raw_calls = action.get("tool_calls")
+        if not isinstance(raw_calls, list) or not raw_calls or len(raw_calls) > 8:
+            return {
+                **output,
+                "error": "invalid_deferred_action",
+                "reason": "deferred action must contain between 1 and 8 tool calls",
+            }
+
+        self._audit.record(
+            run_id,
+            "deferred_action_started",
+            {
+                "action_id": action.get("action_id"),
+                "approval_skill": approval_skill,
+                "content_hash": content_hash,
+            },
+        )
+        invoker = self._build_tool_invoker(run_id)
+        results: dict[str, dict[str, Any]] = {}
+        warnings: list[str] = []
+        primary_result_key = str(action.get("primary_result_key") or "")
+        for raw_call in raw_calls:
+            if not isinstance(raw_call, dict):
+                return self._deferred_error(output, "deferred tool call must be an object")
+            tool_name = str(raw_call.get("tool_name") or "")
+            result_key = str(raw_call.get("result_key") or tool_name)
+            args = raw_call.get("args")
+            if tool_name not in allowed_tools or not self._tools.has(tool_name):
+                return self._deferred_error(
+                    output,
+                    f"deferred tool '{tool_name}' is not declared by the approved skill",
+                )
+            if not isinstance(args, dict) or not result_key:
+                return self._deferred_error(output, "deferred tool args/result_key are invalid")
+            try:
+                results[result_key] = invoker.call(self._tools.get(tool_name), dict(args))
+            except Exception as exc:  # noqa: BLE001 - preserve partial primary success
+                failure_status = self._deferred_failure_status(exc)
+                self._audit.record(
+                    run_id,
+                    "deferred_action_failed",
+                    {
+                        "action_id": action.get("action_id"),
+                        "tool": tool_name,
+                        "error": str(exc),
+                        "primary_completed": primary_result_key in results,
+                        "failure_status": failure_status,
+                    },
+                )
+                if primary_result_key in results:
+                    warnings.append(f"post-publication tool '{tool_name}' failed: {exc}")
+                    break
+                return {
+                    **output,
+                    "error": "deferred_action_failed",
+                    "reason": str(exc),
+                    "final": {
+                        **final,
+                        "publish": {
+                            **dict(final.get("publish") or {}),
+                            "status": failure_status,
+                            "error": str(exc),
+                        },
+                    },
+                }
+
+        final.update(results)
+        if warnings:
+            final["deferred_warnings"] = warnings
+        trace = list(final.get("workflow_trace") or [])
+        trace.append(
+            {
+                "step": "xhs.publish.execute",
+                "status": "completed",
+                "artifact": None,
+            }
+        )
+        final["workflow_trace"] = trace
+        status = str(results.get(primary_result_key, {}).get("status") or "completed")
+        self._audit.record(
+            run_id,
+            "deferred_action_finished",
+            {
+                "action_id": action.get("action_id"),
+                "status": status,
+                "result_keys": sorted(results),
+                "warnings": warnings,
+            },
+        )
+        return {
+            **output,
+            "status": status,
+            "final": final,
+        }
+
+    @staticmethod
+    def _deferred_error(output: dict[str, Any], reason: str) -> dict[str, Any]:
+        return {
+            **output,
+            "error": "invalid_deferred_action",
+            "reason": reason,
+        }
+
+    @staticmethod
+    def _deferred_failure_status(exc: Exception) -> str:
+        """Distinguish a safe retry from a post-submit uncertain outcome."""
+
+        current: BaseException | None = exc
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if type(current).__name__ in {"XhsPublishOutcomeUnknown", "ToolTimeoutError"}:
+                return "publish_outcome_unknown"
+            current = current.__cause__ or current.__context__
+        return "publish_failed"
 
     def _record_artifact(self, run_id: str, record: ArtifactRecord) -> None:
         self._audit.record(run_id, "artifact_written", record.ref())

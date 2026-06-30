@@ -53,9 +53,7 @@ class MemoryRetriever:
             return []
         scope = MemoryScope(tenant_id=tenant_id, agent=agent, user_id=user_id)
         query_vec = self._embeddings.embed([query])[0]
-        hits = self._vectors.query(
-            scope=scope, embedding=query_vec, k=k, min_score=self._min_score
-        )
+        hits = self._vectors.query(scope=scope, embedding=query_vec, k=k, min_score=self._min_score)
         return [hit.text for hit in hits]
 
     def remember(

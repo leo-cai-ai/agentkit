@@ -53,6 +53,11 @@ rag = [
     "pillow>=10.0.0,<13.0.0",
     "pytesseract>=0.3.10,<0.4.0",
 ]
+# Browser-backed website research. Browser binaries are installed separately
+# with `python -m playwright install chromium`.
+browser = [
+    "playwright>=1.48.0,<2.0.0",
+]
 
 [build-system]
 requires = ["hatchling"]

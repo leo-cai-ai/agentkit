@@ -95,8 +95,9 @@ class QueryRewriter(Protocol):
 
 @runtime_checkable
 class Reranker(Protocol):
-    def rerank(self, *, query: RetrievalQuery, hits: Sequence[RetrievalHit]) -> list[RetrievalHit]:
-        ...
+    def rerank(
+        self, *, query: RetrievalQuery, hits: Sequence[RetrievalHit]
+    ) -> list[RetrievalHit]: ...
 
 
 __all__ = [

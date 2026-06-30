@@ -21,8 +21,13 @@ class Planner:
         request: TaskRequest,
         route: RouteDecision,
         intent: IntentFrame,
+        resolved_args: dict[str, Any] | None = None,
     ) -> TaskPlan:
-        deterministic = self._deterministic_plan(request=request, route=route)
+        deterministic = self._deterministic_plan(
+            request=request,
+            route=route,
+            resolved_args=resolved_args,
+        )
         data = require_chat_json(
             self._llm_system_prompt(),
             self._llm_user_prompt(
@@ -30,6 +35,7 @@ class Planner:
                 route=route,
                 intent=intent,
                 deterministic=deterministic,
+                resolved_args=resolved_args,
             ),
         )
         return self._plan_from_llm_data(
@@ -37,18 +43,35 @@ class Planner:
             request=request,
             route=route,
             deterministic=deterministic,
+            resolved_args=resolved_args,
         )
 
-    def deterministic_plan(self, *, request: TaskRequest, route: RouteDecision) -> TaskPlan:
+    def deterministic_plan(
+        self,
+        *,
+        request: TaskRequest,
+        route: RouteDecision,
+        resolved_args: dict[str, Any] | None = None,
+    ) -> TaskPlan:
         """Rule-based single-step plan only (no LLM). Used by the fast-path."""
-        return self._deterministic_plan(request=request, route=route)
+        return self._deterministic_plan(
+            request=request,
+            route=route,
+            resolved_args=resolved_args,
+        )
 
-    def _deterministic_plan(self, *, request: TaskRequest, route: RouteDecision) -> TaskPlan:
+    def _deterministic_plan(
+        self,
+        *,
+        request: TaskRequest,
+        route: RouteDecision,
+        resolved_args: dict[str, Any] | None = None,
+    ) -> TaskPlan:
         if route.skill_name is None:
             return TaskPlan(route=route, steps=[], warnings=["No skill selected."])
 
         skill = self._skills.get(route.skill_name)
-        args = dict(request.context)
+        args = dict(request.context) if resolved_args is None else dict(resolved_args)
         mode = skill.execution_mode
         warnings: list[str] = []
 
@@ -93,6 +116,7 @@ class Planner:
         route: RouteDecision,
         intent: IntentFrame,
         deterministic: TaskPlan,
+        resolved_args: dict[str, Any] | None,
     ) -> str:
         skill_payload: dict[str, Any] | None = None
         if route.skill_name is not None:
@@ -142,6 +166,7 @@ class Planner:
                 ],
                 "warnings": deterministic.warnings,
             },
+            "resolved_skill_arguments": resolved_args,
         }
         return json.dumps(payload, ensure_ascii=False, default=str)
 
@@ -152,6 +177,7 @@ class Planner:
         request: TaskRequest,
         route: RouteDecision,
         deterministic: TaskPlan,
+        resolved_args: dict[str, Any] | None,
     ) -> TaskPlan:
         warnings = _string_list(data.get("warnings"))
         if route.skill_name is None:
@@ -179,6 +205,8 @@ class Planner:
             args = raw_step.get("args")
             if not isinstance(args, dict):
                 args = dict(request.context)
+            if resolved_args is not None:
+                args = dict(resolved_args)
             mode = str(raw_step.get("mode") or skill.execution_mode)
             mode = self._validated_mode(mode=mode, skill_name=route.skill_name, args=args)
             depends_on = raw_step.get("depends_on")

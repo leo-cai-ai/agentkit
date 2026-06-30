@@ -249,6 +249,8 @@ docker compose run --rm web agentkit --tenant company_alpha rag-query "退款审
 
 启用线上检索时设置 `AGENTKIT_RAG_ENABLED=true`。扫描件 OCR 依赖 tesseract，默认镜像已安装英文和简体中文语言包。
 
+完整入库、查询、评估和调参流程见 [`RAG_WORKFLOW.md`](./RAG_WORKFLOW.md)。
+
 **纯 SQLite 部署**：仅建议本地开发使用。把 `.env` 的 `AGENTKIT_STORAGE_BACKEND`、`AGENTKIT_APPROVAL_CHECKPOINTER`、`AGENTKIT_VECTOR_STORE_BACKEND` 设为 `sqlite`，并不要使用默认 Docker compose 的 PG 覆盖。
 
 ---

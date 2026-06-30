@@ -58,7 +58,7 @@ def test_require_chat_json_ignores_think_block(monkeypatch):
     # Reasoning models prepend a <think> block whose prose contains braces;
     # it must be stripped before the JSON is parsed.
     reply = (
-        "<think>The user wants a status. I'll return {\"status\": \"ok\"}.</think>\n"
+        '<think>The user wants a status. I\'ll return {"status": "ok"}.</think>\n'
         '{"status": "approved"}'
     )
     prov = _FlakyProvider(fail_times=0, then=reply)
@@ -67,7 +67,7 @@ def test_require_chat_json_ignores_think_block(monkeypatch):
 
 
 def test_extract_json_handles_think_and_fence():
-    raw = "<think>reasoning with {braces}</think>\n```json\n{\"a\": 2}\n```"
+    raw = '<think>reasoning with {braces}</think>\n```json\n{"a": 2}\n```'
     assert llm_client._extract_json(raw) == {"a": 2}
 
 

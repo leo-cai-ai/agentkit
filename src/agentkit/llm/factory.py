@@ -25,9 +25,7 @@ def _build_openai_extra_body(settings: Settings) -> dict[str, Any] | None:
         try:
             parsed = json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise LLMRequiredError(
-                f"AGENTKIT_OPENAI_EXTRA_BODY is not valid JSON: {exc}"
-            ) from exc
+            raise LLMRequiredError(f"AGENTKIT_OPENAI_EXTRA_BODY is not valid JSON: {exc}") from exc
         if not isinstance(parsed, dict):
             raise LLMRequiredError("AGENTKIT_OPENAI_EXTRA_BODY must be a JSON object.")
         for key, value in parsed.items():

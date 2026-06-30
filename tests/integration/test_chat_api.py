@@ -98,7 +98,11 @@ def test_chat_endpoint_routes_action_agent(client):
     assert data["mode"] == "action"
     assert data["agent_kind"] == "action"
     assert data["conversation_id"]
-    assert data["response"]["output"]["status"] == "waiting_for_approval"
+    assert data["response"]["output"]["status"] == "needs_clarification"
+    assert data["response"]["output"]["input_resolution"]["missing_required"] == [
+        "job_id",
+        "candidate_ids",
+    ]
     msgs = client.get(f"/api/conversations/{data['conversation_id']}/messages").get_json()[
         "messages"
     ]

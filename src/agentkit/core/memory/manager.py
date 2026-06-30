@@ -289,11 +289,7 @@ class ConversationManager:
         conv = self._store.get_conversation(conversation_id)
         if conv is None:
             raise ValueError(f"Unknown conversation_id: {conversation_id}")
-        if (
-            conv["tenant_id"] != tenant_id
-            or conv["agent"] != agent
-            or conv["user_id"] != user_id
-        ):
+        if conv["tenant_id"] != tenant_id or conv["agent"] != agent or conv["user_id"] != user_id:
             raise ValueError("Conversation does not belong to this user/agent.")
         if user_text:
             self._store.add_message(

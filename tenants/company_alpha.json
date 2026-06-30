@@ -67,7 +67,7 @@
     "hr_admin": ["hr_admin"],
     "growth_manager": ["growth_manager"]
   },
-  "approval_required_skills": ["xhs.growth.campaign", "xhs.publish.prepare", "candidate.rank"],
+  "approval_required_skills": ["xhs.publish.prepare", "candidate.rank"],
   "routing_hints": {
     "candidate.rank": ["筛选", "候选人", "简历", "rank", "candidate"],
     "xhs.growth.campaign": ["小红书", "涨粉", "笔记", "选题", "发布", "xhs", "growth"]
@@ -77,7 +77,12 @@
     "goal_days": 30,
     "target_followers": 10000,
     "cadence": "daily",
-    "publishing_mode": "draft"
+    "publishing_mode": "direct",
+    "publishing_media_strategy": "xhs_text_image",
+    "text_image_style": "涂鸦",
+    "text_image_generation_timeout_seconds": 120,
+    "title_max_chars": 20,
+    "body_max_chars": 1000
   },
   "field_mappings": {
     "candidate_id": "candidate_id",
