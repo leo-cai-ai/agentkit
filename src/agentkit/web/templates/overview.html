@@ -4,55 +4,63 @@
 {% block page_description %}Monitor workforce activity and operational outcomes.{% endblock %}
 
 {% block content %}
-  {{ metric_grid(metrics) }}
+  {{ metric_grid(metrics, 'Overview key metrics') }}
 
-  <section class="dashboard-grid">
-    <article class="panel ak-panel wide">
-      <div class="panel-head ak-panel-header">
-        <h2>Business Impact</h2>
-        <span>Core application areas</span>
-      </div>
-      {{ data_table(impact_rows) }}
-    </article>
+  <section class="dashboard-grid ak-overview-grid" aria-label="Overview details">
+    <div class="ak-overview-primary">
+      <article class="panel ak-panel ak-activity-panel" aria-labelledby="latest-activity-title">
+        <div class="panel-head ak-panel-header">
+          <h2 id="latest-activity-title">Latest Activity</h2>
+          <a href="{{ url_for('operations') }}">View all</a>
+        </div>
+        {% if runs %}
+          <div class="activity-list">
+            {% for run in runs[:5] %}
+              <a class="activity-item" href="{{ url_for('operations', run_id=run.run_id) }}">
+                {{ status_pill(run.status) }}
+                <strong>{{ run.user_id }}</strong>
+                <span>{{ run.text }}</span>
+              </a>
+            {% endfor %}
+          </div>
+        {% else %}
+          <div class="empty-state ak-empty-state">No agent runs have been recorded yet.</div>
+        {% endif %}
+      </article>
 
-    <article class="panel ak-panel">
+      <article class="panel ak-panel ak-panel--table ak-business-impact-panel" aria-labelledby="business-impact-title">
+        <div class="panel-head ak-panel-header">
+          <h2 id="business-impact-title">Business Impact</h2>
+          <span>Core application areas</span>
+        </div>
+        {{ data_table(impact_rows, label='Business impact') }}
+      </article>
+    </div>
+
+    <article class="panel ak-panel ak-panel--table ak-workforce-panel" aria-labelledby="agent-workforce-title">
       <div class="panel-head ak-panel-header">
-        <h2>Agent Workforce</h2>
+        <h2 id="agent-workforce-title">Agent Workforce</h2>
         <span>Registered profiles</span>
       </div>
-      {{ data_table(agent_rows) }}
-    </article>
-
-    <article class="panel ak-panel">
-      <div class="panel-head ak-panel-header">
-        <h2>Latest Activity</h2>
-        <a href="{{ url_for('operations') }}">View all</a>
-      </div>
-      {% if runs %}
-        <div class="activity-list">
-          {% for run in runs[:5] %}
-            <a class="activity-item" href="{{ url_for('operations', run_id=run.run_id) }}">
-              {{ status_pill(run.status) }}
-              <strong>{{ run.user_id }}</strong>
-              <span>{{ run.text }}</span>
-            </a>
-          {% endfor %}
-        </div>
-      {% else %}
-        <div class="empty-state">No agent runs have been recorded yet.</div>
-      {% endif %}
+      {{ data_table(agent_rows, label='Agent workforce') }}
     </article>
   </section>
 
-  <section class="capability-grid">
-    {% for capability in capabilities %}
-      <article class="capability-card">
-        <div>
-          <strong>{{ capability.name }}</strong>
-          <span>{{ capability.status }}</span>
-        </div>
-        <p>{{ capability.description }}</p>
-      </article>
-    {% endfor %}
+  <section class="panel ak-panel ak-capability-panel" aria-labelledby="capabilities-title">
+    <div class="panel-head ak-panel-header">
+      <h2 id="capabilities-title">Capabilities</h2>
+      <span>Configured application areas</span>
+    </div>
+    <div class="capability-grid ak-capability-grid">
+      {% for capability in capabilities %}
+        <article class="capability-card ak-capability-card">
+          <div>
+            <strong>{{ capability.name }}</strong>
+            <span>{{ capability.status }}</span>
+          </div>
+          <p>{{ capability.description }}</p>
+        </article>
+      {% endfor %}
+    </div>
   </section>
 {% endblock %}

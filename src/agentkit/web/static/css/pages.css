@@ -1,0 +1,307 @@
+/* =====================================================================
+   Authenticated page composition
+
+   Page grids express information priority. Shared visual primitives remain
+   in components.css; business behavior remains in templates/controllers.
+   ===================================================================== */
+
+/* Overview */
+.ak-overview-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 13fr) minmax(30rem, 11fr);
+  gap: var(--ak-sys-space-grid);
+  align-items: start;
+}
+
+.ak-overview-primary {
+  min-inline-size: 0;
+  display: grid;
+  gap: var(--ak-sys-space-grid);
+}
+
+.ak-activity-panel .activity-list {
+  gap: 0;
+}
+
+.ak-activity-panel .activity-item {
+  padding: var(--ak-sys-space-2) 0;
+  border: 0;
+  border-block-start: 1px solid var(--ak-sys-color-border-default);
+  border-radius: 0;
+  background: transparent;
+  transition: background-color var(--ak-sys-motion-duration-fast)
+    var(--ak-sys-motion-easing-standard);
+}
+
+.ak-activity-panel .activity-item:hover {
+  border-color: var(--ak-sys-color-border-default);
+  background: var(--ak-sys-color-bg-surface-subtle);
+  transform: none;
+}
+
+.ak-activity-panel .activity-item strong {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+.ak-capability-panel {
+  margin-block-start: var(--ak-sys-space-grid);
+  padding: 0;
+  overflow: hidden;
+}
+
+.ak-capability-panel > .ak-panel-header {
+  margin: 0;
+  padding: var(--ak-sys-space-3) var(--ak-sys-space-4);
+}
+
+.ak-capability-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  margin: 0;
+  border-block-start: 1px solid var(--ak-sys-color-border-default);
+}
+
+.ak-capability-card {
+  min-inline-size: 0;
+  padding: var(--ak-sys-space-3) var(--ak-sys-space-4);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  transition: none;
+}
+
+.ak-capability-card + .ak-capability-card {
+  border-inline-start: 1px solid var(--ak-sys-color-border-default);
+}
+
+.ak-capability-card:hover {
+  border-color: var(--ak-sys-color-border-default);
+}
+
+.ak-capability-card p {
+  margin-block-start: var(--ak-sys-space-2);
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.ak-business-impact-panel .ak-data-table {
+  min-inline-size: 39rem;
+}
+
+.ak-workforce-panel .ak-data-table {
+  min-inline-size: 33rem;
+}
+
+/* Operations */
+.ak-operations-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(20rem, 1fr);
+  gap: var(--ak-sys-space-grid);
+  align-items: start;
+}
+
+.ak-operations-list .ak-data-table {
+  min-inline-size: 44rem;
+}
+
+.ak-operations-timeline .ak-data-table {
+  min-inline-size: 32rem;
+}
+
+/* Governance */
+.ak-governance-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: var(--ak-sys-space-grid);
+  align-items: start;
+}
+
+.ak-governance-registry {
+  grid-column: 1 / -1;
+}
+
+.ak-governance-registry .ak-data-table {
+  min-inline-size: 60rem;
+}
+
+.ak-governance-compact {
+  grid-column: span 4;
+}
+
+.ak-governance-environment > .ak-table-wrap,
+.ak-governance-environment > .ak-empty-state {
+  margin-block-start: var(--ak-sys-space-grid);
+}
+
+/* Chat and dynamic result composition */
+.ak-chat-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(18rem, 19rem);
+  gap: var(--ak-sys-space-grid);
+  align-items: start;
+}
+
+.ak-agent-card-grid {
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: var(--ak-sys-space-2);
+  align-items: stretch;
+}
+
+.ak-agent-card {
+  min-block-size: 0;
+  gap: var(--ak-sys-space-2);
+  padding: var(--ak-sys-space-3);
+  border-color: var(--ak-sys-color-border-interactive);
+  border-radius: var(--ak-sys-radius-sm);
+  background: var(--ak-sys-color-bg-inset);
+  box-shadow: none;
+  transition:
+    background-color var(--ak-sys-motion-duration-fast) var(--ak-sys-motion-easing-standard),
+    border-color var(--ak-sys-motion-duration-fast) var(--ak-sys-motion-easing-standard),
+    box-shadow var(--ak-sys-motion-duration-fast) var(--ak-sys-motion-easing-standard);
+}
+
+.ak-agent-card:hover {
+  border-color: var(--ak-sys-color-accent-strong);
+  background: var(--ak-sys-color-bg-elevated);
+}
+
+.ak-agent-card.active,
+.ak-agent-card:has(input:checked) {
+  border-color: var(--ak-sys-color-accent-default);
+  background: var(--ak-sys-color-accent-soft);
+  box-shadow: inset 0 0 0 1px var(--ak-sys-color-accent-default);
+}
+
+.ak-agent-card:focus-within {
+  box-shadow: inset 0 0 0 var(--ak-sys-focus-width) var(--ak-sys-color-focus-ring);
+}
+
+.agent-status-item em[data-tone="neutral"] {
+  border-color: var(--ak-sys-color-border-strong);
+  color: var(--ak-sys-color-text-secondary);
+  background: var(--ak-sys-color-bg-surface-subtle);
+}
+
+.agent-status-item em[data-tone="success"] {
+  border-color: var(--ak-sys-color-status-success-border);
+  color: var(--ak-sys-color-status-success-fg);
+  background: var(--ak-sys-color-status-success-bg);
+}
+
+.agent-status-item em[data-tone="info"] {
+  border-color: var(--ak-sys-color-status-info-border);
+  color: var(--ak-sys-color-status-info-fg);
+  background: var(--ak-sys-color-status-info-bg);
+}
+
+.agent-status-item em[data-tone="warning"] {
+  border-color: var(--ak-sys-color-status-warning-border);
+  color: var(--ak-sys-color-status-warning-fg);
+  background: var(--ak-sys-color-status-warning-bg);
+}
+
+.agent-status-item em[data-tone="danger"] {
+  border-color: var(--ak-sys-color-status-danger-border);
+  color: var(--ak-sys-color-status-danger-fg);
+  background: var(--ak-sys-color-status-danger-bg);
+}
+
+.conversation-item:focus-visible {
+  outline: var(--ak-sys-focus-width) solid var(--ak-sys-color-focus-ring);
+  outline-offset: calc(0px - var(--ak-sys-focus-width));
+}
+
+.ak-result-region {
+  margin-block-start: var(--ak-sys-space-grid);
+  scroll-margin-block-start: calc(var(--ak-sys-size-page-header) + var(--ak-sys-space-3));
+}
+
+.ak-result-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--ak-sys-space-grid);
+}
+
+.ak-result-card {
+  margin-block-end: var(--ak-sys-space-grid);
+}
+
+.metric-strip {
+  grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+  gap: var(--ak-sys-space-2);
+  margin-block-start: var(--ak-sys-space-3);
+}
+
+.metric-strip div {
+  padding: var(--ak-sys-space-2) var(--ak-sys-space-3);
+  border-radius: var(--ak-sys-radius-sm);
+  box-shadow: none;
+}
+
+.ak-panel--flush .json-title {
+  margin: 0;
+}
+
+@media (max-width: 75rem) {
+  .ak-overview-grid,
+  .ak-operations-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ak-governance-compact {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 70rem) {
+  .ak-chat-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 45rem) {
+  .ak-capability-grid,
+  .ak-agent-card-grid,
+  .ak-result-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ak-capability-card + .ak-capability-card {
+    border-block-start: 1px solid var(--ak-sys-color-border-default);
+    border-inline-start: 0;
+  }
+
+  .ak-activity-panel .activity-item {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .ak-activity-panel .activity-item > span:last-child {
+    grid-column: 1 / -1;
+    white-space: normal;
+  }
+
+  .approval-box {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .approval-actions {
+    flex-wrap: wrap;
+  }
+
+  .ak-result-region {
+    scroll-margin-block-start: 8rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ak-activity-panel .activity-item,
+  .ak-agent-card {
+    transition: none;
+  }
+}

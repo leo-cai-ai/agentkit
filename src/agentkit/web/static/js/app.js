@@ -368,8 +368,9 @@ function setConversationTrigger(conv) {
 function renderConversationMenu() {
   const menu = document.querySelector("[data-conversation-menu]");
   if (!menu) return;
+  const newConversationActive = !currentConversationId;
   const items = [
-    `<li class="conversation-item" role="option" data-conversation-id="" data-active="${!currentConversationId}">
+    `<li class="conversation-item" role="option" tabindex="${newConversationActive ? "0" : "-1"}" aria-selected="${newConversationActive}" data-conversation-id="" data-active="${newConversationActive}">
        <span class="conversation-item-title">New conversation</span>
        <span class="conversation-item-meta">Start a fresh thread</span>
      </li>`,
@@ -377,7 +378,7 @@ function renderConversationMenu() {
   for (const conv of conversationCache) {
     const active = conv.id === currentConversationId;
     items.push(
-      `<li class="conversation-item" role="option" data-conversation-id="${escapeHtml(conv.id)}" data-active="${active}">
+      `<li class="conversation-item" role="option" tabindex="${active ? "0" : "-1"}" aria-selected="${active}" data-conversation-id="${escapeHtml(conv.id)}" data-active="${active}">
          <span class="conversation-item-title">${escapeHtml(conversationTitle(conv))}</span>
          <span class="conversation-item-meta">${escapeHtml(conversationMeta(conv))}</span>
        </li>`
@@ -386,16 +387,17 @@ function renderConversationMenu() {
   menu.innerHTML = items.join("");
 }
 
-function closeConversationMenu() {
+function closeConversationMenu(restoreFocus = false) {
   const picker = document.querySelector("[data-conversation-picker]");
   const menu = document.querySelector("[data-conversation-menu]");
   const trigger = document.querySelector("[data-conversation-trigger]");
   picker?.classList.remove("open");
   if (menu) menu.hidden = true;
   trigger?.setAttribute("aria-expanded", "false");
+  if (restoreFocus) trigger?.focus();
 }
 
-function openConversationMenu() {
+function openConversationMenu(focusPosition = "active") {
   const picker = document.querySelector("[data-conversation-picker]");
   const menu = document.querySelector("[data-conversation-menu]");
   const trigger = document.querySelector("[data-conversation-trigger]");
@@ -404,6 +406,11 @@ function openConversationMenu() {
   picker?.classList.add("open");
   menu.hidden = false;
   trigger?.setAttribute("aria-expanded", "true");
+  const options = Array.from(menu.querySelectorAll('[role="option"]'));
+  const target = focusPosition === "last"
+    ? options.at(-1)
+    : options.find((option) => option.getAttribute("aria-selected") === "true") || options[0];
+  target?.focus();
 }
 
 function syncConversationTrigger() {
@@ -463,12 +470,20 @@ function setExecutionState(label, activeIndex = -1, done = false) {
 }
 
 function setAgentStatus(agentName, label) {
+  const toneByLabel = {
+    completed: "success",
+    failed: "danger",
+    rejected: "danger",
+    running: "info",
+    waiting: "warning",
+  };
   document.querySelectorAll("[data-agent-status]").forEach((item) => {
     const isSelected = item.dataset.agentStatus === agentName;
     item.classList.toggle("active", isSelected);
     const status = item.querySelector("em");
     if (status) {
       status.textContent = isSelected ? label : "online";
+      status.dataset.tone = isSelected ? toneByLabel[label] || "neutral" : "success";
     }
   });
 }
@@ -506,12 +521,12 @@ function bindAgentSelector() {
   update(false);
 }
 
-function tableHtml(rows) {
+function tableHtml(rows, label = "Data") {
   if (!rows || rows.length === 0) {
-    return '<div class="empty-state">No records to display.</div>';
+    return '<div class="empty-state ak-empty-state">No records to display.</div>';
   }
   const columns = Object.keys(rows[0]);
-  const header = columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("");
+  const header = columns.map((column) => `<th scope="col">${escapeHtml(column)}</th>`).join("");
   const body = rows
     .map((row) => {
       const cells = columns
@@ -524,13 +539,13 @@ function tableHtml(rows) {
       return `<tr>${cells}</tr>`;
     })
     .join("");
-  return `<div class="table-wrap"><table class="data-table"><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table></div>`;
+  return `<div class="table-wrap ak-table-wrap"><table class="data-table ak-data-table" aria-label="${escapeHtml(label)}"><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 function renderBusinessOutput(final) {
   const rankedCandidates = final.ranked_candidates || [];
   if (rankedCandidates.length) {
-    return tableHtml(rankedCandidates);
+    return tableHtml(rankedCandidates, "Ranked candidates");
   }
 
   const blocks = [];
@@ -548,13 +563,13 @@ function renderBusinessOutput(final) {
     `);
   }
   if (final.agent_pipeline?.length) {
-    blocks.push(`<h3 class="result-subtitle">Agent Pipeline</h3>${tableHtml(final.agent_pipeline)}`);
+    blocks.push(`<h3 class="result-subtitle">Agent Pipeline</h3>${tableHtml(final.agent_pipeline, "Agent pipeline")}`);
   }
   if (final.top_cases?.length) {
-    blocks.push(`<h3 class="result-subtitle">Top Cases</h3>${tableHtml(final.top_cases)}`);
+    blocks.push(`<h3 class="result-subtitle">Top Cases</h3>${tableHtml(final.top_cases, "Top cases")}`);
   }
   if (final.comparison?.length) {
-    blocks.push(`<h3 class="result-subtitle">Pattern Comparison</h3>${tableHtml(final.comparison)}`);
+    blocks.push(`<h3 class="result-subtitle">Pattern Comparison</h3>${tableHtml(final.comparison, "Pattern comparison")}`);
   }
   if (final.article) {
     const outline = (final.article.outline || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
@@ -567,10 +582,10 @@ function renderBusinessOutput(final) {
     `);
   }
   if (final.publish) {
-    blocks.push(`<h3 class="result-subtitle">Publish Package</h3>${tableHtml([final.publish])}`);
+    blocks.push(`<h3 class="result-subtitle">Publish Package</h3>${tableHtml([final.publish], "Publish package")}`);
   }
 
-  return blocks.length ? blocks.join("") : '<div class="empty-state">No structured business output to display.</div>';
+  return blocks.length ? blocks.join("") : '<div class="empty-state ak-empty-state">No structured business output to display.</div>';
 }
 
 function summarizePayload(payload) {
@@ -680,32 +695,32 @@ function renderResult(payload, requestPayload = null, options = {}) {
   region.hidden = false;
   region.innerHTML = `
     ${hidePrimaryPanel ? "" : `
-      <article class="panel ak-panel result-card">
+      <article class="panel ak-panel result-card ak-result-card" aria-labelledby="result-primary-title">
         <div class="panel-head ak-panel-header">
-          <h2>${primaryTitle}</h2>
+          <h2 id="result-primary-title">${primaryTitle}</h2>
           <span>${escapeHtml(primarySubtitle)}</span>
         </div>
         ${primaryBody}
       </article>
     `}
-    <section class="result-grid">
-      <article class="panel ak-panel">
-        <div class="panel-head ak-panel-header"><h2>Execution Plan</h2><span>LangGraph route</span></div>
-        ${tableHtml(planRows(response.plan))}
+    <section class="result-grid ak-result-grid">
+      <article class="panel ak-panel ak-panel--table" aria-labelledby="execution-plan-title">
+        <div class="panel-head ak-panel-header"><h2 id="execution-plan-title">Execution Plan</h2><span>LangGraph route</span></div>
+        ${tableHtml(planRows(response.plan), "Execution plan")}
       </article>
-      <article class="panel ak-panel">
-        <div class="panel-head ak-panel-header"><h2>Audit Timeline</h2><span>${(response.audit_events || []).length} events</span></div>
-        ${tableHtml(auditRows(response.audit_events))}
+      <article class="panel ak-panel ak-panel--table" aria-labelledby="audit-timeline-title">
+        <div class="panel-head ak-panel-header"><h2 id="audit-timeline-title">Audit Timeline</h2><span>${(response.audit_events || []).length} events</span></div>
+        ${tableHtml(auditRows(response.audit_events), "Audit timeline")}
       </article>
-      <article class="panel ak-panel">
+      <article class="panel ak-panel ak-panel--flush" aria-labelledby="raw-plan-title">
         <div class="json-panel">
-          <div class="json-title">Raw Plan</div>
+          <h2 id="raw-plan-title" class="json-title">Raw Plan</h2>
           <pre class="json-pre">${rawPlan}</pre>
         </div>
       </article>
-      <article class="panel ak-panel">
+      <article class="panel ak-panel ak-panel--flush" aria-labelledby="raw-audit-title">
         <div class="json-panel">
-          <div class="json-title">Raw Audit</div>
+          <h2 id="raw-audit-title" class="json-title">Raw Audit</h2>
           <pre class="json-pre">${rawAudit}</pre>
         </div>
       </article>
@@ -969,11 +984,17 @@ function bindConversationBar() {
     }
   });
 
+  trigger?.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    openConversationMenu(event.key === "ArrowUp" ? "last" : "active");
+  });
+
   menu?.addEventListener("click", async (event) => {
     const item = event.target.closest("[data-conversation-id]");
     if (!item) return;
     const id = item.dataset.conversationId || null;
-    closeConversationMenu();
+    closeConversationMenu(true);
     currentConversationId = id;
     syncConversationTrigger();
     if (id) {
@@ -983,13 +1004,45 @@ function bindConversationBar() {
     }
   });
 
+  menu?.addEventListener("keydown", (event) => {
+    const options = Array.from(menu.querySelectorAll('[role="option"]'));
+    const current = event.target.closest('[role="option"]');
+    const currentIndex = options.indexOf(current);
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      current?.click();
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeConversationMenu(true);
+      return;
+    }
+    let nextIndex = -1;
+    if (event.key === "ArrowDown") nextIndex = (currentIndex + 1) % options.length;
+    if (event.key === "ArrowUp") nextIndex = (currentIndex - 1 + options.length) % options.length;
+    if (event.key === "Home") nextIndex = 0;
+    if (event.key === "End") nextIndex = options.length - 1;
+    if (nextIndex < 0) return;
+    event.preventDefault();
+    options.forEach((option, index) => option.setAttribute("tabindex", index === nextIndex ? "0" : "-1"));
+    options[nextIndex]?.focus();
+  });
+
+  menu?.addEventListener("focusout", () => {
+    window.setTimeout(() => {
+      const picker = document.querySelector("[data-conversation-picker]");
+      if (!picker?.contains(document.activeElement)) closeConversationMenu();
+    }, 0);
+  });
+
   document.addEventListener("click", (event) => {
     if (!event.target.closest("[data-conversation-picker]")) {
       closeConversationMenu();
     }
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") closeConversationMenu();
+    if (event.key === "Escape" && !menu?.hidden) closeConversationMenu(true);
   });
 }
 

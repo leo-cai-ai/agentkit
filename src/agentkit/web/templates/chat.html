@@ -5,20 +5,20 @@
 {% block content %}
   <script id="ui-config" type="application/json">{{ ui | tojson }}</script>
   {% set agent_options = chat_agents if chat_agents is defined and chat_agents else ui.chat_agents | default([]) %}
-  <section class="chat-layout">
-    <article class="panel ak-panel chat-panel">
+  <section class="chat-layout ak-chat-layout">
+    <article class="panel ak-panel chat-panel" aria-labelledby="chat-workforce-title">
       <div class="panel-head ak-panel-header">
-        <h2>Ask The AI Workforce</h2>
+        <h2 id="chat-workforce-title">Ask The AI Workforce</h2>
         <span>Unified chat console</span>
       </div>
 
       <section class="chat-surface">
         <fieldset class="agent-selector field-wide">
           <legend>Active Agent</legend>
-          <div class="agent-card-grid" role="radiogroup" aria-label="Active agent">
+          <div class="agent-card-grid ak-agent-card-grid" role="radiogroup" aria-label="Active agent">
             {% for agent in agent_options %}
               {% set demo_prompt = ui.demo_prompts.get(agent.name, ui.demo_prompt) if ui.demo_prompts is defined else ui.demo_prompt %}
-              <label class="agent-card" data-agent-card="{{ agent.name }}" data-demo-prompt="{{ demo_prompt }}">
+              <label class="agent-card ak-agent-card" data-agent-card="{{ agent.name }}" data-demo-prompt="{{ demo_prompt }}">
                 <input type="radio" name="agent" value="{{ agent.name }}" {{ 'checked' if agent.name == ui.default_agent else '' }}>
                 <span class="agent-card-top">
                   <strong>{{ agent.label | default(agent.name | replace('_', ' ') | title) }}</strong>
@@ -26,10 +26,11 @@
                 </span>
                 <span class="agent-domain">{{ agent.domain | default('configured agent') }}</span>
                 <span class="agent-mission">{{ agent.mission | default(agent.description | default('Ready for governed tasks.')) }}</span>
-                <span class="agent-skills">{{ agent.allowed_skills | default([]) | join(', ') }}</span>
+                {% set skill_count = agent.allowed_skills | default([]) | length %}
+                <span class="agent-skills">{{ skill_count }} {{ 'skill' if skill_count == 1 else 'skills' }}</span>
               </label>
             {% else %}
-              <label class="agent-card active" data-agent-card="{{ ui.default_agent }}" data-demo-prompt="{{ ui.demo_prompt }}">
+              <label class="agent-card ak-agent-card active" data-agent-card="{{ ui.default_agent }}" data-demo-prompt="{{ ui.demo_prompt }}">
                 <input type="radio" name="agent" value="{{ ui.default_agent }}" checked>
                 <span class="agent-card-top">
                   <strong>{{ ui.default_agent | replace('_', ' ') | title }}</strong>
@@ -51,6 +52,7 @@
               class="conversation-trigger"
               data-conversation-trigger
               aria-haspopup="listbox"
+              aria-controls="conversation-menu"
               aria-expanded="false"
             >
               <span class="conversation-trigger-body">
@@ -61,7 +63,7 @@
                 <path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
               </svg>
             </button>
-            <ul class="conversation-menu" data-conversation-menu role="listbox" aria-label="Conversation history" hidden></ul>
+            <ul id="conversation-menu" class="conversation-menu" data-conversation-menu role="listbox" aria-label="Conversation history" hidden></ul>
           </div>
           <button class="secondary conversation-new" type="button" data-new-conversation>
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.2v9.6M3.2 8h9.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
@@ -77,16 +79,16 @@
         </div>
 
         <form id="chat-form" class="chat-input-row">
-          <input name="message" placeholder="Message the AI workforce" autocomplete="off">
+          <input name="message" aria-label="Message" placeholder="Message the AI workforce" autocomplete="off">
           <button class="primary" type="submit">Send</button>
           <button class="secondary" type="button" data-chat-demo>Use Demo Prompt</button>
         </form>
       </section>
     </article>
 
-    <aside class="panel ak-panel live-panel">
+    <aside class="panel ak-panel live-panel" aria-labelledby="execution-state-title">
       <div class="panel-head ak-panel-header">
-        <h2>Execution State</h2>
+        <h2 id="execution-state-title">Execution State</h2>
         <span id="execution-state">Idle</span>
       </div>
       <ol class="step-list" id="step-list">
@@ -125,5 +127,5 @@
     </aside>
   </section>
 
-  <section id="result-region" class="result-region" hidden></section>
+  <section id="result-region" class="result-region ak-result-region" hidden></section>
 {% endblock %}

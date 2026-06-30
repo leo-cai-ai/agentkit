@@ -1,24 +1,24 @@
-{% macro metric_grid(metrics) -%}
-  <section class="metric-grid">
+{% macro metric_grid(metrics, label='Key metrics') -%}
+  <dl class="metric-grid ak-stat-grid" aria-label="{{ label }}">
     {% for metric in metrics %}
-      <article class="metric-tile">
-        <span>{{ metric.label }}</span>
-        <strong>{{ metric.value }}</strong>
-        <small>{{ metric.helper }}</small>
-      </article>
+      <div class="metric-tile ak-stat-card">
+        <dt class="ak-stat-card-label">{{ metric.label }}</dt>
+        <dd class="ak-stat-card-value">{{ metric.value }}</dd>
+        <dd class="ak-stat-card-helper">{{ metric.helper }}</dd>
+      </div>
     {% endfor %}
-  </section>
+  </dl>
 {%- endmacro %}
 
-{% macro data_table(rows, empty='No records to display.') -%}
+{% macro data_table(rows, empty='No records to display.', label='Data') -%}
   {% if rows %}
     {% set columns = rows[0].keys() | list %}
-    <div class="table-wrap">
-      <table class="data-table">
+    <div class="table-wrap ak-table-wrap">
+      <table class="data-table ak-data-table" aria-label="{{ label }}">
         <thead>
           <tr>
             {% for column in columns %}
-              <th>{{ column }}</th>
+              <th scope="col">{{ column }}</th>
             {% endfor %}
           </tr>
         </thead>
@@ -34,7 +34,7 @@
       </table>
     </div>
   {% else %}
-    <div class="empty-state">{{ empty }}</div>
+    <div class="empty-state ak-empty-state">{{ empty }}</div>
   {% endif %}
 {%- endmacro %}
 

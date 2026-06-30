@@ -4,24 +4,24 @@
 {% block page_description %}Review request history and execution audit events.{% endblock %}
 
 {% block content %}
-  {{ metric_grid(metrics) }}
+  {{ metric_grid(metrics, 'Operations key metrics') }}
 
-  <section class="dashboard-grid operations-grid">
-    <article class="panel ak-panel wide">
+  <section class="dashboard-grid operations-grid ak-operations-grid" aria-label="Operations details">
+    <article class="panel ak-panel ak-panel--table ak-operations-list" aria-labelledby="recent-requests-title">
       <div class="panel-head ak-panel-header">
-        <h2>Recent Business Requests</h2>
+        <h2 id="recent-requests-title">Recent Business Requests</h2>
         <span>{{ runs | length }} visible</span>
       </div>
       {% if runs %}
-        <div class="table-wrap">
-          <table class="data-table">
+        <div class="table-wrap ak-table-wrap">
+          <table class="data-table ak-data-table" aria-label="Recent business requests">
             <thead>
               <tr>
-                <th>Status</th>
-                <th>User</th>
-                <th>Request</th>
-                <th>Started</th>
-                <th>Finished</th>
+                <th scope="col">Status</th>
+                <th scope="col">User</th>
+                <th scope="col">Request</th>
+                <th scope="col">Started</th>
+                <th scope="col">Finished</th>
               </tr>
             </thead>
             <tbody>
@@ -38,16 +38,16 @@
           </table>
         </div>
       {% else %}
-        <div class="empty-state">No runs yet.</div>
+        <div class="empty-state ak-empty-state">No runs yet.</div>
       {% endif %}
     </article>
 
-    <article class="panel ak-panel">
+    <article class="panel ak-panel ak-panel--table ak-operations-timeline" aria-labelledby="run-timeline-title">
       <div class="panel-head ak-panel-header">
-        <h2>Run Timeline</h2>
+        <h2 id="run-timeline-title">Run Timeline</h2>
         <span>{{ selected_run_id[:8] if selected_run_id else 'No run' }}</span>
       </div>
-      {{ data_table(event_rows) }}
+      {{ data_table(event_rows, label='Run timeline') }}
     </article>
   </section>
 {% endblock %}

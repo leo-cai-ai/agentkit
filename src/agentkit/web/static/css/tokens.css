@@ -1,10 +1,10 @@
 /* =====================================================================
    AgentKit Design Tokens
 
-   Phase 1 establishes the current dark visual language as semantic CSS
-   custom properties without changing component styling. New components
-   should consume --ak-sys-* tokens. The short legacy aliases at the end
-   keep app.css visually stable while it is migrated incrementally.
+   Semantic CSS custom properties define the current dark visual language.
+   New and migrated components consume --ak-sys-* tokens. The short legacy
+   aliases at the end keep unmigrated app.css rules compatible during the
+   incremental UI redesign.
    ===================================================================== */
 
 :root {
@@ -17,8 +17,8 @@
   --ak-ref-color-neutral-700: #1f2a3a;
   --ak-ref-color-neutral-600: #2c3a4f;
   --ak-ref-color-neutral-500: #59697e;
-  --ak-ref-color-neutral-400: #6c7c91;
-  --ak-ref-color-neutral-350: #748499;
+  --ak-ref-color-neutral-400: #7f8ea2;
+  --ak-ref-color-neutral-350: #8998ad;
   --ak-ref-color-neutral-300: #aebbcc;
   --ak-ref-color-neutral-100: #e7eef7;
   --ak-ref-color-white: #ffffff;
@@ -46,11 +46,15 @@
   --ak-ref-shadow-panel: 0 18px 40px rgba(0, 0, 0, 0.45);
 
   /* Reference geometry, typography, and motion */
-  --ak-ref-radius-sm: 7px;
-  --ak-ref-radius-md: 10px;
+  --ak-ref-radius-xs: 4px;
+  --ak-ref-radius-sm: 6px;
+  --ak-ref-radius-md: 8px;
   --ak-ref-radius-lg: 12px;
+  --ak-ref-radius-full: 999px;
   --ak-ref-size-control-md: 2.25rem;
   --ak-ref-size-control-touch: 2.75rem;
+  --ak-ref-size-stat-card: 5.5rem;
+  --ak-ref-size-row: 2.5rem;
   --ak-ref-size-sidebar: 14rem;
   --ak-ref-size-sidebar-narrow: 13rem;
   --ak-ref-size-page-header: 3.5rem;
@@ -118,7 +122,10 @@
   --ak-sys-radius-sm: var(--ak-ref-radius-sm);
   --ak-sys-radius-md: var(--ak-ref-radius-md);
   --ak-sys-radius-lg: var(--ak-ref-radius-lg);
+  --ak-sys-radius-full: var(--ak-ref-radius-full);
   --ak-sys-size-control-md: var(--ak-ref-size-control-md);
+  --ak-sys-size-stat-card: var(--ak-ref-size-stat-card);
+  --ak-sys-size-row: var(--ak-ref-size-row);
   --ak-sys-size-sidebar: var(--ak-ref-size-sidebar);
   --ak-sys-size-sidebar-narrow: var(--ak-ref-size-sidebar-narrow);
   --ak-sys-size-page-header: var(--ak-ref-size-page-header);
@@ -131,6 +138,7 @@
   --ak-sys-space-8: var(--ak-ref-space-8);
   --ak-sys-space-page: var(--ak-ref-space-5);
   --ak-sys-space-panel: var(--ak-ref-space-4);
+  --ak-sys-space-grid: var(--ak-ref-space-3);
   --ak-sys-color-scheme: dark;
   --ak-sys-color-focus-ring: var(--ak-sys-color-accent-default);
   --ak-sys-focus-width: var(--ak-ref-size-focus-ring);

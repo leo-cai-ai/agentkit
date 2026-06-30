@@ -119,6 +119,63 @@
   background: var(--ak-sys-color-status-danger-bg);
 }
 
+/* StatCard presents a precomputed fact; it never derives business state. */
+.ak-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+  gap: var(--ak-sys-space-grid);
+  margin: 0 0 var(--ak-sys-space-4);
+}
+
+.ak-stat-card {
+  min-inline-size: 0;
+  min-block-size: var(--ak-sys-size-stat-card);
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: var(--ak-sys-space-1);
+  padding: var(--ak-sys-space-3) var(--ak-sys-space-4);
+  border: 1px solid var(--ak-sys-color-border-default);
+  border-radius: var(--ak-sys-radius-md);
+  background: var(--ak-sys-color-bg-surface);
+  box-shadow: none;
+}
+
+.ak-stat-card::before {
+  content: none;
+}
+
+.ak-stat-card-label,
+.ak-stat-card-value,
+.ak-stat-card-helper {
+  margin: 0;
+}
+
+.ak-stat-card-label {
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.6875rem;
+  font-weight: 750;
+  line-height: 1.35;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.ak-stat-card-value {
+  align-self: end;
+  color: var(--ak-sys-color-text-primary);
+  font-family: var(--ak-sys-font-mono);
+  font-size: 1.5rem;
+  font-weight: 750;
+  line-height: 1.1;
+  letter-spacing: -0.025em;
+  overflow-wrap: anywhere;
+}
+
+.ak-stat-card-helper {
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
 /* Panel owns only the shared surface and heading arrangement. */
 .ak-panel {
   min-inline-size: 0;
@@ -137,8 +194,8 @@
   justify-content: space-between;
   gap: var(--ak-sys-space-3);
   margin-block-end: var(--ak-sys-space-3);
-  padding-block-end: var(--ak-sys-space-2);
-  border-block-end: 1px solid var(--ak-sys-color-border-default);
+  padding: 0;
+  border: 0;
 }
 
 .ak-panel-header h2 {
@@ -185,9 +242,168 @@
   border-radius: var(--ak-sys-radius-sm);
 }
 
+.ak-panel--table,
+.ak-panel--flush {
+  padding: 0;
+  overflow: hidden;
+}
+
+.ak-panel--table > .ak-panel-header {
+  margin: 0;
+  padding: var(--ak-sys-space-3) var(--ak-sys-space-4);
+}
+
+.ak-panel--table > .ak-table-wrap {
+  border: 0;
+  border-block-start: 1px solid var(--ak-sys-color-border-default);
+  border-radius: 0;
+}
+
+.ak-panel--table > .ak-empty-state {
+  margin: 0 var(--ak-sys-space-4) var(--ak-sys-space-4);
+}
+
+.ak-panel--flush > .json-panel {
+  border: 0;
+  border-radius: 0;
+}
+
+/* DataTable owns local overflow; its parent Panel must not scroll the page. */
+.ak-table-wrap {
+  inline-size: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--ak-sys-color-border-default);
+  border-radius: var(--ak-sys-radius-sm);
+  background: var(--ak-sys-color-bg-inset);
+}
+
+.ak-data-table {
+  inline-size: 100%;
+  border-collapse: collapse;
+  color: var(--ak-sys-color-text-primary);
+  font-size: 0.8125rem;
+}
+
+.ak-data-table th {
+  min-block-size: 2.25rem;
+  padding: var(--ak-sys-space-2) var(--ak-sys-space-3);
+  border-block-end: 1px solid var(--ak-sys-color-border-strong);
+  color: var(--ak-sys-color-text-secondary);
+  background: var(--ak-sys-color-bg-surface-subtle);
+  font-size: 0.6875rem;
+  font-weight: 750;
+  line-height: 1.35;
+  text-align: start;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+
+.ak-data-table td {
+  min-block-size: var(--ak-sys-size-row);
+  max-inline-size: 28rem;
+  padding: 0.5625rem var(--ak-sys-space-3);
+  border-block-end: 1px solid var(--ak-sys-color-border-default);
+  vertical-align: top;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.ak-data-table tbody tr:last-child td {
+  border-block-end: 0;
+}
+
+.ak-data-table tbody tr {
+  transition: background-color var(--ak-sys-motion-duration-fast)
+    var(--ak-sys-motion-easing-standard);
+}
+
+.ak-data-table tbody tr:hover td,
+.ak-data-table .selected-row td {
+  background: var(--ak-sys-color-accent-soft);
+}
+
+.ak-empty-state {
+  padding: var(--ak-sys-space-4);
+  border: 0;
+  border-radius: var(--ak-sys-radius-sm);
+  color: var(--ak-sys-color-text-subtle);
+  background: transparent;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.ak-key-value-list {
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--ak-sys-color-border-default);
+  border-radius: var(--ak-sys-radius-sm);
+  background: var(--ak-sys-color-bg-inset);
+}
+
+.ak-key-value-row {
+  min-inline-size: 0;
+  display: grid;
+  grid-template-columns: minmax(7rem, 1fr) minmax(0, 2fr);
+  gap: var(--ak-sys-space-3);
+  align-items: baseline;
+  padding: var(--ak-sys-space-2) var(--ak-sys-space-3);
+}
+
+.ak-key-value-row + .ak-key-value-row {
+  border-block-start: 1px solid var(--ak-sys-color-border-default);
+}
+
+.ak-key-value-row dt,
+.ak-key-value-row dd {
+  margin: 0;
+}
+
+.ak-key-value-row dt {
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.75rem;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.ak-key-value-row dd {
+  color: var(--ak-sys-color-text-primary);
+  font-family: var(--ak-sys-font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  text-align: end;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 45rem) {
+  .ak-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ak-stat-card:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 30rem) {
+  .ak-stat-card {
+    padding-inline: var(--ak-sys-space-3);
+  }
+
+  .ak-key-value-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--ak-sys-space-1);
+  }
+
+  .ak-key-value-row dd {
+    text-align: start;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .ak-button,
-  .ak-input {
+  .ak-input,
+  .ak-data-table tbody tr {
     transition: none;
   }
 }
@@ -196,7 +412,10 @@
   .ak-button,
   .ak-input,
   .ak-alert,
-  .ak-panel {
+  .ak-panel,
+  .ak-stat-card,
+  .ak-table-wrap,
+  .ak-key-value-list {
     border-color: CanvasText;
   }
 

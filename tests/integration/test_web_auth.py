@@ -34,6 +34,21 @@ def _login(client) -> None:
     assert resp.status_code == 302
 
 
+def _contrast_ratio(foreground: str, background: str) -> float:
+    def luminance(value: str) -> float:
+        channels = [int(value[index : index + 2], 16) / 255 for index in (1, 3, 5)]
+        linear = [
+            channel / 12.92
+            if channel <= 0.03928
+            else ((channel + 0.055) / 1.055) ** 2.4
+            for channel in channels
+        ]
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+    light, dark = sorted((luminance(foreground), luminance(background)), reverse=True)
+    return (light + 0.05) / (dark + 0.05)
+
+
 def test_unauthenticated_redirects_to_login(client):
     resp = client.get("/")
     assert resp.status_code == 302
@@ -79,6 +94,7 @@ def test_page_stylesheets_load_in_expected_order(client):
         "/static/css/app.css",
         "/static/css/components.css",
         "/static/css/layout.css",
+        "/static/css/pages.css",
     )
 
     _login(client)
@@ -102,6 +118,12 @@ def test_page_stylesheets_load_in_expected_order(client):
     assert "--ak-sys-color-focus-ring" in token_css
     assert "--ak-sys-size-sidebar" in token_css
     assert "--ak-sys-space-panel" in token_css
+    assert "--ak-sys-size-stat-card" in token_css
+    assert "--ak-sys-space-grid" in token_css
+    reference_colors = dict(re.findall(r"(--ak-ref-color-[\w-]+):\s*(#[0-9a-fA-F]{6})", token_css))
+    muted = reference_colors["--ak-ref-color-neutral-400"]
+    for surface in ("neutral-800", "neutral-850", "neutral-900"):
+        assert _contrast_ratio(muted, reference_colors[f"--ak-ref-color-{surface}"]) >= 4.5
     legacy_aliases = (
         "bg",
         "bg-elevated",
@@ -135,6 +157,7 @@ def test_page_stylesheets_load_in_expected_order(client):
         "/static/css/components.css",
         "/static/css/login.css",
         "/static/css/layout.css",
+        "/static/css/pages.css",
     )
     for stylesheet in ui_styles:
         stylesheet_css = client.get(stylesheet).get_data(as_text=True)
@@ -170,6 +193,26 @@ def test_authenticated_shell_preserves_structure_and_accessibility(client):
         assert all("ak-panel" in classes for classes in panel_classes)
         assert all("ak-panel-header" in classes for classes in panel_header_classes)
 
+        for table_classes in re.findall(r'<table class="([^"]*)"', html):
+            assert "ak-data-table" in table_classes.split()
+        table_headers = re.findall(r"<th(?:\s|>)", html)
+        assert len(table_headers) == html.count('scope="col"')
+
+        labelled_panels = re.findall(
+            r'<(?:article|aside|section) class="[^"]*\bak-panel\b[^"]*" '
+            r'aria-labelledby="([^"]+)"',
+            html,
+        )
+        assert labelled_panels
+        for heading_id in labelled_panels:
+            assert f'id="{heading_id}"' in html
+
+    for route in ("/", "/operations"):
+        html = client.get(route).get_data(as_text=True)
+        assert '<dl class="metric-grid ak-stat-grid"' in html
+        assert html.count('class="metric-tile ak-stat-card"') == 5
+        assert html.count('class="ak-stat-card-label"') == 5
+
     chat_html = client.get("/chat").get_data(as_text=True)
     for contract in (
         'id="ui-config"',
@@ -181,6 +224,9 @@ def test_authenticated_shell_preserves_structure_and_accessibility(client):
         'id="result-region"',
         "data-conversation-trigger",
         "data-conversation-menu",
+        'aria-label="Message"',
+        'aria-controls="conversation-menu"',
+        'id="conversation-menu"',
     ):
         assert contract in chat_html
 
@@ -191,6 +237,18 @@ def test_authenticated_shell_preserves_structure_and_accessibility(client):
     ]
     assert dynamic_panels
     assert all("ak-panel" in classes for classes in dynamic_panels)
+    assert "result-grid ak-result-grid" in application_js
+    assert "table-wrap ak-table-wrap" in application_js
+    assert "data-table ak-data-table" in application_js
+    for contract in (
+        'aria-selected="${active}"',
+        'event.key === "ArrowDown"',
+        'event.key === "Home"',
+        'status.dataset.tone',
+        'tableHtml(rankedCandidates, "Ranked candidates")',
+        '<h2 id="raw-plan-title" class="json-title">',
+    ):
+        assert contract in application_js
 
 
 def test_login_error_uses_accessible_field_state(client):
