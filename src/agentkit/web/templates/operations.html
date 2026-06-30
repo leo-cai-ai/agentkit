@@ -1,12 +1,14 @@
 {% extends "base.html" %}
 {% from "_components.html" import metric_grid, data_table, status_pill %}
 
+{% block page_description %}Review request history and execution audit events.{% endblock %}
+
 {% block content %}
   {{ metric_grid(metrics) }}
 
   <section class="dashboard-grid operations-grid">
-    <article class="panel wide">
-      <div class="panel-head">
+    <article class="panel ak-panel wide">
+      <div class="panel-head ak-panel-header">
         <h2>Recent Business Requests</h2>
         <span>{{ runs | length }} visible</span>
       </div>
@@ -40,8 +42,8 @@
       {% endif %}
     </article>
 
-    <article class="panel">
-      <div class="panel-head">
+    <article class="panel ak-panel">
+      <div class="panel-head ak-panel-header">
         <h2>Run Timeline</h2>
         <span>{{ selected_run_id[:8] if selected_run_id else 'No run' }}</span>
       </div>

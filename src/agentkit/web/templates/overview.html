@@ -1,28 +1,30 @@
 {% extends "base.html" %}
 {% from "_components.html" import metric_grid, data_table, status_pill %}
 
+{% block page_description %}Monitor workforce activity and operational outcomes.{% endblock %}
+
 {% block content %}
   {{ metric_grid(metrics) }}
 
   <section class="dashboard-grid">
-    <article class="panel wide">
-      <div class="panel-head">
+    <article class="panel ak-panel wide">
+      <div class="panel-head ak-panel-header">
         <h2>Business Impact</h2>
         <span>Core application areas</span>
       </div>
       {{ data_table(impact_rows) }}
     </article>
 
-    <article class="panel">
-      <div class="panel-head">
+    <article class="panel ak-panel">
+      <div class="panel-head ak-panel-header">
         <h2>Agent Workforce</h2>
         <span>Registered profiles</span>
       </div>
       {{ data_table(agent_rows) }}
     </article>
 
-    <article class="panel">
-      <div class="panel-head">
+    <article class="panel ak-panel">
+      <div class="panel-head ak-panel-header">
         <h2>Latest Activity</h2>
         <a href="{{ url_for('operations') }}">View all</a>
       </div>

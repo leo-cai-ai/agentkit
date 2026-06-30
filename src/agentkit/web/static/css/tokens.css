@@ -1,0 +1,179 @@
+/* =====================================================================
+   AgentKit Design Tokens
+
+   Phase 1 establishes the current dark visual language as semantic CSS
+   custom properties without changing component styling. New components
+   should consume --ak-sys-* tokens. The short legacy aliases at the end
+   keep app.css visually stable while it is migrated incrementally.
+   ===================================================================== */
+
+:root {
+  /* Reference palette: neutral */
+  --ak-ref-color-neutral-1000: #0a0e14;
+  --ak-ref-color-neutral-950: #0c111a;
+  --ak-ref-color-neutral-900: #0d121b;
+  --ak-ref-color-neutral-850: #111824;
+  --ak-ref-color-neutral-800: #151d2b;
+  --ak-ref-color-neutral-700: #1f2a3a;
+  --ak-ref-color-neutral-600: #2c3a4f;
+  --ak-ref-color-neutral-500: #59697e;
+  --ak-ref-color-neutral-400: #6c7c91;
+  --ak-ref-color-neutral-350: #748499;
+  --ak-ref-color-neutral-300: #aebbcc;
+  --ak-ref-color-neutral-100: #e7eef7;
+  --ak-ref-color-white: #ffffff;
+  --ak-ref-color-ink-inverse: #04201c;
+
+  /* Reference palette: brand and status */
+  --ak-ref-color-teal-400: #2dd4bf;
+  --ak-ref-color-teal-500: #14b8a6;
+  --ak-ref-color-green-400: #34d399;
+  --ak-ref-color-amber-400: #f5b73d;
+  --ak-ref-color-red-400: #f87171;
+  --ak-ref-color-blue-400: #60a5fa;
+
+  /* Reference alpha colors and effects */
+  --ak-ref-color-teal-alpha-12: rgba(45, 212, 191, 0.12);
+  --ak-ref-color-green-alpha-10: rgba(52, 211, 153, 0.1);
+  --ak-ref-color-green-alpha-35: rgba(52, 211, 153, 0.35);
+  --ak-ref-color-amber-alpha-10: rgba(245, 183, 61, 0.1);
+  --ak-ref-color-amber-alpha-35: rgba(245, 183, 61, 0.35);
+  --ak-ref-color-red-alpha-10: rgba(248, 113, 113, 0.1);
+  --ak-ref-color-red-alpha-35: rgba(248, 113, 113, 0.35);
+  --ak-ref-color-blue-alpha-10: rgba(96, 165, 250, 0.1);
+  --ak-ref-color-blue-alpha-35: rgba(96, 165, 250, 0.35);
+  --ak-ref-color-grid: rgba(120, 150, 180, 0.045);
+  --ak-ref-shadow-panel: 0 18px 40px rgba(0, 0, 0, 0.45);
+
+  /* Reference geometry, typography, and motion */
+  --ak-ref-radius-sm: 7px;
+  --ak-ref-radius-md: 10px;
+  --ak-ref-radius-lg: 12px;
+  --ak-ref-size-control-md: 2.25rem;
+  --ak-ref-size-control-touch: 2.75rem;
+  --ak-ref-size-sidebar: 14rem;
+  --ak-ref-size-sidebar-narrow: 13rem;
+  --ak-ref-size-page-header: 3.5rem;
+  --ak-ref-size-focus-ring: 2px;
+  --ak-ref-size-focus-offset: 2px;
+  --ak-ref-space-0: 0;
+  --ak-ref-space-1: 0.25rem;
+  --ak-ref-space-2: 0.5rem;
+  --ak-ref-space-3: 0.75rem;
+  --ak-ref-space-4: 1rem;
+  --ak-ref-space-5: 1.25rem;
+  --ak-ref-space-6: 1.5rem;
+  --ak-ref-space-8: 2rem;
+  --ak-ref-duration-fast: 120ms;
+  --ak-ref-duration-normal: 200ms;
+  --ak-ref-easing-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ak-ref-font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Consolas,
+    "Liberation Mono", Menlo, monospace;
+  --ak-ref-font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+
+  /* Semantic surfaces and content */
+  --ak-sys-color-bg-canvas: var(--ak-ref-color-neutral-1000);
+  --ak-sys-color-bg-elevated: var(--ak-ref-color-neutral-900);
+  --ak-sys-color-bg-surface: var(--ak-ref-color-neutral-850);
+  --ak-sys-color-bg-surface-subtle: var(--ak-ref-color-neutral-800);
+  --ak-sys-color-bg-inset: var(--ak-ref-color-neutral-950);
+  --ak-sys-color-border-default: var(--ak-ref-color-neutral-700);
+  --ak-sys-color-border-strong: var(--ak-ref-color-neutral-600);
+  --ak-sys-color-border-interactive: var(--ak-ref-color-neutral-500);
+  --ak-sys-color-text-primary: var(--ak-ref-color-neutral-100);
+  --ak-sys-color-text-secondary: var(--ak-ref-color-neutral-300);
+  --ak-sys-color-text-subtle: var(--ak-ref-color-neutral-350);
+  --ak-sys-color-text-muted: var(--ak-ref-color-neutral-400);
+  --ak-sys-color-text-inverse: var(--ak-ref-color-ink-inverse);
+
+  /* Semantic accent and actions */
+  --ak-sys-color-accent-default: var(--ak-ref-color-teal-400);
+  --ak-sys-color-accent-strong: var(--ak-ref-color-teal-500);
+  --ak-sys-color-accent-soft: var(--ak-ref-color-teal-alpha-12);
+  --ak-sys-color-action-primary-bg: var(--ak-sys-color-accent-default);
+  --ak-sys-color-action-primary-hover-bg: var(--ak-sys-color-accent-strong);
+  --ak-sys-color-action-primary-fg: var(--ak-ref-color-ink-inverse);
+  --ak-sys-color-action-primary-soft: var(--ak-sys-color-accent-soft);
+
+  /* Semantic statuses */
+  --ak-sys-color-status-success-fg: var(--ak-ref-color-green-400);
+  --ak-sys-color-status-success-bg: var(--ak-ref-color-green-alpha-10);
+  --ak-sys-color-status-success-border: var(--ak-ref-color-green-alpha-35);
+  --ak-sys-color-status-warning-fg: var(--ak-ref-color-amber-400);
+  --ak-sys-color-status-warning-bg: var(--ak-ref-color-amber-alpha-10);
+  --ak-sys-color-status-warning-border: var(--ak-ref-color-amber-alpha-35);
+  --ak-sys-color-status-danger-fg: var(--ak-ref-color-red-400);
+  --ak-sys-color-status-danger-bg: var(--ak-ref-color-red-alpha-10);
+  --ak-sys-color-status-danger-border: var(--ak-ref-color-red-alpha-35);
+  --ak-sys-color-status-info-fg: var(--ak-ref-color-blue-400);
+  --ak-sys-color-status-info-bg: var(--ak-ref-color-blue-alpha-10);
+  --ak-sys-color-status-info-border: var(--ak-ref-color-blue-alpha-35);
+
+  /* Semantic decoration and foundations */
+  --ak-sys-color-decoration-grid: var(--ak-ref-color-grid);
+  --ak-sys-shadow-panel: var(--ak-ref-shadow-panel);
+  --ak-sys-shadow-accent-ring: 0 0 0 3px var(--ak-sys-color-accent-soft);
+  --ak-sys-shadow-focus: var(--ak-sys-shadow-accent-ring);
+  --ak-sys-radius-sm: var(--ak-ref-radius-sm);
+  --ak-sys-radius-md: var(--ak-ref-radius-md);
+  --ak-sys-radius-lg: var(--ak-ref-radius-lg);
+  --ak-sys-size-control-md: var(--ak-ref-size-control-md);
+  --ak-sys-size-sidebar: var(--ak-ref-size-sidebar);
+  --ak-sys-size-sidebar-narrow: var(--ak-ref-size-sidebar-narrow);
+  --ak-sys-size-page-header: var(--ak-ref-size-page-header);
+  --ak-sys-space-1: var(--ak-ref-space-1);
+  --ak-sys-space-2: var(--ak-ref-space-2);
+  --ak-sys-space-3: var(--ak-ref-space-3);
+  --ak-sys-space-4: var(--ak-ref-space-4);
+  --ak-sys-space-5: var(--ak-ref-space-5);
+  --ak-sys-space-6: var(--ak-ref-space-6);
+  --ak-sys-space-8: var(--ak-ref-space-8);
+  --ak-sys-space-page: var(--ak-ref-space-5);
+  --ak-sys-space-panel: var(--ak-ref-space-4);
+  --ak-sys-color-scheme: dark;
+  --ak-sys-color-focus-ring: var(--ak-sys-color-accent-default);
+  --ak-sys-focus-width: var(--ak-ref-size-focus-ring);
+  --ak-sys-focus-offset: var(--ak-ref-size-focus-offset);
+  --ak-sys-font-mono: var(--ak-ref-font-mono);
+  --ak-sys-font-sans: var(--ak-ref-font-sans);
+  --ak-sys-motion-duration-fast: var(--ak-ref-duration-fast);
+  --ak-sys-motion-duration-normal: var(--ak-ref-duration-normal);
+  --ak-sys-motion-easing-standard: var(--ak-ref-easing-standard);
+
+  /*
+   * Legacy compatibility aliases. Keep these values indirect so a future
+   * theme can override semantic tokens without rewriting existing selectors.
+   */
+  --bg: var(--ak-sys-color-bg-canvas);
+  --bg-elevated: var(--ak-sys-color-bg-elevated);
+  --surface: var(--ak-sys-color-bg-surface);
+  --surface-2: var(--ak-sys-color-bg-surface-subtle);
+  --surface-inset: var(--ak-sys-color-bg-inset);
+  --line: var(--ak-sys-color-border-default);
+  --line-strong: var(--ak-sys-color-border-strong);
+  --ink: var(--ak-sys-color-text-primary);
+  --ink-dim: var(--ak-sys-color-text-secondary);
+  --muted: var(--ak-sys-color-text-muted);
+  --accent: var(--ak-sys-color-accent-default);
+  --accent-strong: var(--ak-sys-color-accent-strong);
+  --accent-soft: var(--ak-sys-color-accent-soft);
+  --ok: var(--ak-sys-color-status-success-fg);
+  --warn: var(--ak-sys-color-status-warning-fg);
+  --danger: var(--ak-sys-color-status-danger-fg);
+  --info: var(--ak-sys-color-status-info-fg);
+  --grid: var(--ak-sys-color-decoration-grid);
+  --shadow: var(--ak-sys-shadow-panel);
+  --glow: var(--ak-sys-shadow-accent-ring);
+  --radius: var(--ak-sys-radius-md);
+  --radius-sm: var(--ak-sys-radius-sm);
+  --mono: var(--ak-sys-font-mono);
+  --sans: var(--ak-sys-font-sans);
+}
+
+/* Keep compact desktop controls while preserving a 44px coarse-pointer target. */
+@media (pointer: coarse) {
+  :root {
+    --ak-sys-size-control-md: var(--ak-ref-size-control-touch);
+  }
+}

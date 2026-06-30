@@ -1,11 +1,13 @@
 {% extends "base.html" %}
 
+{% block page_description %}Work with configured agents and inspect governed execution.{% endblock %}
+
 {% block content %}
   <script id="ui-config" type="application/json">{{ ui | tojson }}</script>
   {% set agent_options = chat_agents if chat_agents is defined and chat_agents else ui.chat_agents | default([]) %}
   <section class="chat-layout">
-    <article class="panel chat-panel">
-      <div class="panel-head">
+    <article class="panel ak-panel chat-panel">
+      <div class="panel-head ak-panel-header">
         <h2>Ask The AI Workforce</h2>
         <span>Unified chat console</span>
       </div>
@@ -82,8 +84,8 @@
       </section>
     </article>
 
-    <aside class="panel live-panel">
-      <div class="panel-head">
+    <aside class="panel ak-panel live-panel">
+      <div class="panel-head ak-panel-header">
         <h2>Execution State</h2>
         <span id="execution-state">Idle</span>
       </div>

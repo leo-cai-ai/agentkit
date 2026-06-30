@@ -5,58 +5,63 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="csrf-token" content="{{ csrf_token }}">
     <title>{{ title }} | Enterprise AI Workforce</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/tokens.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/components.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/layout.css') }}">
     <script defer src="{{ url_for('static', filename='js/app.js') }}"></script>
   </head>
-  <body data-page="{{ active }}">
-    <aside class="sidebar">
-      <a class="brand" href="{{ url_for('overview') }}">
-        <span class="brand-mark">EA</span>
-        <span>
-          <strong>Enterprise AI</strong>
-          <small>Workforce Console</small>
-        </span>
-      </a>
-      <nav class="nav">
-        <a class="{{ 'active' if active == 'overview' else '' }}" href="{{ url_for('overview') }}">Overview</a>
-        <a class="{{ 'active' if active == 'chat' else '' }}" href="{{ url_for('chat_console') }}">Chat</a>
-        <a class="{{ 'active' if active == 'operations' else '' }}" href="{{ url_for('operations') }}">Operations</a>
-        <a class="{{ 'active' if active == 'governance' else '' }}" href="{{ url_for('governance') }}">Governance</a>
-      </nav>
-      <div class="sidebar-card">
-        <span>Active Tenant</span>
-        <strong>{{ tenant_id }}</strong>
-      </div>
-      <div class="sidebar-foot">
-        <span>v1.0</span>
-        <span>·</span>
-        <span>LangGraph Runtime</span>
-      </div>
-    </aside>
+  <body class="ak-app-page" data-page="{{ active }}">
+    <a class="ak-skip-link" href="#main-content">Skip to main content</a>
 
-    <main class="page-shell">
-      <header class="topbar">
-        <div>
-          <p class="eyebrow">Governed LangGraph Agents</p>
-          <h1>{{ title }}</h1>
+    <div class="ak-app-shell">
+      <aside class="sidebar ak-app-sidebar" aria-label="Application navigation">
+        <a class="brand ak-brand" href="{{ url_for('overview') }}">
+          <span class="brand-mark ak-brand-mark">EA</span>
+          <span>
+            <strong>Enterprise AI</strong>
+            <small>Workforce Console</small>
+          </span>
+        </a>
+        <nav class="nav ak-primary-nav" aria-label="Primary navigation">
+          <a
+            class="{{ 'active' if active == 'overview' else '' }}"
+            {% if active == 'overview' %}aria-current="page"{% endif %}
+            href="{{ url_for('overview') }}"
+          >Overview</a>
+          <a
+            class="{{ 'active' if active == 'chat' else '' }}"
+            {% if active == 'chat' %}aria-current="page"{% endif %}
+            href="{{ url_for('chat_console') }}"
+          >Chat</a>
+          <a
+            class="{{ 'active' if active == 'operations' else '' }}"
+            {% if active == 'operations' %}aria-current="page"{% endif %}
+            href="{{ url_for('operations') }}"
+          >Operations</a>
+          <a
+            class="{{ 'active' if active == 'governance' else '' }}"
+            {% if active == 'governance' %}aria-current="page"{% endif %}
+            href="{{ url_for('governance') }}"
+          >Governance</a>
+        </nav>
+        <div class="sidebar-card ak-tenant-summary">
+          <span>Active tenant</span>
+          <strong>{{ tenant_id }}</strong>
         </div>
-        <div class="topbar-meta">
-          <div class="meta-chip online">
-            <span>System</span>
-            <strong>Online</strong>
-          </div>
-          <div class="meta-chip">
-            <span>Tenant</span>
-            <strong>{{ tenant_id }}</strong>
-          </div>
-          <div class="meta-chip">
-            <span>Audit Store</span>
-            <strong>{{ db_path }}</strong>
-          </div>
-        </div>
-      </header>
+      </aside>
 
-      {% block content %}{% endblock %}
-    </main>
+      <main class="page-shell ak-app-main" id="main-content" tabindex="-1">
+        <header class="topbar ak-page-header">
+          <div class="ak-page-header-content">
+            <h1>{{ title }}</h1>
+            <p class="ak-page-description">{% block page_description %}{% endblock %}</p>
+          </div>
+          <div class="ak-page-header-actions">{%- block page_actions -%}{%- endblock -%}</div>
+        </header>
+
+        {% block content %}{% endblock %}
+      </main>
+    </div>
   </body>
 </html>

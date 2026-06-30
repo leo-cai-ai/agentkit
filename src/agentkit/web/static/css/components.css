@@ -1,0 +1,208 @@
+/* =====================================================================
+   AgentKit shared UI primitives
+
+   Components in this file own presentation and interaction states only.
+   Page layout and business behavior belong to their page-level modules.
+   ===================================================================== */
+
+.ak-button {
+  min-block-size: var(--ak-sys-size-control-md);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ak-sys-space-2);
+  padding: var(--ak-sys-space-1) var(--ak-sys-space-4);
+  border: 1px solid transparent;
+  border-radius: var(--ak-sys-radius-sm);
+  font: inherit;
+  font-weight: 700;
+  line-height: 1.25;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background-color var(--ak-sys-motion-duration-fast) var(--ak-sys-motion-easing-standard),
+    border-color var(--ak-sys-motion-duration-fast) var(--ak-sys-motion-easing-standard);
+}
+
+.ak-button:focus-visible,
+.ak-input:focus-visible {
+  outline: var(--ak-sys-focus-width) solid var(--ak-sys-color-focus-ring);
+  outline-offset: var(--ak-sys-focus-offset);
+}
+
+.ak-button:disabled,
+.ak-button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.ak-button-primary {
+  border-color: var(--ak-sys-color-action-primary-bg);
+  color: var(--ak-sys-color-action-primary-fg);
+  background: var(--ak-sys-color-action-primary-bg);
+}
+
+.ak-button-primary:hover:not(:disabled):not([aria-disabled="true"]) {
+  border-color: var(--ak-sys-color-action-primary-hover-bg);
+  background: var(--ak-sys-color-action-primary-hover-bg);
+}
+
+.ak-button-block {
+  inline-size: 100%;
+}
+
+.ak-field {
+  display: grid;
+  gap: var(--ak-sys-space-2);
+}
+
+.ak-field-label {
+  color: var(--ak-sys-color-text-secondary);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.ak-input {
+  inline-size: 100%;
+  min-block-size: var(--ak-sys-size-control-md);
+  padding: var(--ak-sys-space-1) var(--ak-sys-space-3);
+  border: 1px solid var(--ak-sys-color-border-interactive);
+  border-radius: var(--ak-sys-radius-sm);
+  color: var(--ak-sys-color-text-primary);
+  background: var(--ak-sys-color-bg-inset);
+  font: inherit;
+  line-height: 1.4;
+  transition:
+    background-color var(--ak-sys-motion-duration-fast) var(--ak-sys-motion-easing-standard),
+    border-color var(--ak-sys-motion-duration-fast) var(--ak-sys-motion-easing-standard);
+}
+
+.ak-input::placeholder {
+  color: var(--ak-sys-color-text-subtle);
+}
+
+.ak-input:hover:not(:disabled) {
+  border-color: var(--ak-sys-color-text-muted);
+}
+
+.ak-input:focus-visible {
+  border-color: var(--ak-sys-color-accent-default);
+  background: var(--ak-sys-color-bg-elevated);
+}
+
+.ak-input[aria-invalid="true"] {
+  border-color: var(--ak-sys-color-status-danger-fg);
+}
+
+.ak-field-hint {
+  margin: 0;
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.ak-alert {
+  margin: 0;
+  padding: var(--ak-sys-space-2);
+  border: 1px solid;
+  border-radius: var(--ak-sys-radius-sm);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.ak-alert-danger {
+  border-color: var(--ak-sys-color-status-danger-border);
+  color: var(--ak-sys-color-status-danger-fg);
+  background: var(--ak-sys-color-status-danger-bg);
+}
+
+/* Panel owns only the shared surface and heading arrangement. */
+.ak-panel {
+  min-inline-size: 0;
+  padding: var(--ak-sys-space-panel);
+  overflow: visible;
+  border: 1px solid var(--ak-sys-color-border-default);
+  border-radius: var(--ak-sys-radius-md);
+  background: var(--ak-sys-color-bg-surface);
+  box-shadow: none;
+}
+
+.ak-panel-header {
+  min-inline-size: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ak-sys-space-3);
+  margin-block-end: var(--ak-sys-space-3);
+  padding-block-end: var(--ak-sys-space-2);
+  border-block-end: 1px solid var(--ak-sys-color-border-default);
+}
+
+.ak-panel-header h2 {
+  min-inline-size: 0;
+  padding: 0;
+  color: var(--ak-sys-color-text-primary);
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: 0;
+}
+
+.ak-panel-header h2::before {
+  content: none;
+}
+
+.ak-panel-header > span {
+  min-inline-size: 0;
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.4;
+  text-align: end;
+  text-transform: none;
+  letter-spacing: 0.01em;
+  overflow-wrap: anywhere;
+}
+
+.ak-panel-header > a {
+  color: var(--ak-sys-color-accent-default);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  line-height: 1.4;
+  letter-spacing: 0;
+}
+
+.ak-panel-header > a:hover {
+  color: var(--ak-sys-color-accent-strong);
+}
+
+.ak-panel-header > a:focus-visible {
+  outline: var(--ak-sys-focus-width) solid var(--ak-sys-color-focus-ring);
+  outline-offset: var(--ak-sys-focus-offset);
+  border-radius: var(--ak-sys-radius-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ak-button,
+  .ak-input {
+    transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .ak-button,
+  .ak-input,
+  .ak-alert,
+  .ak-panel {
+    border-color: CanvasText;
+  }
+
+  .ak-button:focus-visible,
+  .ak-input:focus-visible,
+  .ak-panel-header > a:focus-visible {
+    outline-color: Highlight;
+  }
+}

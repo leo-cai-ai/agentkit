@@ -680,8 +680,8 @@ function renderResult(payload, requestPayload = null, options = {}) {
   region.hidden = false;
   region.innerHTML = `
     ${hidePrimaryPanel ? "" : `
-      <article class="panel result-card">
-        <div class="panel-head">
+      <article class="panel ak-panel result-card">
+        <div class="panel-head ak-panel-header">
           <h2>${primaryTitle}</h2>
           <span>${escapeHtml(primarySubtitle)}</span>
         </div>
@@ -689,21 +689,21 @@ function renderResult(payload, requestPayload = null, options = {}) {
       </article>
     `}
     <section class="result-grid">
-      <article class="panel">
-        <div class="panel-head"><h2>Execution Plan</h2><span>LangGraph route</span></div>
+      <article class="panel ak-panel">
+        <div class="panel-head ak-panel-header"><h2>Execution Plan</h2><span>LangGraph route</span></div>
         ${tableHtml(planRows(response.plan))}
       </article>
-      <article class="panel">
-        <div class="panel-head"><h2>Audit Timeline</h2><span>${(response.audit_events || []).length} events</span></div>
+      <article class="panel ak-panel">
+        <div class="panel-head ak-panel-header"><h2>Audit Timeline</h2><span>${(response.audit_events || []).length} events</span></div>
         ${tableHtml(auditRows(response.audit_events))}
       </article>
-      <article class="panel">
+      <article class="panel ak-panel">
         <div class="json-panel">
           <div class="json-title">Raw Plan</div>
           <pre class="json-pre">${rawPlan}</pre>
         </div>
       </article>
-      <article class="panel">
+      <article class="panel ak-panel">
         <div class="json-panel">
           <div class="json-title">Raw Audit</div>
           <pre class="json-pre">${rawAudit}</pre>

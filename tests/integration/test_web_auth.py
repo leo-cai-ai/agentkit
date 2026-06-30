@@ -55,6 +55,153 @@ def test_login_then_access_ok_with_security_headers(client):
     assert resp.headers["Referrer-Policy"] == "no-referrer"
 
 
+def test_page_stylesheets_load_in_expected_order(client):
+    login_page = client.get("/login")
+    assert login_page.status_code == 200
+    login_html = login_page.get_data(as_text=True)
+    login_styles = (
+        "/static/css/tokens.css",
+        "/static/css/components.css",
+        "/static/css/login.css",
+    )
+    assert [login_html.index(stylesheet) for stylesheet in login_styles] == sorted(
+        login_html.index(stylesheet) for stylesheet in login_styles
+    )
+    assert "/static/css/app.css" not in login_html
+    assert "/static/css/layout.css" not in login_html
+    assert 'class="login-shell"' in login_html
+    assert 'for="access-token"' in login_html
+    assert 'id="access-token"' in login_html
+    assert "style=" not in login_html
+
+    authenticated_styles = (
+        "/static/css/tokens.css",
+        "/static/css/app.css",
+        "/static/css/components.css",
+        "/static/css/layout.css",
+    )
+
+    _login(client)
+    for route in ("/", "/chat", "/operations", "/governance"):
+        page = client.get(route)
+        assert page.status_code == 200
+        page_html = page.get_data(as_text=True)
+        assert [page_html.index(stylesheet) for stylesheet in authenticated_styles] == sorted(
+            page_html.index(stylesheet) for stylesheet in authenticated_styles
+        )
+
+    for stylesheet in set(login_styles + authenticated_styles):
+        static_response = client.get(stylesheet)
+        assert static_response.status_code == 200
+
+    tokens = client.get(login_styles[0])
+    token_css = tokens.get_data(as_text=True)
+    assert "--ak-sys-color-bg-canvas" in token_css
+    assert "--ak-sys-color-border-interactive" in token_css
+    assert "--ak-sys-color-text-subtle" in token_css
+    assert "--ak-sys-color-focus-ring" in token_css
+    assert "--ak-sys-size-sidebar" in token_css
+    assert "--ak-sys-space-panel" in token_css
+    legacy_aliases = (
+        "bg",
+        "bg-elevated",
+        "surface",
+        "surface-2",
+        "surface-inset",
+        "line",
+        "line-strong",
+        "ink",
+        "ink-dim",
+        "muted",
+        "accent",
+        "accent-strong",
+        "accent-soft",
+        "ok",
+        "warn",
+        "danger",
+        "info",
+        "grid",
+        "shadow",
+        "glow",
+        "radius",
+        "radius-sm",
+        "mono",
+        "sans",
+    )
+    for alias in legacy_aliases:
+        assert f"--{alias}:" in token_css
+
+    ui_styles = (
+        "/static/css/components.css",
+        "/static/css/login.css",
+        "/static/css/layout.css",
+    )
+    for stylesheet in ui_styles:
+        stylesheet_css = client.get(stylesheet).get_data(as_text=True)
+        assert re.search(r"#[0-9a-fA-F]{3,8}\b", stylesheet_css) is None
+        assert "--ak-ref-" not in stylesheet_css
+        assert "transition: all" not in stylesheet_css
+
+
+def test_authenticated_shell_preserves_structure_and_accessibility(client):
+    _login(client)
+
+    for route in ("/", "/chat", "/operations", "/governance"):
+        response = client.get(route)
+        assert response.status_code == 200
+        html = response.get_data(as_text=True)
+
+        assert 'class="ak-app-page"' in html
+        assert 'class="ak-app-shell"' in html
+        assert 'class="ak-skip-link" href="#main-content"' in html
+        assert 'id="main-content" tabindex="-1"' in html
+        assert 'aria-label="Primary navigation"' in html
+        assert html.count('aria-current="page"') == 1
+        assert 'class="topbar-meta"' not in html
+        assert 'class="meta-chip' not in html
+        assert 'class="ak-page-description"' in html
+
+        class_values = re.findall(r'class="([^"]*)"', html)
+        panel_classes = [classes.split() for classes in class_values if "panel" in classes.split()]
+        panel_header_classes = [
+            classes.split() for classes in class_values if "panel-head" in classes.split()
+        ]
+        assert panel_classes
+        assert all("ak-panel" in classes for classes in panel_classes)
+        assert all("ak-panel-header" in classes for classes in panel_header_classes)
+
+    chat_html = client.get("/chat").get_data(as_text=True)
+    for contract in (
+        'id="ui-config"',
+        'id="chat-thread"',
+        'id="chat-form"',
+        'name="message"',
+        'id="execution-state"',
+        'id="step-list"',
+        'id="result-region"',
+        "data-conversation-trigger",
+        "data-conversation-menu",
+    ):
+        assert contract in chat_html
+
+    application_js = client.get("/static/js/app.js").get_data(as_text=True)
+    dynamic_class_values = re.findall(r'class="([^"]*)"', application_js)
+    dynamic_panels = [
+        classes.split() for classes in dynamic_class_values if "panel" in classes.split()
+    ]
+    assert dynamic_panels
+    assert all("ak-panel" in classes for classes in dynamic_panels)
+
+
+def test_login_error_uses_accessible_field_state(client):
+    response = client.post("/login", data={"token": "nope"})
+    assert response.status_code == 401
+    html = response.get_data(as_text=True)
+    assert 'id="login-error" role="alert"' in html
+    assert 'aria-invalid="true"' in html
+    assert 'aria-errormessage="login-error"' in html
+
+
 def test_post_without_csrf_rejected(client):
     _login(client)
     resp = client.post("/api/tasks", json={"text": "hi"})
