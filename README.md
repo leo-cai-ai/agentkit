@@ -862,6 +862,12 @@ AGENTKIT_XHS_RESEARCH_PROVIDER=playwright
 AGENTKIT_XHS_PUBLISHING_PROVIDER=playwright
 ```
 
+After QR login, Xiaohongshu may require an additional SMS/phone verification.
+Complete it manually in the opened browser. The command keeps the persistent
+browser open until the requested search or publishing UI is authenticated and
+usable; it does not read or enter one-time codes. Use `--target publish` when
+Creator Center requires verification separately from the consumer search site.
+
 The browser session is stored under `data/browser-profiles/xiaohongshu/`
 (gitignored). Tenant `social_growth` settings can override the provider and
 browser behavior. See [`docs/XHS_WEB_SEARCH.md`](docs/XHS_WEB_SEARCH.md) for

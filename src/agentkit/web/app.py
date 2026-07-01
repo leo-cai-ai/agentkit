@@ -685,7 +685,7 @@ def _action_chat_runner(
     message: str,
     context: dict[str, Any],
     approval: dict[str, Any] | None = None,
-) -> Callable[[], dict[str, Any]]:
+) -> tuple[Callable[[], dict[str, Any]], str | None]:
     chat_service = getattr(runtime, "chat_service", None)
     user_id = _effective_user_id(payload, ui)
     conversation_id = _chat_conversation_id(payload, context=context)
@@ -738,6 +738,30 @@ def _action_chat_runner(
                 pass
         return result
 
+    def run_and_record_failure(
+        operation: Callable[[], dict[str, Any]],
+        *,
+        user_message: str | None,
+    ) -> dict[str, Any]:
+        try:
+            return operation()
+        except Exception as exc:
+            if chat_service is not None and conversation_id:
+                error_text = str(exc).strip() or exc.__class__.__name__
+                try:
+                    chat_service.record_action_turn(
+                        agent=agent,
+                        user_id=user_id,
+                        conversation_id=conversation_id,
+                        user_message=user_message,
+                        assistant_text=f"Execution failed: {error_text}",
+                        extract_memories=False,
+                    )
+                except Exception:  # noqa: BLE001 - preserve the original execution error
+                    # Persistence failure must not replace the original execution error.
+                    pass
+            raise
+
     if approval:
         approved_skills = approval["skills"] if approval["action"] == "approve" else []
         rejected_skills = approval["skills"] if approval["action"] == "reject" else []
@@ -749,15 +773,18 @@ def _action_chat_runner(
             )
 
             def run_resume() -> dict[str, Any]:
-                response = runtime.gateway.resume(
-                    approval["thread_id"],
-                    approved_skills=approved_skills,
-                    rejected_skills=rejected_skills,
-                    decision_context=decision_context,
-                ).to_dict()
-                return record_action_result(response, user_message=message)
+                def resume() -> dict[str, Any]:
+                    response = runtime.gateway.resume(
+                        approval["thread_id"],
+                        approved_skills=approved_skills,
+                        rejected_skills=rejected_skills,
+                        decision_context=decision_context,
+                    ).to_dict()
+                    return record_action_result(response, user_message=message)
 
-            return run_resume
+                return run_and_record_failure(resume, user_message=message)
+
+            return run_resume, conversation_id
         else:
             resubmit_payload = approval["request"] or task_payload
             request_context = _payload_context(resubmit_payload)
@@ -793,10 +820,13 @@ def _action_chat_runner(
             )
 
             def run_resubmit() -> dict[str, Any]:
-                response = runtime.gateway.handle(task_request).to_dict()
-                return record_action_result(response, user_message=message)
+                def resubmit() -> dict[str, Any]:
+                    response = runtime.gateway.handle(task_request).to_dict()
+                    return record_action_result(response, user_message=message)
 
-            return run_resubmit
+                return run_and_record_failure(resubmit, user_message=message)
+
+            return run_resubmit, conversation_id
     else:
         task_request = _task_request_from_payload(
             task_payload,
@@ -806,10 +836,13 @@ def _action_chat_runner(
         )
 
         def run_task() -> dict[str, Any]:
-            response = runtime.gateway.handle(task_request).to_dict()
-            return record_action_result(response, user_message=message)
+            def handle() -> dict[str, Any]:
+                response = runtime.gateway.handle(task_request).to_dict()
+                return record_action_result(response, user_message=message)
 
-        return run_task
+            return run_and_record_failure(handle, user_message=message)
+
+        return run_task, conversation_id
 
 
 def _action_chat_result(
@@ -822,7 +855,7 @@ def _action_chat_result(
     context: dict[str, Any],
     approval: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    runner = _action_chat_runner(
+    runner, _conversation_id = _action_chat_runner(
         payload=payload,
         runtime=runtime,
         ui=ui,
@@ -1170,7 +1203,7 @@ def api_chat_stream():
         if denied is not None:
             return denied
         try:
-            action_runner = _action_chat_runner(
+            action_runner, conversation_id = _action_chat_runner(
                 payload=payload,
                 runtime=runtime,
                 ui=ui,
@@ -1189,6 +1222,7 @@ def api_chat_stream():
             stream_response(
                 produce_action,
                 stream_tokens=_task_stream_tokens_enabled(runtime.tenant_config),
+                error_context={"conversation_id": conversation_id} if conversation_id else None,
             )
         )
 

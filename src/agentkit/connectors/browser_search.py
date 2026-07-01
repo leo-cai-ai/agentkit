@@ -168,7 +168,7 @@ class PlaywrightSearchClient:
         """Open a headed persistent profile so a human can complete site login."""
 
         with self._page(site_key, headless=False) as page:
-            page.goto(url, wait_until="domcontentloaded", timeout=self.config.timeout_ms)
+            page.goto(url, wait_until="commit", timeout=self.config.timeout_ms)
             if readiness_check is not None:
                 ready_streak = 0
                 while True:
@@ -272,10 +272,15 @@ class PlaywrightSearchClient:
             raise
         except Exception as exc:  # noqa: BLE001 - add actionable install/profile context
             message = str(exc)
-            if "Executable doesn't exist" in message or "browserType.launch" in message:
+            if (
+                "Executable doesn't exist" in message
+                or "browserType.launch" in message
+                or ("distribution" in message and "not found" in message)
+            ):
+                install_target = self.config.channel or self.config.browser
                 raise BrowserDependencyError(
                     "The configured Playwright browser is unavailable. Run "
-                    f"`python -m playwright install {self.config.browser}`."
+                    f"`python -m playwright install {install_target}`."
                 ) from exc
             raise
 

@@ -3,6 +3,9 @@
 # Private vendor LLM provider (kept local, not pushed)
 src/agentkit/llm/customer_band.py
 
+data/browser-profiles/
+data/browser-profiles-chrome/
+
 # superpowers / worktree scratch
 .worktrees/
 .superpowers/

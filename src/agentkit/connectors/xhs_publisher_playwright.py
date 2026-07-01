@@ -18,6 +18,7 @@ from agentkit.connectors.browser_search import (
     PlaywrightSearchClient,
     WebSearchError,
 )
+from agentkit.connectors.xhs_browser_state import XHS_PHONE_VERIFICATION_PATTERN
 from agentkit.connectors.xhs_publication import (
     append_hashtags,
     normalize_publish_content,
@@ -35,17 +36,22 @@ _PUBLISH_PAGE_STATE = r"""
   const url = String(location.href || "");
   const frames = Array.from(document.querySelectorAll("iframe"))
     .map((frame) => String(frame.getAttribute("src") || "")).join(" ");
+  const phoneVerification = new RegExp(
+    "__XHS_PHONE_VERIFICATION_PATTERN__", "i"
+  ).test(text);
   return {
     url,
-    challenge: /安全验证|请完成验证|访问频繁|captcha|verify|website-login\/error/i.test(
-      text + " " + frames + " " + url
-    ),
+    challenge: phoneVerification ||
+      /安全验证|请完成验证|访问频繁|captcha|verify|website-login\/error/i.test(
+        text + " " + frames + " " + url
+      ),
+    phoneVerification,
     login: /扫码登录|手机号登录|登录后|请先登录/i.test(text) || /\/login(?:\?|$)/i.test(url),
     success: /发布成功|提交成功|已发布|审核中/i.test(text) || /published|success/i.test(url),
     text: text.slice(0, 1000)
   };
 }
-"""
+""".replace("__XHS_PHONE_VERIFICATION_PATTERN__", XHS_PHONE_VERIFICATION_PATTERN)
 
 _PUBLISH_PAGE_DIAGNOSTICS = r"""
 () => ({
@@ -392,7 +398,7 @@ class XhsPublishAdapter:
             )
         except Exception as exc:  # noqa: BLE001 - click already happened
             state = self._state(page)
-            if state.get("challenge"):
+            if state.get("challenge") or state.get("phoneVerification"):
                 raise XhsPublishOutcomeUnknown(
                     "Human verification appeared after the publish click; reconcile the post."
                 ) from exc
@@ -531,7 +537,7 @@ class XhsPublishAdapter:
         """Return true only after the Creator Center publishing UI is usable."""
 
         state = self._state(page)
-        if state.get("login") or state.get("challenge"):
+        if state.get("login") or state.get("challenge") or state.get("phoneVerification"):
             return False
         return bool(
             self._first_locator(page, _PUBLISH_READY_SELECTORS)
@@ -646,10 +652,11 @@ class XhsPublishAdapter:
 
     def _raise_for_state(self, page: Any) -> None:
         state = self._state(page)
-        if state.get("challenge"):
+        if state.get("challenge") or state.get("phoneVerification"):
             raise BrowserChallengeRequired(
-                "Xiaohongshu requires human verification. Open the persistent browser "
-                "profile interactively and complete it; CAPTCHA automation is disabled."
+                "Xiaohongshu requires human verification, possibly an SMS code. Open the "
+                "persistent browser profile and complete it manually; CAPTCHA and "
+                "one-time-code automation are disabled."
             )
         if state.get("login"):
             raise BrowserAuthenticationRequired(

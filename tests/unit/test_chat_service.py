@@ -230,6 +230,28 @@ def test_action_turn_uses_same_conversation_memory(tmp_path):
     assert recent[0]["content"] == "rank"
 
 
+def test_action_failure_can_skip_memory_extraction(tmp_path, monkeypatch):
+    svc = _service(tmp_path, {})
+    prepared = svc.prepare_action_turn(agent="hr_recruiter", user_id="u1", message="rank")
+    manager = svc._manager_for("hr_recruiter")
+
+    def unexpected_extraction(**_kwargs):
+        raise AssertionError("failure messages must not be extracted as durable memories")
+
+    monkeypatch.setattr(manager, "_maybe_extract", unexpected_extraction)
+    svc.record_action_turn(
+        agent="hr_recruiter",
+        user_id="u1",
+        conversation_id=prepared["conversation_id"],
+        user_message="rank",
+        assistant_text="Execution failed: search timed out",
+        extract_memories=False,
+    )
+
+    messages = svc.messages(conversation_id=prepared["conversation_id"], user_id="u1")
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+
+
 def test_unknown_agent_degrades_to_empty_persona(tmp_path):
     # persona/catalog resolution degrades (no crash) for an unknown agent;
     # endpoint-level validation (is_chat_agent) is what actually gates access.

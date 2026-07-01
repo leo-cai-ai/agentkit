@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import agentkit.core.llm_client as llm_client
 from agentkit.llm.fake import FakeProvider
 from agentkit.web.streaming import stream_response
@@ -94,3 +96,22 @@ def test_stream_response_can_suppress_token_frames(monkeypatch):
     assert "event: token" not in raw
     assert 'data: {"text": "sensitive draft"}' in raw
     assert raw.rstrip().endswith('data: {"text": "sensitive draft"}')
+
+
+def test_stream_response_includes_error_context():
+    def produce() -> dict:
+        raise RuntimeError("search timed out")
+
+    raw = "".join(
+        stream_response(
+            produce,
+            error_context={"conversation_id": "conversation-1"},
+        )
+    )
+    data_line = next(line for line in raw.splitlines() if line.startswith("data: "))
+    payload = json.loads(data_line.removeprefix("data: "))
+
+    assert payload == {
+        "error": "search timed out",
+        "conversation_id": "conversation-1",
+    }

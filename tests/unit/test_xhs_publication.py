@@ -6,6 +6,7 @@ import pytest
 
 from agentkit.connectors.browser_search import (
     BrowserAuthenticationRequired,
+    BrowserChallengeRequired,
     BrowserPageChanged,
 )
 from agentkit.connectors.xhs_publication import (
@@ -141,8 +142,9 @@ class _Locator:
 
 
 class _PublishPage:
-    def __init__(self, *, login: bool = False) -> None:
+    def __init__(self, *, login: bool = False, phone_verification: bool = False) -> None:
         self.login = login
+        self.phone_verification = phone_verification
         self.url = ""
         self.upload = _Locator(
             visible=False,
@@ -168,6 +170,7 @@ class _PublishPage:
         return {
             "url": self.url,
             "challenge": False,
+            "phoneVerification": self.phone_verification,
             "login": self.login,
             "success": self.button.clicked,
         }
@@ -349,6 +352,23 @@ def test_creator_login_completion_requires_publish_ui(tmp_path) -> None:
     page.login = True
     page.tab._count = 1
     assert adapter.interactive_login_complete(page) is False
+    page.login = False
+    page.phone_verification = True
+    assert adapter.interactive_login_complete(page) is False
+
+
+def test_publish_rejects_phone_verification_over_ready_ui(tmp_path) -> None:
+    adapter = XhsPublishAdapter(asset_root=tmp_path / "assets")
+    page = _PublishPage(phone_verification=True)
+    media = tmp_path / "cover.png"
+    media.write_bytes(b"png")
+
+    with pytest.raises(BrowserChallengeRequired, match="SMS code"):
+        adapter.publish(
+            page,
+            package={"title": "title", "body": "body", "media_paths": [str(media)]},
+            timeout_ms=1000,
+        )
 
 
 class _DelayedUploadPage(_PublishPage):

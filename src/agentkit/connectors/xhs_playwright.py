@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import quote, urljoin, urlparse, urlunparse
+from urllib.parse import parse_qs, quote, urljoin, urlparse, urlunparse
 
 from agentkit.connectors.browser_search import (
     BrowserAuthenticationRequired,
@@ -15,6 +16,10 @@ from agentkit.connectors.browser_search import (
     PlaywrightSearchClient,
     WebSearchResult,
 )
+from agentkit.connectors.xhs_browser_state import XHS_PHONE_VERIFICATION_PATTERN
+from agentkit.core.logging_config import get_logger
+
+_log = get_logger("agentkit.xhs.search")
 
 _RESULT_LINK_SELECTOR = 'a[href*="/explore/"], a[href*="/discovery/item/"]'
 _DETAIL_SELECTOR = '#detail-desc, [class*="note-content"], [class*="interaction-container"]'
@@ -126,14 +131,18 @@ _PAGE_STATE = r"""
   ).length;
   const frameSources = Array.from(document.querySelectorAll("iframe"))
     .map((frame) => String(frame.getAttribute("src") || "")).join(" ");
-  const challenge = /安全验证|请完成验证|访问频繁|captcha|verify|website-login\/error/i.test(
-    text + " " + frameSources + " " + currentUrl
-  );
+  const phoneVerification = new RegExp(
+    "__XHS_PHONE_VERIFICATION_PATTERN__", "i"
+  ).test(text);
+  const challenge = phoneVerification ||
+    /安全验证|请完成验证|访问频繁|captcha|verify|website-login\/error/i.test(
+      text + " " + frameSources + " " + currentUrl
+    );
   const loginInput = document.querySelector('input[placeholder*="登录"]');
   const login = Boolean(loginInput) || /扫码登录|登录后查看|登录探索更多内容|请先登录/i.test(text);
-  return { resultCount, detailCount, challenge, login };
+  return { resultCount, detailCount, challenge, login, phoneVerification };
 }
-"""
+""".replace("__XHS_PHONE_VERIFICATION_PATTERN__", XHS_PHONE_VERIFICATION_PATTERN)
 
 
 class XhsSearchAdapter:
@@ -176,8 +185,13 @@ class XhsSearchAdapter:
         max_scrolls: int,
         scroll_pause_ms: int,
     ) -> list[WebSearchResult]:
-        page.goto(self.search_url(query), wait_until="domcontentloaded", timeout=timeout_ms)
-        self._wait_for_results(page, timeout_ms=timeout_ms)
+        deadline = time.monotonic() + max(timeout_ms, 1) / 1000
+        self._navigate(
+            page,
+            self.search_url(query),
+            timeout_ms=self._remaining_ms(deadline),
+        )
+        self._wait_for_results(page, timeout_ms=self._remaining_ms(deadline))
 
         candidate_limit = min(max(limit * 3, limit), 60)
         raw_results = self._extract_raw_results(page, candidate_limit)
@@ -229,11 +243,11 @@ class XhsSearchAdapter:
 
     def _raise_for_page_state(self, page: Any) -> None:
         state = dict(page.evaluate(_PAGE_STATE) or {})
-        if state.get("challenge"):
+        if state.get("challenge") or state.get("phoneVerification"):
             raise BrowserChallengeRequired(
-                "Xiaohongshu requires human verification. Open the configured persistent "
-                "browser session interactively and complete the challenge; do not automate "
-                "CAPTCHA."
+                "Xiaohongshu requires human verification, possibly an SMS code. Open the "
+                "configured persistent browser session and complete it manually; CAPTCHA "
+                "and one-time-code automation are disabled."
             )
         if state.get("login") and not state.get("resultCount") and not state.get("detailCount"):
             raise BrowserAuthenticationRequired(
@@ -248,6 +262,7 @@ class XhsSearchAdapter:
         state = dict(page.evaluate(_PAGE_STATE) or {})
         return bool(
             not state.get("challenge")
+            and not state.get("phoneVerification")
             and not state.get("login")
             and (state.get("resultCount") or state.get("detailCount"))
         )
@@ -310,14 +325,18 @@ class XhsSearchAdapter:
                 enriched.append(result)
                 continue
             try:
-                page.goto(
+                deadline = time.monotonic() + max(detail_timeout_ms, 1) / 1000
+                self._navigate(
+                    page,
                     result.url,
-                    wait_until="domcontentloaded",
-                    timeout=detail_timeout_ms,
+                    timeout_ms=self._remaining_ms(deadline),
                 )
                 if self.detail_pause_ms:
-                    page.wait_for_timeout(self.detail_pause_ms)
-                self._wait_for_detail(page, timeout_ms=detail_timeout_ms)
+                    page.wait_for_timeout(min(self.detail_pause_ms, self._remaining_ms(deadline)))
+                self._wait_for_detail(
+                    page,
+                    timeout_ms=self._remaining_ms(deadline),
+                )
                 raw = dict(page.evaluate(_EXTRACT_DETAIL) or {})
                 metrics = dict(result.metrics)
                 for key in ("likes", "saves", "comments"):
@@ -353,6 +372,38 @@ class XhsSearchAdapter:
                 metadata["detail_error"] = type(exc).__name__
                 enriched.append(replace(result, metadata=metadata))
         return enriched
+
+    def _navigate(self, page: Any, url: str, *, timeout_ms: int) -> None:
+        try:
+            page.goto(url, wait_until="commit", timeout=timeout_ms)
+        except Exception:  # noqa: BLE001 - inspect whether navigation already committed
+            current_url = str(getattr(page, "url", "") or "")
+            if not self._navigation_target_reached(current_url, url):
+                raise
+            _log.warning(
+                "Xiaohongshu navigation exceeded the load milestone after reaching "
+                "the target URL; continuing with page-state checks: %s",
+                current_url,
+            )
+
+    @staticmethod
+    def _navigation_target_reached(current_url: str, target_url: str) -> bool:
+        current = urlparse(current_url)
+        target = urlparse(target_url)
+        if (
+            current.scheme != target.scheme
+            or current.hostname != target.hostname
+            or current.path.rstrip("/") != target.path.rstrip("/")
+        ):
+            return False
+        target_keyword = parse_qs(target.query).get("keyword")
+        if target_keyword:
+            return parse_qs(current.query).get("keyword") == target_keyword
+        return True
+
+    @staticmethod
+    def _remaining_ms(deadline: float) -> int:
+        return max(1, int((deadline - time.monotonic()) * 1000))
 
     def _wait_for_detail(self, page: Any, *, timeout_ms: int) -> None:
         try:

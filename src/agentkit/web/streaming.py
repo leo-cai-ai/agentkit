@@ -43,6 +43,7 @@ def stream_response(
     *,
     max_queue_size: int = _DEFAULT_QUEUE_SIZE,
     stream_tokens: bool = True,
+    error_context: dict[str, Any] | None = None,
 ) -> Iterator[str]:
     """Run ``produce`` in a worker thread and yield SSE frames.
 
@@ -82,7 +83,9 @@ def stream_response(
         except Exception as exc:  # noqa: BLE001 - relayed to the client as an error frame
             if not cancelled.is_set():
                 try:
-                    put_event(("error", str(exc) or exc.__class__.__name__))
+                    error = dict(error_context or {})
+                    error["error"] = str(exc) or exc.__class__.__name__
+                    put_event(("error", error))
                 except StreamCancelled:
                     return
         finally:
@@ -105,7 +108,7 @@ def stream_response(
             if kind == "token":
                 yield sse_frame("token", {"delta": data})
             elif kind == "error":
-                yield sse_frame("error", {"error": data})
+                yield sse_frame("error", data)
             else:
                 yield sse_frame("final", data)
     except GeneratorExit:

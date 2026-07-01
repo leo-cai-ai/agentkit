@@ -302,7 +302,9 @@ async function streamSse(url, payload, handlers = {}) {
       else if (parsed.event === "final") {
         finalData = parsed.data;
         handlers.onFinal?.(parsed.data);
-      } else if (parsed.event === "error") handlers.onError?.(parsed.data.error || "stream error");
+      } else if (parsed.event === "error") {
+        handlers.onError?.(parsed.data.error || "stream error", parsed.data);
+      }
     }
   }
   return finalData;
@@ -317,6 +319,7 @@ function scrollChatToBottom() {
 function addLiveAssistantMessage(labelOverride = "") {
   const thread = document.getElementById("chat-thread");
   if (!thread) return null;
+  thread.querySelector(".conversation-notice")?.remove();
   const node = document.createElement("div");
   node.className = "chat-message assistant";
   const span = document.createElement("span");
@@ -336,6 +339,17 @@ function resetChatThread(greeting) {
   if (greeting) {
     addChatMessage("assistant", greeting, getSelectedAgentLabel());
   }
+}
+
+function showConversationNotice(message, state = "empty") {
+  const thread = document.getElementById("chat-thread");
+  if (!thread) return;
+  thread.innerHTML = "";
+  const notice = document.createElement("div");
+  notice.className = `conversation-notice ${state}`;
+  notice.setAttribute("role", "status");
+  notice.textContent = message;
+  thread.appendChild(notice);
 }
 
 function formatRelativeTime(epochSeconds) {
@@ -437,17 +451,29 @@ async function loadConversationMessages(conversationId) {
     resetChatThread("");
     return;
   }
+  const requestedConversationId = conversationId;
+  showConversationNotice("Loading conversation...", "loading");
   try {
     const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/messages`);
-    if (!response.ok) return;
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
+    if (currentConversationId !== requestedConversationId) return;
+    const messages = data.messages || [];
+    if (!messages.length) {
+      showConversationNotice(
+        "No messages were saved for this conversation. It may have stopped before execution completed."
+      );
+      return;
+    }
     const thread = document.getElementById("chat-thread");
     if (thread) thread.innerHTML = "";
-    for (const msg of data.messages || []) {
+    for (const msg of messages) {
       addChatMessage(msg.role === "user" ? "user" : "assistant", msg.content, msg.role === "user" ? "You" : getSelectedAgentLabel());
     }
   } catch {
-    /* ignore */
+    if (currentConversationId === requestedConversationId) {
+      showConversationNotice("Conversation messages could not be loaded.", "error");
+    }
   }
 }
 
@@ -747,6 +773,7 @@ function renderResult(payload, requestPayload = null, options = {}) {
 function addChatMessage(role, text, labelOverride = "") {
   const thread = document.getElementById("chat-thread");
   if (!thread) return;
+  thread.querySelector(".conversation-notice")?.remove();
   const node = document.createElement("div");
   node.className = `chat-message ${role}`;
   const label = labelOverride || (role === "user" ? "You" : getSelectedAgentLabel());
@@ -911,6 +938,7 @@ async function runUnifiedChatTurn(message, selectedAgent, submit) {
   const bubble = addLiveAssistantMessage(getSelectedAgentLabel());
   let streamed = "";
   let errored = null;
+  let errorConversationId = null;
   try {
     const finalData = await streamSse("/api/chat/stream", requestPayload, {
       onToken: (delta) => {
@@ -918,8 +946,9 @@ async function runUnifiedChatTurn(message, selectedAgent, submit) {
         if (bubble) bubble.p.textContent = streamed;
         scrollChatToBottom();
       },
-      onError: (msg) => {
+      onError: (msg, details) => {
         errored = msg;
+        errorConversationId = details?.conversation_id || null;
       },
     });
     if (errored && !finalData) throw new Error(errored);
@@ -941,7 +970,7 @@ async function runUnifiedChatTurn(message, selectedAgent, submit) {
     setAgentStatus(selectedAgent, "completed");
     if (isNewConversation) await loadConversations(selectedAgent);
   } catch (error) {
-    if (!streamed) {
+    if (!streamed && !errored) {
       try {
         const result = await postChat(requestPayload);
         if (result.response) {
@@ -961,6 +990,10 @@ async function runUnifiedChatTurn(message, selectedAgent, submit) {
       }
     }
     if (bubble) bubble.p.textContent = error.message;
+    if (errorConversationId) {
+      currentConversationId = errorConversationId;
+      await loadConversations(selectedAgent);
+    }
     setExecutionState("Failed");
     setAgentStatus(selectedAgent, "failed");
   } finally {

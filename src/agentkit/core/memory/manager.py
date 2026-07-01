@@ -284,8 +284,9 @@ class ConversationManager:
         user_text: str | None,
         assistant_text: str,
         run_id: str | None = None,
+        extract_memories: bool = True,
     ) -> None:
-        """Persist a turn produced by another runtime, then run memory extraction."""
+        """Persist a turn produced by another runtime, optionally extracting memories."""
         conv = self._store.get_conversation(conversation_id)
         if conv is None:
             raise ValueError(f"Unknown conversation_id: {conversation_id}")
@@ -317,15 +318,16 @@ class ConversationManager:
                     "external_runtime": True,
                 },
             )
-        self._maybe_extract(
-            tenant_id=tenant_id,
-            agent=agent,
-            user_id=user_id,
-            conversation_id=conversation_id,
-            user_text=user_text or "",
-            assistant_text=stored_assistant_text,
-            run_id=run_id or "",
-        )
+        if extract_memories:
+            self._maybe_extract(
+                tenant_id=tenant_id,
+                agent=agent,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                user_text=user_text or "",
+                assistant_text=stored_assistant_text,
+                run_id=run_id or "",
+            )
 
     def _refuse(
         self,

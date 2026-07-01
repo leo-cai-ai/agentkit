@@ -1391,6 +1391,24 @@ button.secondary.danger:hover {
   background: var(--surface-inset);
 }
 
+.conversation-notice {
+  align-self: center;
+  justify-self: center;
+  max-width: 520px;
+  padding: 16px;
+  color: var(--muted);
+  text-align: center;
+  line-height: 1.5;
+}
+
+.conversation-notice.loading {
+  color: var(--ink-dim);
+}
+
+.conversation-notice.error {
+  color: var(--danger);
+}
+
 .chat-message {
   max-width: 86%;
   padding: 12px 14px;

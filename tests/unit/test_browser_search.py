@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 import pytest
@@ -7,27 +8,42 @@ import pytest
 from agentkit.connectors.browser_search import (
     BrowserAuthenticationRequired,
     BrowserChallengeRequired,
+    BrowserDependencyError,
     PlaywrightSearchClient,
     PlaywrightSearchConfig,
     WebSearchResult,
 )
-from agentkit.connectors.xhs_playwright import (
-    PlaywrightXhsResearchProvider,
-    XhsSearchAdapter,
+from agentkit.connectors.xhs_browser_state import XHS_PHONE_VERIFICATION_PATTERN
+from agentkit.connectors.xhs_playwright import PlaywrightXhsResearchProvider, XhsSearchAdapter
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["手机验证", "验证手机号", "短信验证码", "请输入验证码", "获取验证码", "身份验证"],
 )
+def test_xhs_phone_verification_pattern(text):
+    assert re.search(XHS_PHONE_VERIFICATION_PATTERN, text)
+
+
+def test_xhs_phone_verification_pattern_ignores_ready_publish_ui():
+    assert not re.search(XHS_PHONE_VERIFICATION_PATTERN, "上传图文 发布笔记")
 
 
 class _FakePage:
     def __init__(self) -> None:
         self.default_timeout = 0
         self.goto_calls: list[str] = []
+        self.goto_options: list[dict] = []
         self.wait_calls: list[int] = []
+        self.url = "about:blank"
 
     def set_default_timeout(self, timeout: int) -> None:
         self.default_timeout = timeout
 
-    def goto(self, url: str, **_kwargs) -> None:
+    def goto(self, url: str, **kwargs) -> None:
         self.goto_calls.append(url)
+        self.goto_options.append(dict(kwargs))
+        self.url = url
 
     def wait_for_timeout(self, timeout: int) -> None:
         self.wait_calls.append(timeout)
@@ -76,6 +92,11 @@ class _FakeBrowserType:
         self.launch_options = options
         self.browser = _FakeBrowser(self.context)
         return self.browser
+
+
+class _MissingChromeBrowserType(_FakeBrowserType):
+    def launch_persistent_context(self, profile_path: str, **options):
+        raise RuntimeError("Chromium distribution 'chrome' is not found")
 
 
 class _FakePlaywrightManager:
@@ -161,6 +182,22 @@ def test_playwright_client_can_persist_portable_storage_state(tmp_path):
     assert browser_type.browser.closed is True
 
 
+def test_missing_browser_channel_reports_install_command(tmp_path):
+    page = _FakePage()
+    context = _FakeContext(page)
+    browser_type = _MissingChromeBrowserType(context)
+    client = PlaywrightSearchClient(
+        PlaywrightSearchConfig(
+            channel="chrome",
+            profile_root=str(tmp_path),
+        ),
+        playwright_factory=lambda: _FakePlaywrightManager(browser_type),
+    )
+
+    with pytest.raises(BrowserDependencyError, match="playwright install chrome"):
+        client.search(_CapturingAdapter(), query="agents", limit=1)
+
+
 def test_interactive_browser_stays_open_until_readiness_check_passes(tmp_path):
     page = _FakePage()
     context = _FakeContext(page)
@@ -184,11 +221,23 @@ def test_interactive_browser_stays_open_until_readiness_check_passes(tmp_path):
 
 
 class _XhsPage(_FakePage):
-    def __init__(self, *, state: dict | None = None, fail_wait: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        state: dict | None = None,
+        fail_wait: bool = False,
+        fail_goto: bool = False,
+    ) -> None:
         super().__init__()
         self.state = state or {"resultCount": 2, "detailCount": 0}
         self.fail_wait = fail_wait
+        self.fail_goto = fail_goto
         self.scrolls = 0
+
+    def goto(self, url: str, **kwargs) -> None:
+        super().goto(url, **kwargs)
+        if self.fail_goto:
+            raise TimeoutError("navigation milestone timeout")
 
     def wait_for_selector(self, *_args, **_kwargs) -> None:
         if self.fail_wait:
@@ -248,6 +297,23 @@ def test_xhs_adapter_normalizes_deduplicates_and_ranks_live_results():
     assert page.goto_calls[0].endswith(
         "/search_result?keyword=AI%20Agent&source=web_search_result_notes"
     )
+    assert page.goto_options[0]["wait_until"] == "commit"
+
+
+def test_xhs_adapter_continues_when_target_url_committed_before_goto_timeout():
+    adapter = XhsSearchAdapter(enrich_details=False)
+    page = _XhsPage(fail_goto=True)
+
+    results = adapter.search(
+        page,
+        query="AI Agent",
+        limit=1,
+        timeout_ms=5000,
+        max_scrolls=0,
+        scroll_pause_ms=0,
+    )
+
+    assert results[0].result_id == "high"
 
 
 @pytest.mark.parametrize(
@@ -259,6 +325,16 @@ def test_xhs_adapter_normalizes_deduplicates_and_ranks_live_results():
         ),
         (
             {"resultCount": 0, "detailCount": 0, "login": False, "challenge": True},
+            BrowserChallengeRequired,
+        ),
+        (
+            {
+                "resultCount": 2,
+                "detailCount": 0,
+                "login": False,
+                "challenge": False,
+                "phoneVerification": True,
+            },
             BrowserChallengeRequired,
         ),
     ],
@@ -276,6 +352,23 @@ def test_xhs_adapter_classifies_blocked_pages(state, error_type):
             max_scrolls=0,
             scroll_pause_ms=0,
         )
+
+
+def test_xhs_interactive_login_waits_for_phone_verification():
+    adapter = XhsSearchAdapter(enrich_details=False)
+    page = _XhsPage(
+        state={
+            "resultCount": 2,
+            "detailCount": 0,
+            "login": False,
+            "challenge": False,
+            "phoneVerification": True,
+        }
+    )
+
+    assert adapter.interactive_login_complete(page) is False
+    page.state["phoneVerification"] = False
+    assert adapter.interactive_login_complete(page) is True
 
 
 class _ResultClient:

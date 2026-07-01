@@ -199,6 +199,7 @@ class ChatService:
         user_message: str | None,
         assistant_text: str,
         run_id: str | None = None,
+        extract_memories: bool = True,
     ) -> None:
         """Persist an action-capable graph turn into the same conversation store."""
         manager = self._manager_for(agent)
@@ -210,6 +211,7 @@ class ChatService:
             user_text=user_message,
             assistant_text=assistant_text,
             run_id=run_id,
+            extract_memories=extract_memories,
         )
 
     # -- internals ------------------------------------------------------------

@@ -204,6 +204,42 @@ def test_chat_stream_routes_action_agent_and_resumes_approval(client):
     assert finals[-1]["response"]["output"]["governance"]["approval"]["status"] == "approved"
 
 
+def test_chat_stream_persists_action_failure(client, monkeypatch):
+    from agentkit.web.app import get_runtime
+
+    token = _login_and_csrf(client)
+    runtime = get_runtime()
+
+    def fail_handle(_request):
+        raise RuntimeError("search timed out")
+
+    monkeypatch.setattr(runtime.gateway, "handle", fail_handle)
+    failed = client.post(
+        "/api/chat/stream",
+        json={
+            "user_id": "browser-user",
+            "context": {
+                "agent": "hr_recruiter",
+                "message": "Research the latest five cases.",
+            },
+        },
+        headers={"X-CSRF-Token": token},
+    )
+
+    frames = _parse_frames(failed.get_data(as_text=True))
+    errors = [data for event, data in frames if event == "error"]
+    assert len(errors) == 1
+    assert errors[0]["error"] == "search timed out"
+    conversation_id = errors[0]["conversation_id"]
+    assert conversation_id
+
+    messages = client.get(f"/api/conversations/{conversation_id}/messages").get_json()["messages"]
+    assert [(message["role"], message["content"]) for message in messages] == [
+        ("user", "Research the latest five cases."),
+        ("assistant", "Execution failed: search timed out"),
+    ]
+
+
 def test_tasks_stream_requires_csrf(client):
     client.post("/login", data={"token": "secret-token"})
     resp = client.post("/api/tasks/stream", json={"agent": "hr_recruiter", "text": "x"})

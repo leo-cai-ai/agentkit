@@ -88,9 +88,10 @@ def _browser_login(
         url = research_provider.adapter.search_url(query)
         readiness_check = research_provider.adapter.interactive_login_complete
     print(
-        "A persistent Xiaohongshu browser profile is open. Complete login or human "
-        "verification in that window. The window stays open until the target page "
-        "is authenticated and ready; press Ctrl+C here to cancel."
+        "A persistent Xiaohongshu browser profile is open. Complete QR login and any "
+        "SMS, phone, or other human verification manually in that window. Do not close "
+        "it: the window stays open until the target page is authenticated and ready; "
+        "press Ctrl+C here to cancel."
     )
 
     client.open_interactive(
