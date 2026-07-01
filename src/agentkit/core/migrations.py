@@ -7,6 +7,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .logging_config import get_logger
+
+logger = get_logger("agentkit.core.migrations")
+
 _SQLITE_MIGRATIONS: dict[int, tuple[str, ...]] = {
     1: (
         """
@@ -51,7 +55,8 @@ _SQLITE_MIGRATIONS: dict[int, tuple[str, ...]] = {
             payload_bytes INTEGER NOT NULL,
             summary TEXT NOT NULL DEFAULT '',
             metadata_json TEXT NOT NULL DEFAULT '{}',
-            created_at REAL NOT NULL
+            created_at REAL NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES task_runs(run_id)
         )
         """,
         """
@@ -72,7 +77,8 @@ _SQLITE_MIGRATIONS: dict[int, tuple[str, ...]] = {
             PRIMARY KEY (tenant_id, tool_name, idempotency_key)
         )
         """,
-    )
+    ),
+    2: (),
 }
 
 
@@ -127,7 +133,9 @@ _POSTGRES_MIGRATIONS: dict[int, tuple[str, ...]] = {
             payload_bytes INTEGER NOT NULL,
             summary TEXT NOT NULL DEFAULT '',
             metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-            created_at DOUBLE PRECISION NOT NULL
+            created_at DOUBLE PRECISION NOT NULL,
+            CONSTRAINT fk_workflow_artifacts_run_id
+                FOREIGN KEY(run_id) REFERENCES task_runs(run_id)
         )
         """,
         """
@@ -148,7 +156,8 @@ _POSTGRES_MIGRATIONS: dict[int, tuple[str, ...]] = {
             PRIMARY KEY (tenant_id, tool_name, idempotency_key)
         )
         """,
-    )
+    ),
+    2: (),
 }
 
 
@@ -160,15 +169,18 @@ def run_sqlite_migrations(path: str | Path) -> list[int]:
     database_path = Path(path)
     database_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(database_path)
+    applied_now: list[int] = []
     try:
+        conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("BEGIN IMMEDIATE")
         applied = _sqlite_applied_versions(conn)
-        applied_now: list[int] = []
         for version, statements in _SQLITE_MIGRATIONS.items():
             if version in applied:
                 continue
             for statement in statements:
                 conn.execute(statement)
+            if version == 2:
+                _sqlite_add_workflow_artifact_run_fk(conn)
             conn.execute(
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                 (version, round(time.time(), 3)),
@@ -181,6 +193,7 @@ def run_sqlite_migrations(path: str | Path) -> list[int]:
         conn.commit()
     finally:
         conn.close()
+    _log_schema_migrations("sqlite", applied_now)
     return applied_now
 
 
@@ -197,11 +210,14 @@ def run_postgres_migrations(settings: Any) -> list[int]:
                 continue
             for statement in statements:
                 conn.execute(statement)
+            if version == 2:
+                _postgres_add_workflow_artifact_run_fk(conn)
             conn.execute(
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (%s, %s)",
                 (version, round(time.time(), 3)),
             )
             applied_now.append(version)
+    _log_schema_migrations("postgres", applied_now)
     return applied_now
 
 
@@ -239,6 +255,111 @@ def _postgres_applied_versions(conn: Any) -> set[int]:
     if not has_migrations:
         return set()
     return {int(row[0]) for row in conn.execute("SELECT version FROM schema_migrations")}
+
+
+def _sqlite_add_workflow_artifact_run_fk(conn: sqlite3.Connection) -> None:
+    """Add the artifact-to-run foreign key without discarding legacy rows."""
+    if _sqlite_workflow_artifacts_has_run_fk(conn):
+        return
+    orphan = conn.execute(
+        """
+        SELECT artifacts.artifact_id, artifacts.run_id
+        FROM workflow_artifacts AS artifacts
+        LEFT JOIN task_runs AS runs ON runs.run_id = artifacts.run_id
+        WHERE runs.run_id IS NULL
+        LIMIT 1
+        """
+    ).fetchone()
+    if orphan is not None:
+        raise RuntimeError(
+            "Cannot add workflow_artifacts.run_id foreign key: "
+            f"orphan artifact {orphan[0]!r} references missing run {orphan[1]!r}"
+        )
+
+    conn.execute(
+        """
+        CREATE TABLE workflow_artifacts_replacement (
+            artifact_id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            payload_sha256 TEXT NOT NULL,
+            payload_bytes INTEGER NOT NULL,
+            summary TEXT NOT NULL DEFAULT '',
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at REAL NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES task_runs(run_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO workflow_artifacts_replacement (
+            artifact_id, tenant_id, run_id, kind, payload_json,
+            payload_sha256, payload_bytes, summary, metadata_json, created_at
+        )
+        SELECT artifact_id, tenant_id, run_id, kind, payload_json,
+               payload_sha256, payload_bytes, summary, metadata_json, created_at
+        FROM workflow_artifacts
+        """
+    )
+    conn.execute("DROP TABLE workflow_artifacts")
+    conn.execute("ALTER TABLE workflow_artifacts_replacement RENAME TO workflow_artifacts")
+    conn.execute(
+        """
+        CREATE INDEX idx_workflow_artifacts_scope
+        ON workflow_artifacts(tenant_id, run_id, created_at, artifact_id)
+        """
+    )
+
+
+def _sqlite_workflow_artifacts_has_run_fk(conn: sqlite3.Connection) -> bool:
+    return any(
+        row[2] == "task_runs" and row[3] == "run_id" and row[4] == "run_id"
+        for row in conn.execute("PRAGMA foreign_key_list(workflow_artifacts)")
+    )
+
+
+def _postgres_add_workflow_artifact_run_fk(conn: Any) -> None:
+    """Add the named artifact-to-run foreign key after verifying legacy rows."""
+    orphan = conn.execute(
+        """
+        SELECT artifacts.artifact_id, artifacts.run_id
+        FROM workflow_artifacts AS artifacts
+        LEFT JOIN task_runs AS runs ON runs.run_id = artifacts.run_id
+        WHERE runs.run_id IS NULL
+        LIMIT 1
+        """
+    ).fetchone()
+    if orphan is not None:
+        raise RuntimeError(
+            "Cannot add workflow_artifacts.run_id foreign key: "
+            f"orphan artifact {orphan[0]!r} references missing run {orphan[1]!r}"
+        )
+    constraint_exists = conn.execute(
+        """
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'workflow_artifacts'::regclass
+          AND conname = %s
+          AND contype = 'f'
+        """,
+        ("fk_workflow_artifacts_run_id",),
+    ).fetchone()
+    if constraint_exists is None:
+        conn.execute(
+            """
+            ALTER TABLE workflow_artifacts
+            ADD CONSTRAINT fk_workflow_artifacts_run_id
+            FOREIGN KEY(run_id) REFERENCES task_runs(run_id)
+            """
+        )
+
+
+def _log_schema_migrations(backend: str, versions: list[int]) -> None:
+    for version in versions:
+        logger.info("schema_migrated", extra={"backend": backend, "version": version})
 
 
 __all__ = ["run_postgres_migrations", "run_sqlite_migrations", "run_storage_migrations"]

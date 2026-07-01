@@ -13,7 +13,7 @@ import agentkit.core.llm_client as llm_client
 from agentkit.config import Settings
 from agentkit.core import pg
 from agentkit.core.artifacts import build_artifact_store
-from agentkit.core.audit import InMemoryAuditLog
+from agentkit.core.audit import InMemoryAuditLog, PostgresAuditLog
 from agentkit.core.contracts import (
     IntentFrame,
     PlanStep,
@@ -53,7 +53,6 @@ def test_postgres_contract_scope_is_unique() -> None:
 def test_postgres_storage_contracts() -> None:
     scope = _postgres_contract_scope()
     tenant_id = f"contract-{scope}"
-    run_id = f"{scope}-artifact-run"
     idempotency_key = f"{scope}-contract-key"
     settings = Settings(
         _env_file=None,
@@ -61,6 +60,11 @@ def test_postgres_storage_contracts() -> None:
         pg_dsn=os.environ["AGENTKIT_TEST_PG_DSN"],
     )
     run_postgres_migrations(settings)
+    run_id = PostgresAuditLog(settings).start_run(
+        tenant_id=tenant_id,
+        user_id="contract-user",
+        text="postgres artifact contract",
+    )
 
     try:
         artifacts = build_artifact_store(
@@ -106,6 +110,8 @@ def test_postgres_storage_contracts() -> None:
                 "DELETE FROM tool_idempotency_records WHERE tenant_id = %s",
                 (tenant_id,),
             )
+            conn.execute("DELETE FROM audit_events WHERE run_id = %s", (run_id,))
+            conn.execute("DELETE FROM task_runs WHERE run_id = %s", (run_id,))
 
 
 def test_runtime_artifact_factory_persists_and_audits_without_payload(

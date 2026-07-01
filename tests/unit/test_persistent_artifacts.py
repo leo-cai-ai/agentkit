@@ -13,6 +13,7 @@ from agentkit.core.artifacts import (
     SqliteArtifactStore,
     build_artifact_store,
 )
+from agentkit.core.audit import SQLiteAuditLog
 
 
 def _payload_digest(payload: object) -> str:
@@ -29,10 +30,11 @@ def _payload_digest(payload: object) -> str:
 def test_sqlite_artifact_store_persists_json_across_fresh_instance(tmp_path) -> None:
     db_path = tmp_path / "runtime.sqlite"
     payload = {"message": "你好", "values": [1, 2, 3]}
+    run_id = _start_sqlite_run(db_path)
     store = build_artifact_store(
         backend="sqlite",
         tenant_id="tenant-a",
-        run_id="run-a",
+        run_id=run_id,
         sqlite_path=db_path,
     )
 
@@ -46,7 +48,7 @@ def test_sqlite_artifact_store_persists_json_across_fresh_instance(tmp_path) -> 
     fresh_store = build_artifact_store(
         backend="sqlite",
         tenant_id="tenant-a",
-        run_id="run-a",
+        run_id=run_id,
         sqlite_path=db_path,
     )
     restored = fresh_store.get(written.artifact_id)
@@ -66,11 +68,12 @@ def test_sqlite_artifact_store_persists_json_across_fresh_instance(tmp_path) -> 
 
 
 def test_sqlite_artifact_store_rejects_payload_above_limit(tmp_path) -> None:
+    db_path = tmp_path / "runtime.sqlite"
     store = build_artifact_store(
         backend="sqlite",
         tenant_id="tenant-a",
-        run_id="run-a",
-        sqlite_path=tmp_path / "runtime.sqlite",
+        run_id=_start_sqlite_run(db_path),
+        sqlite_path=db_path,
         max_payload_bytes=8,
     )
 
@@ -80,10 +83,12 @@ def test_sqlite_artifact_store_rejects_payload_above_limit(tmp_path) -> None:
 
 def test_sqlite_artifact_store_scopes_reads_to_tenant_and_run(tmp_path) -> None:
     db_path = tmp_path / "runtime.sqlite"
+    run_id = _start_sqlite_run(db_path)
+    other_run_id = _start_sqlite_run(db_path)
     writer = build_artifact_store(
         backend="sqlite",
         tenant_id="tenant-a",
-        run_id="run-a",
+        run_id=run_id,
         sqlite_path=db_path,
     )
     record = writer.put(kind="workflow.result", payload={"ok": True})
@@ -91,13 +96,13 @@ def test_sqlite_artifact_store_scopes_reads_to_tenant_and_run(tmp_path) -> None:
     other_tenant = build_artifact_store(
         backend="sqlite",
         tenant_id="tenant-b",
-        run_id="run-a",
+        run_id=run_id,
         sqlite_path=db_path,
     )
     other_run = build_artifact_store(
         backend="sqlite",
         tenant_id="tenant-a",
-        run_id="run-b",
+        run_id=other_run_id,
         sqlite_path=db_path,
     )
 
@@ -108,11 +113,12 @@ def test_sqlite_artifact_store_scopes_reads_to_tenant_and_run(tmp_path) -> None:
 
 
 def test_sqlite_artifact_store_rejects_non_json_payload(tmp_path) -> None:
+    db_path = tmp_path / "runtime.sqlite"
     store = build_artifact_store(
         backend="sqlite",
         tenant_id="tenant-a",
-        run_id="run-a",
-        sqlite_path=tmp_path / "runtime.sqlite",
+        run_id=_start_sqlite_run(db_path),
+        sqlite_path=db_path,
     )
 
     with pytest.raises(TypeError):
@@ -141,9 +147,10 @@ def test_sqlite_artifact_store_closes_each_operation_connection(tmp_path, monkey
             super().close()
 
     db_path = tmp_path / "runtime.sqlite"
+    run_id = _start_sqlite_run(db_path)
     store = SqliteArtifactStore(
         tenant_id="tenant-a",
-        run_id="run-a",
+        run_id=run_id,
         sqlite_path=db_path,
     )
     opened: list[TrackingConnection] = []
@@ -162,3 +169,23 @@ def test_sqlite_artifact_store_closes_each_operation_connection(tmp_path, monkey
 
     assert len(opened) == 3
     assert all(connection.closed for connection in opened)
+
+
+def test_sqlite_artifact_store_rejects_orphan_run_id(tmp_path) -> None:
+    store = build_artifact_store(
+        backend="sqlite",
+        tenant_id="tenant-a",
+        run_id="run-missing",
+        sqlite_path=tmp_path / "runtime.sqlite",
+    )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        store.put(kind="workflow.result", payload={"ok": True})
+
+
+def _start_sqlite_run(db_path) -> str:
+    return SQLiteAuditLog(db_path).start_run(
+        tenant_id="tenant-a",
+        user_id="user-a",
+        text="artifact persistence",
+    )
