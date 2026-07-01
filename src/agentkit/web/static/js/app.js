@@ -15,6 +15,132 @@ let currentConversationId = null;
 let conversationCache = [];
 let chatBusy = false;
 
+// Progressive tab enhancement: without JavaScript the anchors still navigate
+// to fully visible sections; once initialized, the same markup follows the
+// ARIA tabs pattern with roving focus and URL-backed state.
+function bindTabs() {
+  document.querySelectorAll("[data-tabs]").forEach((root) => {
+    if (root.dataset.tabsInitialized === "true") return;
+
+    const tabList = root.querySelector("[data-tab-list]");
+    const tabs = tabList ? Array.from(tabList.querySelectorAll("[data-tab]")) : [];
+    const panels = Array.from(root.querySelectorAll("[data-tab-panel]"));
+    const entries = tabs.map((tab) => {
+      const href = tab.getAttribute("href") || "";
+      const panel = href.startsWith("#") ? document.getElementById(href.slice(1)) : null;
+      if (!panel || !root.contains(panel) || !panel.matches("[data-tab-panel]")) return null;
+      return { tab, panel };
+    });
+
+    const uniquePanels = new Set(entries.filter(Boolean).map((entry) => entry.panel));
+    if (
+      !tabList ||
+      !entries.length ||
+      entries.some((entry) => !entry) ||
+      entries.length !== panels.length ||
+      uniquePanels.size !== panels.length
+    ) {
+      return;
+    }
+
+    const validEntries = entries;
+    const entryFromHash = () => {
+      if (!window.location.hash) return null;
+      let targetId = "";
+      try {
+        targetId = decodeURIComponent(window.location.hash.slice(1));
+      } catch {
+        return null;
+      }
+      const target = document.getElementById(targetId);
+      const panel = target?.matches("[data-tab-panel]")
+        ? target
+        : target?.closest("[data-tab-panel]");
+      if (!panel || !root.contains(panel)) return null;
+      const entry = validEntries.find((candidate) => candidate.panel === panel);
+      return entry ? { entry, target } : null;
+    };
+
+    const activate = (entry, { focus = false, updateHash = false } = {}) => {
+      validEntries.forEach((candidate) => {
+        const selected = candidate === entry;
+        candidate.tab.setAttribute("aria-selected", String(selected));
+        candidate.tab.setAttribute("tabindex", selected ? "0" : "-1");
+        candidate.panel.hidden = !selected;
+      });
+      root.dataset.activeTab = entry.panel.id;
+      if (updateHash) {
+        const url = new URL(window.location.href);
+        url.hash = entry.panel.id;
+        window.history.replaceState(null, "", url.toString());
+      }
+      if (focus) {
+        entry.tab.focus();
+        entry.tab.scrollIntoView({ block: "nearest", inline: "nearest" });
+      }
+    };
+
+    const activateHashState = (state) => {
+      activate(state.entry);
+      if (state.target && state.target !== state.entry.panel) {
+        window.requestAnimationFrame(() => {
+          state.target.scrollIntoView({ block: "start", inline: "nearest" });
+        });
+      }
+    };
+
+    tabList.setAttribute("role", "tablist");
+    tabList.setAttribute("aria-orientation", "horizontal");
+    validEntries.forEach(({ tab, panel }) => {
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-controls", panel.id);
+      panel.setAttribute("role", "tabpanel");
+      panel.setAttribute("aria-labelledby", tab.id);
+      panel.setAttribute("tabindex", "0");
+    });
+
+    root.dataset.tabsInitialized = "true";
+    root.dataset.tabsEnhanced = "true";
+    const hashState = entryFromHash();
+    const defaultEntry =
+      validEntries.find(({ panel }) => panel.id === root.dataset.tabsDefault) || validEntries[0];
+    if (hashState) activateHashState(hashState);
+    else activate(defaultEntry);
+
+    validEntries.forEach((entry) => {
+      entry.tab.addEventListener("click", (event) => {
+        if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        event.preventDefault();
+        activate(entry, { updateHash: true });
+      });
+    });
+
+    tabList.addEventListener("keydown", (event) => {
+      const currentTab = event.target.closest("[data-tab]");
+      const currentIndex = validEntries.findIndex(({ tab }) => tab === currentTab);
+      if (currentIndex < 0) return;
+
+      let nextIndex = -1;
+      if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % validEntries.length;
+      if (event.key === "ArrowLeft") {
+        nextIndex = (currentIndex - 1 + validEntries.length) % validEntries.length;
+      }
+      if (event.key === "Home") nextIndex = 0;
+      if (event.key === "End") nextIndex = validEntries.length - 1;
+      if (event.key === "Enter" || event.key === " ") nextIndex = currentIndex;
+      if (nextIndex < 0) return;
+
+      event.preventDefault();
+      activate(validEntries[nextIndex], { focus: true, updateHash: true });
+    });
+
+    window.addEventListener("hashchange", () => {
+      const nextState = entryFromHash();
+      if (nextState) activateHashState(nextState);
+    });
+  });
+}
+
 function syncChatComposerState() {
   const form = document.getElementById("chat-form");
   if (!form) return;
@@ -1208,4 +1334,5 @@ document.addEventListener("DOMContentLoaded", () => {
   bindChatForm();
   bindConversationBar();
   bindApprovalActions();
+  bindTabs();
 });

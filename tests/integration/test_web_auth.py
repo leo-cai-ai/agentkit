@@ -288,6 +288,71 @@ def test_authenticated_shell_preserves_structure_and_accessibility(client):
         assert contract in application_js
 
 
+def test_governance_groups_metadata_into_progressive_tabs(client):
+    _login(client)
+    response = client.get("/governance")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+
+    panel_ids = (
+        "governance-panel-agents",
+        "governance-panel-capabilities",
+        "governance-panel-configuration",
+        "governance-panel-audit",
+    )
+    assert 'data-tabs-default="governance-panel-agents"' in html
+    assert len(re.findall(r"<a\b[^>]*\sdata-tab(?:\s|>)", html, re.DOTALL)) == 4
+    for panel_id in panel_ids:
+        assert f'href="#{panel_id}"' in html
+        assert f'id="{panel_id}"' in html
+    assert html.count("data-tab-panel") == 4
+    assert 'data-tab-panel hidden' not in html
+
+    agents = html[
+        html.index('id="governance-panel-agents"') : html.index(
+            'id="governance-panel-capabilities"'
+        )
+    ]
+    capabilities = html[
+        html.index('id="governance-panel-capabilities"') : html.index(
+            'id="governance-panel-configuration"'
+        )
+    ]
+    configuration = html[
+        html.index('id="governance-panel-configuration"') : html.index(
+            'id="governance-panel-audit"'
+        )
+    ]
+    audit = html[html.index('id="governance-panel-audit"') :]
+    assert "Agent Profiles" in agents
+    assert capabilities.index("Skill Registry") < capabilities.index("Tool Registry")
+    assert "Prompt Registry" in configuration
+    assert "Audit Persistence" in configuration
+    assert "Audit Events" in audit
+
+    application_js = client.get("/static/js/app.js").get_data(as_text=True)
+    for contract in (
+        "function bindTabs()",
+        'setAttribute("role", "tablist")',
+        'setAttribute("role", "tabpanel")',
+        'setAttribute("aria-selected"',
+        'event.key === "ArrowRight"',
+        'event.key === "ArrowLeft"',
+        'event.key === "Home"',
+        'event.key === "End"',
+        "window.history.replaceState",
+        'window.addEventListener("hashchange"',
+    ):
+        assert contract in application_js
+
+    components_css = client.get("/static/css/components.css").get_data(as_text=True)
+    pages_css = client.get("/static/css/pages.css").get_data(as_text=True)
+    assert ".ak-tab-list" in components_css
+    assert '.ak-tab[aria-selected="true"]' in components_css
+    assert "overflow-x: auto" in components_css
+    assert ".ak-governance-tab-panel[hidden]" in pages_css
+
+
 def test_login_error_uses_accessible_field_state(client):
     response = client.post("/login", data={"token": "nope"})
     assert response.status_code == 401

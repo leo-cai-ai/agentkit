@@ -385,11 +385,30 @@
 }
 
 /* Governance */
+.ak-governance-tabs {
+  display: grid;
+  gap: var(--ak-sys-space-4);
+}
+
 .ak-governance-grid {
+  min-inline-size: 0;
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
   gap: var(--ak-sys-space-grid);
   align-items: start;
+}
+
+.ak-governance-tab-panel {
+  scroll-margin-block-start: var(--ak-sys-space-4);
+}
+
+.ak-governance-tab-panel[hidden] {
+  display: none;
+}
+
+.ak-governance-tab-panel:focus-visible {
+  outline: var(--ak-sys-focus-width) solid var(--ak-sys-color-focus-ring);
+  outline-offset: var(--ak-sys-focus-offset);
 }
 
 .ak-governance-registry {
@@ -404,9 +423,16 @@
   grid-column: span 4;
 }
 
-.ak-governance-environment > .ak-table-wrap,
-.ak-governance-environment > .ak-empty-state {
-  margin-block-start: var(--ak-sys-space-grid);
+.ak-governance-wide {
+  grid-column: span 8;
+}
+
+.ak-governance-half {
+  grid-column: span 6;
+}
+
+.ak-governance-wide .ak-data-table {
+  min-inline-size: 32rem;
 }
 
 /* Chat and dynamic result composition */
@@ -822,7 +848,9 @@ button.conversation-new {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .ak-governance-compact {
+  .ak-governance-compact,
+  .ak-governance-wide,
+  .ak-governance-half {
     grid-column: 1 / -1;
   }
 }
@@ -847,6 +875,13 @@ button.conversation-new {
 @media (max-width: 56.25rem) {
   #run-detail,
   #recent-requests-title {
+    scroll-margin-block-start: calc(
+      var(--ak-sys-size-control-touch) + var(--ak-sys-space-4)
+    );
+  }
+
+  .ak-governance-tab-panel,
+  .ak-governance-tab-panel h2 {
     scroll-margin-block-start: calc(
       var(--ak-sys-size-control-touch) + var(--ak-sys-space-4)
     );
@@ -1004,6 +1039,14 @@ button.conversation-new {
         var(--ak-sys-space-8)
     );
   }
+
+  .ak-governance-tab-panel,
+  .ak-governance-tab-panel h2 {
+    scroll-margin-block-start: calc(
+      var(--ak-sys-size-control-md) + var(--ak-sys-size-control-touch) +
+        var(--ak-sys-space-8)
+    );
+  }
 }
 
 @media (max-width: 30rem) {
@@ -1058,5 +1101,15 @@ button.conversation-new {
   .ak-agent-tooltip,
   .ak-chat-composer {
     transition: none;
+  }
+}
+
+@media print {
+  .ak-governance-tabs .ak-tab-list {
+    display: none;
+  }
+
+  .ak-governance-tabs [data-tab-panel][hidden] {
+    display: grid !important;
   }
 }

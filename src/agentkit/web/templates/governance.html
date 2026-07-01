@@ -4,67 +4,137 @@
 {% block page_description %}Inspect registered agents, capabilities, tools, prompts, and environment.{% endblock %}
 
 {% block content %}
-  <section class="dashboard-grid governance-grid ak-governance-grid" aria-label="Governance registries">
-    <article class="panel ak-panel ak-panel--table ak-governance-registry" aria-labelledby="agent-profiles-title">
-      <div class="panel-head ak-panel-header">
-        <h2 id="agent-profiles-title">Agent Profiles</h2>
-        <span>Runtime boundary</span>
-      </div>
-      {{ data_table(agents, label='Agent profiles') }}
-    </article>
+  <section
+    class="ak-tabs ak-governance-tabs"
+    data-tabs
+    data-tabs-default="governance-panel-agents"
+    aria-label="Governance metadata"
+  >
+    <nav class="ak-tab-list" data-tab-list aria-label="Governance metadata sections">
+      <a
+        class="ak-tab"
+        id="governance-tab-agents"
+        href="#governance-panel-agents"
+        data-tab
+      >Agents</a>
+      <a
+        class="ak-tab"
+        id="governance-tab-capabilities"
+        href="#governance-panel-capabilities"
+        data-tab
+      >Capabilities</a>
+      <a
+        class="ak-tab"
+        id="governance-tab-configuration"
+        href="#governance-panel-configuration"
+        data-tab
+      >Configuration</a>
+      <a
+        class="ak-tab"
+        id="governance-tab-audit"
+        href="#governance-panel-audit"
+        data-tab
+      >Audit &amp; Usage</a>
+    </nav>
 
-    <article class="panel ak-panel ak-panel--table ak-governance-registry" aria-labelledby="tool-registry-title">
-      <div class="panel-head ak-panel-header">
-        <h2 id="tool-registry-title">Tool Registry</h2>
-        <span>MCP-ready contract</span>
-      </div>
-      {{ data_table(tools, label='Tool registry') }}
-    </article>
-
-    <article class="panel ak-panel ak-panel--table ak-governance-registry" aria-labelledby="skill-registry-title">
-      <div class="panel-head ak-panel-header">
-        <h2 id="skill-registry-title">Skill Registry</h2>
-        <span>Business capability layer</span>
-      </div>
-      {{ data_table(skills, label='Skill registry') }}
-    </article>
-
-    <article class="panel ak-panel ak-panel--table ak-governance-compact" aria-labelledby="prompt-registry-title">
-      <div class="panel-head ak-panel-header">
-        <h2 id="prompt-registry-title">Prompt Registry</h2>
-        <span>File-managed prompts</span>
-      </div>
-      {{ data_table(prompt_rows, label='Prompt registry') }}
-    </article>
-
-    <article class="panel ak-panel ak-governance-compact ak-governance-environment" aria-labelledby="audit-store-title">
-      <div class="panel-head ak-panel-header">
-        <h2 id="audit-store-title">Audit Store</h2>
-        <span>SQLite</span>
-      </div>
-      <dl class="ak-key-value-list">
-        <div class="ak-key-value-row">
-          <dt>Path</dt>
-          <dd>{{ db_path }}</dd>
+    <section
+      class="dashboard-grid governance-grid ak-governance-grid ak-governance-tab-panel"
+      id="governance-panel-agents"
+      data-tab-panel
+      aria-labelledby="governance-tab-agents"
+    >
+      <article class="panel ak-panel ak-panel--table ak-governance-registry" aria-labelledby="agent-profiles-title">
+        <div class="panel-head ak-panel-header">
+          <h2 id="agent-profiles-title">Agent Profiles</h2>
+          <span>Runtime boundary</span>
         </div>
-      </dl>
-      {{ data_table(event_counts, label='Audit event counts') }}
-    </article>
+        {{ data_table(agents, label='Agent profiles') }}
+      </article>
+    </section>
 
-    {% if cost_summary %}
-    <article class="panel ak-panel ak-governance-compact" aria-labelledby="cost-summary-title">
-      <div class="panel-head ak-panel-header">
-        <h2 id="cost-summary-title">LLM Cost &amp; Tokens</h2>
-        <span>Across all recorded runs</span>
-      </div>
-      <dl class="ak-key-value-list">
-        <div class="ak-key-value-row"><dt>LLM calls</dt><dd>{{ cost_summary.calls }}</dd></div>
-        <div class="ak-key-value-row"><dt>Input tokens</dt><dd>{{ cost_summary.input_tokens }}</dd></div>
-        <div class="ak-key-value-row"><dt>Output tokens</dt><dd>{{ cost_summary.output_tokens }}</dd></div>
-        <div class="ak-key-value-row"><dt>Total tokens</dt><dd>{{ cost_summary.total_tokens }}</dd></div>
-        <div class="ak-key-value-row"><dt>Estimated cost (USD)</dt><dd>${{ '%.4f'|format(cost_summary.cost_usd) }}</dd></div>
-      </dl>
-    </article>
-    {% endif %}
+    <section
+      class="dashboard-grid governance-grid ak-governance-grid ak-governance-tab-panel"
+      id="governance-panel-capabilities"
+      data-tab-panel
+      aria-labelledby="governance-tab-capabilities"
+    >
+      <article class="panel ak-panel ak-panel--table ak-governance-registry" aria-labelledby="skill-registry-title">
+        <div class="panel-head ak-panel-header">
+          <h2 id="skill-registry-title">Skill Registry</h2>
+          <span>Business capability layer</span>
+        </div>
+        {{ data_table(skills, label='Skill registry') }}
+      </article>
+
+      <article class="panel ak-panel ak-panel--table ak-governance-registry" aria-labelledby="tool-registry-title">
+        <div class="panel-head ak-panel-header">
+          <h2 id="tool-registry-title">Tool Registry</h2>
+          <span>Execution contracts</span>
+        </div>
+        {{ data_table(tools, label='Tool registry') }}
+      </article>
+    </section>
+
+    <section
+      class="dashboard-grid governance-grid ak-governance-grid ak-governance-tab-panel"
+      id="governance-panel-configuration"
+      data-tab-panel
+      aria-labelledby="governance-tab-configuration"
+    >
+      <article class="panel ak-panel ak-panel--table ak-governance-wide" aria-labelledby="prompt-registry-title">
+        <div class="panel-head ak-panel-header">
+          <h2 id="prompt-registry-title">Prompt Registry</h2>
+          <span>File-managed prompts</span>
+        </div>
+        {{ data_table(prompt_rows, label='Prompt registry') }}
+      </article>
+
+      <article class="panel ak-panel ak-governance-compact" aria-labelledby="audit-store-title">
+        <div class="panel-head ak-panel-header">
+          <h2 id="audit-store-title">Audit Persistence</h2>
+          <span>Runtime storage</span>
+        </div>
+        <dl class="ak-key-value-list">
+          <div class="ak-key-value-row">
+            <dt>Path</dt>
+            <dd>{{ db_path }}</dd>
+          </div>
+        </dl>
+      </article>
+    </section>
+
+    <section
+      class="dashboard-grid governance-grid ak-governance-grid ak-governance-tab-panel"
+      id="governance-panel-audit"
+      data-tab-panel
+      aria-labelledby="governance-tab-audit"
+    >
+      <article
+        class="panel ak-panel ak-panel--table {{ 'ak-governance-half' if cost_summary else 'ak-governance-registry' }}"
+        aria-labelledby="audit-events-title"
+      >
+        <div class="panel-head ak-panel-header">
+          <h2 id="audit-events-title">Audit Events</h2>
+          <span>Recorded event types</span>
+        </div>
+        {{ data_table(event_counts, label='Audit event counts') }}
+      </article>
+
+      {% if cost_summary %}
+        <article class="panel ak-panel ak-governance-half" aria-labelledby="cost-summary-title">
+          <div class="panel-head ak-panel-header">
+            <h2 id="cost-summary-title">LLM Cost &amp; Tokens</h2>
+            <span>Across all recorded runs</span>
+          </div>
+          <dl class="ak-key-value-list">
+            <div class="ak-key-value-row"><dt>LLM calls</dt><dd>{{ cost_summary.calls }}</dd></div>
+            <div class="ak-key-value-row"><dt>Input tokens</dt><dd>{{ cost_summary.input_tokens }}</dd></div>
+            <div class="ak-key-value-row"><dt>Output tokens</dt><dd>{{ cost_summary.output_tokens }}</dd></div>
+            <div class="ak-key-value-row"><dt>Total tokens</dt><dd>{{ cost_summary.total_tokens }}</dd></div>
+            <div class="ak-key-value-row"><dt>Estimated cost (USD)</dt><dd>${{ '%.4f'|format(cost_summary.cost_usd) }}</dd></div>
+          </dl>
+        </article>
+      {% endif %}
+    </section>
   </section>
 {% endblock %}
