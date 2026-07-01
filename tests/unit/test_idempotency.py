@@ -13,6 +13,7 @@ from agentkit.core.idempotency import (
     IdempotencyInProgressError,
     IdempotencyOutcomeUnknownError,
     PostgresIdempotencyStore,
+    SqliteIdempotencyStore,
     build_idempotency_store,
     canonical_args_hash,
     key_digest,
@@ -25,6 +26,18 @@ def _store(tmp_path):
         tenant_id="tenant-a",
         sqlite_path=tmp_path / "runtime.sqlite",
     )
+
+
+def test_stores_expose_their_tenant_id(tmp_path, monkeypatch) -> None:
+    sqlite_store = SqliteIdempotencyStore(
+        tenant_id="tenant-a",
+        sqlite_path=tmp_path / "runtime.sqlite",
+    )
+    monkeypatch.setattr(PostgresIdempotencyStore, "_init_schema", lambda self: None)
+    postgres_store = PostgresIdempotencyStore(tenant_id="tenant-b", settings=object())
+
+    assert sqlite_store.tenant_id == "tenant-a"
+    assert postgres_store.tenant_id == "tenant-b"
 
 
 def test_success_is_reused_after_store_recreation(tmp_path) -> None:
@@ -80,6 +93,17 @@ def test_duplicate_unknown_claim_raises_outcome_unknown(tmp_path) -> None:
 
     with pytest.raises(IdempotencyOutcomeUnknownError):
         store.begin(tool_name="crm.create", idempotency_key="key-1", args={})
+
+
+def test_duplicate_failed_claim_raises_typed_failed_error(tmp_path) -> None:
+    store = _store(tmp_path)
+    claim = store.begin(tool_name="crm.create", idempotency_key="key-1", args={})
+    store.finish_failure(claim, "request rejected")
+
+    with pytest.raises(IdempotencyError) as failure:
+        store.begin(tool_name="crm.create", idempotency_key="key-1", args={})
+
+    assert type(failure.value).__name__ == "IdempotencyFailedError"
 
 
 @pytest.mark.parametrize(

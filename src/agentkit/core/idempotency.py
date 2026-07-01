@@ -26,6 +26,10 @@ class IdempotencyInProgressError(IdempotencyError):
     """Raised when another caller has already claimed a key."""
 
 
+class IdempotencyFailedError(IdempotencyError):
+    """Raised when a prior call with this key completed as a known failure."""
+
+
 class IdempotencyOutcomeUnknownError(IdempotencyError):
     """Raised when a prior side effect may have completed without confirmation."""
 
@@ -49,6 +53,9 @@ class IdempotencyClaim:
 
 class IdempotencyStore(Protocol):
     """Persistence contract for one tenant's tool idempotency records."""
+
+    @property
+    def tenant_id(self) -> str: ...
 
     def begin(
         self,
@@ -83,6 +90,10 @@ class SqliteIdempotencyStore:
         self._tenant_id = tenant_id
         self._db_path = Path(sqlite_path)
         self._init_schema()
+
+    @property
+    def tenant_id(self) -> str:
+        return self._tenant_id
 
     def begin(
         self,
@@ -232,6 +243,10 @@ class PostgresIdempotencyStore:
         self._tenant_id = tenant_id
         self._settings = settings
         self._init_schema()
+
+    @property
+    def tenant_id(self) -> str:
+        return self._tenant_id
 
     def begin(
         self,
@@ -402,7 +417,7 @@ def _existing_claim(
     if status == "outcome_unknown":
         raise IdempotencyOutcomeUnknownError("Idempotency outcome is unknown")
     if status == "failed":
-        raise IdempotencyError("Idempotency request previously failed")
+        raise IdempotencyFailedError("Idempotency request previously failed")
     raise IdempotencyError("Idempotency record has an unsupported status")
 
 
@@ -431,6 +446,7 @@ __all__ = [
     "IdempotencyClaim",
     "IdempotencyConflictError",
     "IdempotencyError",
+    "IdempotencyFailedError",
     "IdempotencyInProgressError",
     "IdempotencyOutcomeUnknownError",
     "IdempotencyStore",
