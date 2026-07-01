@@ -28,7 +28,6 @@ full raw case/video payloads through every prompt.
 
 Publishing-related runs require human approval before execution. The default
 connector creates a draft package and does not post to an external account.
-Production RPA providers must preserve timeout, audit, artifact, and approval
-semantics. Replace provider implementations in
-`src/agentkit/domain_packs/social_growth/providers.py` and keep tool adapters in
-`src/agentkit/domain_packs/social_growth/tools.py` stable.
+生产 RPA provider 必须保持超时、审计、Artifact 和审批语义。Provider 和工具适配均位于
+本 Skill 的 `scripts/providers.py` 与 `scripts/tools.py`；运行时通过 `skill.yaml`
+中的受控工具工厂按租户创建它们。

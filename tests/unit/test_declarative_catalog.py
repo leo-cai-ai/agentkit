@@ -139,6 +139,41 @@ def test_customer_service_manifest_has_no_business_capabilities() -> None:
     assert agent.context["memory_scope"] == "agent_user"
 
 
+def test_social_growth_manifest_exposes_all_existing_capabilities() -> None:
+    """一个社媒 Agent 保留九个受治理的内部工作流能力。"""
+    catalog = load_catalog(REPO_ROOT)
+    expected = {
+        "xhs.growth.campaign",
+        "xhs.trend.research",
+        "xhs.case.extract",
+        "xhs.case.compare",
+        "xhs.strategy.plan",
+        "xhs.copy.generate",
+        "xhs.copy.review",
+        "xhs.publish.prepare",
+        "xhs.metrics.track",
+    }
+    agents, skills, tools = AgentRegistry(), SkillRegistry(), ToolRegistry()
+
+    register_catalog(
+        catalog,
+        enabled_agent_ids={"xhs_growth"},
+        agents=agents,
+        skills=skills,
+        tools=tools,
+        tenant_config={"social_growth": {"publishing_mode": "direct"}},
+    )
+
+    assert set(catalog.agents["xhs_growth"].skills) == expected
+    assert set(skill.name for skill in skills.all()) == expected
+    assert agents.get("xhs_growth").allowed_tools == [
+        "xhs.rpa.search_top_notes",
+        "xhs.rpa.create_publish_package",
+        "xhs.rpa.publish_note",
+        "xhs.metrics.fetch",
+    ]
+
+
 def _write_valid_catalog(
     tmp_path: Path,
     *,

@@ -1,0 +1,139 @@
+package_id: xhs-growth-campaign
+tools:
+  - id: xhs.rpa.search_top_notes
+    description: 通过租户配置的 RPA provider 搜索小红书内容。
+    entrypoint: scripts.tools:search_top_notes_tool
+    factory_entrypoint: scripts.tools:build_handlers
+    supports_batch: true
+    idempotent: true
+    timeout_seconds: 120
+  - id: xhs.rpa.create_publish_package
+    description: 通过 RPA provider 创建发布草稿包。
+    entrypoint: scripts.tools:create_publish_package_tool
+    factory_entrypoint: scripts.tools:build_handlers
+    supports_batch: false
+    idempotent: false
+    timeout_seconds: 120
+  - id: xhs.rpa.publish_note
+    description: 在人工审批后发布不可变内容包。
+    entrypoint: scripts.tools:publish_note_tool
+    factory_entrypoint: scripts.tools:build_handlers
+    supports_batch: false
+    idempotent: false
+    timeout_seconds: 0
+  - id: xhs.metrics.fetch
+    description: 获取或初始化增长活动指标。
+    entrypoint: scripts.tools:fetch_metrics_tool
+    factory_entrypoint: scripts.tools:build_handlers
+    supports_batch: false
+    idempotent: true
+capabilities:
+  - id: xhs.growth.campaign
+    domain: marketing.social_growth
+    description: 执行完整的小红书增长工作流。
+    entrypoint: scripts.handlers:run_growth_campaign
+    execution_mode: workflow
+    permissions: [content.research, content.write, content.publish]
+    tools: [xhs.rpa.search_top_notes, xhs.rpa.create_publish_package, xhs.rpa.publish_note, xhs.metrics.fetch]
+    input_schema:
+      type: object
+      required: [topic]
+      x-agentkit-infer-from-message: true
+      properties:
+        topic: {type: string, minLength: 1, maxLength: 100}
+        top_n: {type: integer, minimum: 1, maximum: 20, default: 5}
+        goal_days: {type: integer, minimum: 1, maximum: 365, default: 30}
+        target_followers: {type: integer, minimum: 1, default: 10000}
+        cadence: {type: string, enum: [daily, weekdays, weekly], default: daily}
+    output_schema:
+      type: object
+      properties:
+        workflow_trace: {type: array}
+        publish: {type: object}
+    keywords: [xiaohongshu, xhs, rednote, growth, followers, campaign, publish, 小红书, 涨粉, 爆款, 发布]
+  - id: xhs.trend.research
+    domain: marketing.social_growth
+    description: 搜索指定主题的热门小红书内容。
+    entrypoint: scripts.handlers:research_trends
+    execution_mode: plan_execute
+    permissions: [content.research]
+    tools: [xhs.rpa.search_top_notes]
+    input_schema:
+      type: object
+      required: [topic]
+      x-agentkit-infer-from-message: true
+      properties:
+        topic: {type: string, minLength: 1, maxLength: 100}
+        top_n: {type: integer, minimum: 1, maximum: 20, default: 5}
+    output_schema: {type: object, properties: {}}
+    keywords: [top, research, notes, videos, 爆款, 案例]
+  - id: xhs.case.extract
+    domain: marketing.social_growth
+    description: 提取热门内容的结构与互动信号。
+    entrypoint: scripts.handlers:extract_case_signals
+    execution_mode: no_tool
+    permissions: [content.research]
+    tools: []
+    input_schema: {type: object, properties: {}}
+    output_schema: {type: object, properties: {}}
+    keywords: [extract, signals, hook, 提炼, 卖点]
+  - id: xhs.case.compare
+    domain: marketing.social_growth
+    description: 对比案例并识别可复用的增长模式。
+    entrypoint: scripts.handlers:compare_case_patterns
+    execution_mode: no_tool
+    permissions: [content.research]
+    tools: []
+    input_schema: {type: object, properties: {}}
+    output_schema: {type: object, properties: {}}
+    keywords: [compare, patterns, 对比, 总结]
+  - id: xhs.strategy.plan
+    domain: marketing.social_growth
+    description: 制定三十天增长策略。
+    entrypoint: scripts.handlers:plan_growth_strategy
+    execution_mode: no_tool
+    permissions: [content.research, content.write]
+    tools: []
+    input_schema: {type: object, properties: {}}
+    output_schema: {type: object, properties: {}}
+    keywords: [strategy, kpi, 30 days, 策略, 涨粉]
+  - id: xhs.copy.generate
+    domain: marketing.social_growth
+    description: 根据策略和案例证据生成文案。
+    entrypoint: scripts.handlers:generate_copy
+    execution_mode: no_tool
+    permissions: [content.write]
+    tools: []
+    input_schema: {type: object, properties: {}}
+    output_schema: {type: object, properties: {}}
+    keywords: [copy, article, draft, 文案, 文章]
+  - id: xhs.copy.review
+    domain: marketing.social_growth
+    description: 审核文案的品牌安全和事实依据。
+    entrypoint: scripts.handlers:review_copy
+    execution_mode: no_tool
+    permissions: [content.write]
+    tools: []
+    input_schema: {type: object, properties: {}}
+    output_schema: {type: object, properties: {}}
+    keywords: [review, brand, compliance, 审核]
+  - id: xhs.publish.prepare
+    domain: marketing.social_growth
+    description: 创建受治理的小红书发布草稿包。
+    entrypoint: scripts.handlers:prepare_publish
+    execution_mode: plan_execute
+    permissions: [content.publish]
+    tools: [xhs.rpa.create_publish_package]
+    input_schema: {type: object, properties: {}}
+    output_schema: {type: object, properties: {}}
+    keywords: [publish, draft, 发布, 草稿]
+  - id: xhs.metrics.track
+    domain: marketing.social_growth
+    description: 初始化或获取增长指标与下次检查点。
+    entrypoint: scripts.handlers:track_metrics
+    execution_mode: plan_execute
+    permissions: [content.research]
+    tools: [xhs.metrics.fetch]
+    input_schema: {type: object, properties: {}}
+    output_schema: {type: object, properties: {}}
+    keywords: [metrics, kpi, followers, 数据, 指标]
