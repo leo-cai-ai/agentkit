@@ -98,33 +98,38 @@ context:
 
 ### Skill 声明
 
-每个 Skill 保留兼容 Codex、Claude Code 等平台的 `SKILL.md`，并新增 AgentKit 专用 `skill.yaml`。后者把结构化执行元数据从跨平台说明中分离出来。
+每个 Skill 包保留兼容 Codex、Claude Code 等平台的 `SKILL.md`，并新增 AgentKit 专用 `skill.yaml`。后者把结构化执行元数据从跨平台说明中分离出来。一个跨平台 Skill 包可以声明一个或多个 AgentKit 运行时能力：候选人排序包只声明 `candidate.rank`，小红书增长包声明完整工作流及其九个可独立路由的内部能力。这样可以复用同一组脚本和说明，避免把同一工作流拆成大量重复的跨平台包。
 
 ```yaml
-id: candidate.rank
-domain: hr.recruitment
-description: 根据岗位要求对候选人进行排序。
-entrypoint: scripts.handler:run
-execution_mode: plan_execute
-permissions:
-  - hr.job.read
-  - hr.candidate.read
+package_id: candidate-rank
 tools:
   - id: ats.get_job
     entrypoint: scripts.tools:get_job
   - id: ats.get_candidates
     entrypoint: scripts.tools:get_candidates
     supports_batch: true
-input_schema: {}
-output_schema: {}
-batch_key: candidate_ids
-keywords:
-  - 候选人
-  - 简历
-  - rank
+capabilities:
+  - id: candidate.rank
+    domain: hr.recruitment
+    description: 根据岗位要求对候选人进行排序。
+    entrypoint: scripts.handler:run
+    execution_mode: plan_execute
+    permissions:
+      - hr.job.read
+      - hr.candidate.read
+    tools:
+      - ats.get_job
+      - ats.get_candidates
+    input_schema: {}
+    output_schema: {}
+    batch_key: candidate_ids
+    keywords:
+      - 候选人
+      - 简历
+      - rank
 ```
 
-运行时将 `skill.yaml` 编译为现有 `SkillDefinition` 与 `ToolDefinition`，从而保持规划、权限检查、审批、重试、幂等、审计和 Artifact 管线不变。
+运行时将每个 `skill.yaml` 的 `capabilities` 编译为现有 `SkillDefinition`，将顶层 `tools` 编译为 `ToolDefinition`，从而保持规划、权限检查、审批、重试、幂等、审计和 Artifact 管线不变。
 
 ## 上下文隔离与受控共享
 
