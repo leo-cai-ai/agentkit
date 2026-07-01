@@ -111,6 +111,16 @@ def test_hr_manifest_compiles_existing_candidate_rank_contract() -> None:
     assert skill.tools == ["ats.get_job", "ats.get_candidates"]
 
 
+def test_customer_service_manifest_has_no_business_capabilities() -> None:
+    """客服 Agent 仅使用会话运行时，不注册业务 capability。"""
+    catalog = load_catalog(REPO_ROOT)
+
+    agent = catalog.agents["customer_service"]
+
+    assert agent.skills == ()
+    assert agent.context["memory_scope"] == "agent_user"
+
+
 def _write_valid_catalog(tmp_path: Path, *, entrypoint: str = "scripts.handler:run") -> None:
     """写入一个包含两个工具和一个 capability 的最小有效目录。"""
     (tmp_path / "agents" / "hr-recruiter").mkdir(parents=True)
