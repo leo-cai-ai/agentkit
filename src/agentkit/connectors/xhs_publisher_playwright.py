@@ -303,7 +303,7 @@ class XhsPublishAdapter:
 
     def prepare_package(
         self,
-        page: Any,
+        page: Any | None,
         *,
         article: dict[str, Any],
         mode: str,
@@ -318,6 +318,8 @@ class XhsPublishAdapter:
         if not content["title"] or not content["body"]:
             raise ValueError("XHS publication requires a non-empty title and body")
         if content["media_strategy"] == "upload" and not content["media_paths"]:
+            if page is None:
+                raise RuntimeError("渲染小红书封面需要浏览器页面")
             content["media_paths"] = [self._render_cover(page, content)]
         content_hash = publication_content_hash(content)
         return {
@@ -333,6 +335,16 @@ class XhsPublishAdapter:
             "prepared_at": _now(),
             "requires_real_connector": False,
         }
+
+    def needs_browser_to_prepare(self, *, article: dict[str, Any]) -> bool:
+        """只有上传模式缺少本地媒体时才需要浏览器渲染封面。"""
+
+        content = resolve_publish_content(
+            article,
+            default_media_strategy=self.media_strategy,
+            default_card_style=self.text_image_style,
+        )
+        return content["media_strategy"] == "upload" and not content["media_paths"]
 
     def publish(
         self,
@@ -803,6 +815,13 @@ class PlaywrightXhsPublishingProvider:
         self.ledger = ledger
 
     def create_publish_package(self, *, article: dict[str, Any], mode: str) -> dict[str, Any]:
+        if not self.adapter.needs_browser_to_prepare(article=article):
+            return self.adapter.prepare_package(
+                None,
+                article=article,
+                mode=mode,
+                timeout_ms=0,
+            )
         return self.client.perform(
             site_key=self.adapter.site_key,
             operation=lambda page, timeout_ms: self.adapter.prepare_package(

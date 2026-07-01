@@ -15,6 +15,7 @@ from agentkit.connectors.xhs_publication import (
     publication_content_hash,
 )
 from agentkit.connectors.xhs_publisher_playwright import (
+    PlaywrightXhsPublishingProvider,
     XhsPublishAdapter,
     XhsPublishLedger,
     XhsPublishOutcomeUnknown,
@@ -92,6 +93,48 @@ def test_publish_ledger_blocks_unknown_outcome_retry(tmp_path) -> None:
 
     with pytest.raises(XhsPublishOutcomeUnknown, match="Reconcile"):
         ledger.begin(key="k", content_hash="h")
+
+
+class _NoBrowserClient:
+    def perform(self, **_kwargs):
+        raise AssertionError("发布包构造不应启动浏览器")
+
+
+def test_provider_prepares_text_images_without_opening_browser(tmp_path) -> None:
+    adapter = XhsPublishAdapter(
+        asset_root=tmp_path / "assets",
+        media_strategy="xhs_text_image",
+    )
+    provider = PlaywrightXhsPublishingProvider(
+        _NoBrowserClient(),
+        adapter,
+        XhsPublishLedger(tmp_path / "publish.sqlite"),
+    )
+
+    package = provider.create_publish_package(
+        article={"title": "标题", "body": "正文"},
+        mode="direct",
+    )
+
+    assert package["media_strategy"] == "xhs_text_image"
+
+
+def test_provider_prepares_existing_upload_without_opening_browser(tmp_path) -> None:
+    media = tmp_path / "cover.png"
+    media.write_bytes(b"png")
+    adapter = XhsPublishAdapter(asset_root=tmp_path / "assets")
+    provider = PlaywrightXhsPublishingProvider(
+        _NoBrowserClient(),
+        adapter,
+        XhsPublishLedger(tmp_path / "publish.sqlite"),
+    )
+
+    package = provider.create_publish_package(
+        article={"title": "标题", "body": "正文", "media_paths": [str(media)]},
+        mode="direct",
+    )
+
+    assert package["media_paths"] == [str(media)]
 
 
 class _Locator:
