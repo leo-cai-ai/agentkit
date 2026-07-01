@@ -46,6 +46,7 @@ class ToolManifest:
     package_id: str
     description: str
     entrypoint: str
+    factory_entrypoint: str | None
     supports_batch: bool
     idempotent: bool
     timeout_seconds: float | None
@@ -102,6 +103,7 @@ def register_catalog(
     agents: AgentRegistry,
     skills: SkillRegistry,
     tools: ToolRegistry,
+    tenant_config: dict[str, Any] | None = None,
 ) -> None:
     """将指定 Agent 的声明编译并写入既有运行时注册表。"""
     unknown_agents = sorted(enabled_agent_ids - set(catalog.agents))
@@ -118,8 +120,17 @@ def register_catalog(
         for tool_id in catalog.capabilities[capability_id].tools
     )
 
+    tool_factory_cache: dict[tuple[Path, str], dict[str, Callable[..., Any]]] = {}
+    config = dict(tenant_config or {})
     for tool_id in tool_ids:
-        tools.register(_compile_tool(catalog.root, catalog.tools[tool_id]))
+        tools.register(
+            _compile_tool(
+                catalog.root,
+                catalog.tools[tool_id],
+                tenant_config=config,
+                tool_factory_cache=tool_factory_cache,
+            )
+        )
     for capability_id in capability_ids:
         skills.register(_compile_capability(catalog.root, catalog.capabilities[capability_id]))
     for manifest in selected_agents:
@@ -230,11 +241,15 @@ def _build_tool_manifest(raw: Any, package_id: str, source_path: Path) -> ToolMa
         raise ValueError(f"{source_path}: timeout_seconds 必须是非负数字或 null")
     entrypoint = _required_string(value, "entrypoint", source_path)
     _validate_entrypoint_format(entrypoint, source_path)
+    factory_entrypoint = _optional_string(value, "factory_entrypoint", source_path)
+    if factory_entrypoint is not None:
+        _validate_entrypoint_format(factory_entrypoint, source_path)
     return ToolManifest(
         tool_id=_required_string(value, "id", source_path),
         package_id=package_id,
         description=_required_string(value, "description", source_path),
         entrypoint=entrypoint,
+        factory_entrypoint=factory_entrypoint,
         supports_batch=_optional_bool(value, "supports_batch", source_path, default=False),
         idempotent=_optional_bool(value, "idempotent", source_path, default=False),
         timeout_seconds=float(timeout) if timeout is not None else None,
@@ -320,9 +335,43 @@ def _validate_entrypoint_format(entrypoint: str, source_path: Path) -> None:
         raise ValueError(f"{source_path}: 入口必须是 scripts 目录内的模块:function")
 
 
-def _compile_tool(root: Path, manifest: ToolManifest) -> ToolDefinition:
+def _compile_tool(
+    root: Path,
+    manifest: ToolManifest,
+    *,
+    tenant_config: dict[str, Any],
+    tool_factory_cache: dict[tuple[Path, str], dict[str, Callable[..., Any]]],
+) -> ToolDefinition:
     """将一个工具声明编译为运行时工具定义。"""
-    handler = _load_entrypoint(root, manifest.source_path.parent, manifest.entrypoint)
+    if manifest.factory_entrypoint is None:
+        handler = _load_entrypoint(root, manifest.source_path.parent, manifest.entrypoint)
+    else:
+        cache_key = (manifest.source_path.parent, manifest.factory_entrypoint)
+        handlers = tool_factory_cache.get(cache_key)
+        if handlers is None:
+            factory = _load_entrypoint(
+                root,
+                manifest.source_path.parent,
+                manifest.factory_entrypoint,
+            )
+            built = factory(tenant_config)
+            if not isinstance(built, dict):
+                raise ValueError(
+                    f"{manifest.source_path}: 工具工厂必须返回工具 ID 到可调用对象的字典"
+                )
+            normalized_handlers: dict[str, Callable[..., Any]] = {}
+            for tool_id, candidate in built.items():
+                if not isinstance(tool_id, str) or not callable(candidate):
+                    raise ValueError(
+                        f"{manifest.source_path}: 工具工厂必须返回工具 ID 到可调用对象的字典"
+                    )
+                normalized_handlers[tool_id] = candidate
+            handlers = normalized_handlers
+            tool_factory_cache[cache_key] = handlers
+        factory_handler = handlers.get(manifest.tool_id)
+        if factory_handler is None:
+            raise ValueError(f"{manifest.source_path}: 工具工厂未返回 {manifest.tool_id}")
+        handler = factory_handler
     return ToolDefinition(
         name=manifest.tool_id,
         domain=_tool_domain(manifest.tool_id),
@@ -465,6 +514,15 @@ def _optional_bool(raw: dict[str, Any], key: str, source_path: Path, *, default:
     if not isinstance(value, bool):
         raise ValueError(f"{source_path}: {key} 必须是布尔值")
     return value
+
+
+def _optional_string(raw: dict[str, Any], key: str, source_path: Path) -> str | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{source_path}: {key} 必须是非空字符串或 null")
+    return value.strip()
 
 
 def _require_object(value: Any, source_path: Path, label: str) -> dict[str, Any]:

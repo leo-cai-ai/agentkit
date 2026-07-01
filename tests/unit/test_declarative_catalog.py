@@ -87,6 +87,24 @@ def test_register_catalog_derives_agent_tools_from_capabilities(tmp_path: Path) 
     assert callable(skills.get("candidate.rank").handler)
 
 
+def test_register_catalog_uses_one_declared_tool_factory_per_package(tmp_path: Path) -> None:
+    """同一包内的工具工厂只创建一次，并接收租户配置。"""
+    _write_valid_catalog(tmp_path, use_tool_factory=True)
+    catalog = load_catalog(tmp_path)
+    agents, skills, tools = AgentRegistry(), SkillRegistry(), ToolRegistry()
+
+    register_catalog(
+        catalog,
+        enabled_agent_ids={"hr_recruiter"},
+        agents=agents,
+        skills=skills,
+        tools=tools,
+        tenant_config={"marker": "tenant-config"},
+    )
+
+    assert tools.get("ats.get_job").handler({"job_id": "JOB-001"})["marker"] == "tenant-config"
+
+
 def test_hr_manifest_compiles_existing_candidate_rank_contract() -> None:
     """HR 声明迁移后必须保持原有 Skill 契约。"""
     catalog = load_catalog(REPO_ROOT)
@@ -121,7 +139,12 @@ def test_customer_service_manifest_has_no_business_capabilities() -> None:
     assert agent.context["memory_scope"] == "agent_user"
 
 
-def _write_valid_catalog(tmp_path: Path, *, entrypoint: str = "scripts.handler:run") -> None:
+def _write_valid_catalog(
+    tmp_path: Path,
+    *,
+    entrypoint: str = "scripts.handler:run",
+    use_tool_factory: bool = False,
+) -> None:
     """写入一个包含两个工具和一个 capability 的最小有效目录。"""
     (tmp_path / "agents" / "hr-recruiter").mkdir(parents=True)
     scripts = tmp_path / "skills" / "candidate-rank" / "scripts"
@@ -141,15 +164,20 @@ def _write_valid_catalog(tmp_path: Path, *, entrypoint: str = "scripts.handler:r
         "---\n\n# 招聘助手\n",
         encoding="utf-8",
     )
+    tool_factory = (
+        "    factory_entrypoint: scripts.tools:build_handlers\n" if use_tool_factory else ""
+    )
     (tmp_path / "skills" / "candidate-rank" / "skill.yaml").write_text(
         "package_id: candidate-rank\n"
         "tools:\n"
         "  - id: ats.get_job\n"
         "    description: 获取岗位\n"
         "    entrypoint: scripts.tools:get_job\n"
+        f"{tool_factory}"
         "  - id: ats.get_candidates\n"
         "    description: 获取候选人\n"
         "    entrypoint: scripts.tools:get_candidates\n"
+        f"{tool_factory}"
         "    supports_batch: true\n"
         "capabilities:\n"
         "  - id: candidate.rank\n"
@@ -168,8 +196,21 @@ def _write_valid_catalog(tmp_path: Path, *, entrypoint: str = "scripts.handler:r
     (scripts / "handler.py").write_text(
         "def run(ctx, args):\n    return {'result': args}\n", encoding="utf-8"
     )
+    factory_source = (
+        "\n\ndef build_handlers(tenant_config):\n"
+        "    marker = tenant_config['marker']\n"
+        "    return {\n"
+        "        'ats.get_job': lambda args: {'marker': marker, 'job_id': args['job_id']},\n"
+        "        'ats.get_candidates': lambda args: {\n"
+        "            'marker': marker, 'candidate_ids': args['candidate_ids']\n"
+        "        },\n"
+        "    }\n"
+        if use_tool_factory
+        else ""
+    )
     (scripts / "tools.py").write_text(
         "def get_job(args):\n    return {'job_id': args['job_id']}\n\n"
-        "def get_candidates(args):\n    return {'candidate_ids': args['candidate_ids']}\n",
+        "def get_candidates(args):\n    return {'candidate_ids': args['candidate_ids']}\n"
+        f"{factory_source}",
         encoding="utf-8",
     )
