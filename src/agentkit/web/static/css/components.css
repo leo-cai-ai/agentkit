@@ -119,6 +119,46 @@
   background: var(--ak-sys-color-status-danger-bg);
 }
 
+/* StatusBadge maps finite UI states to readable, non-wrapping labels. */
+.status-pill {
+  max-inline-size: 100%;
+  border-color: var(--ak-sys-color-border-strong);
+  color: var(--ak-sys-color-text-secondary);
+  background: var(--ak-sys-color-bg-surface-subtle);
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+
+.status-pill::before {
+  flex: 0 0 auto;
+  box-shadow: none;
+}
+
+.status-completed {
+  border-color: var(--ak-sys-color-status-success-border);
+  color: var(--ak-sys-color-status-success-fg);
+  background: var(--ak-sys-color-status-success-bg);
+}
+
+.status-running {
+  border-color: var(--ak-sys-color-status-info-border);
+  color: var(--ak-sys-color-status-info-fg);
+  background: var(--ak-sys-color-status-info-bg);
+}
+
+.status-waiting_for_approval {
+  border-color: var(--ak-sys-color-status-warning-border);
+  color: var(--ak-sys-color-status-warning-fg);
+  background: var(--ak-sys-color-status-warning-bg);
+}
+
+.status-failed {
+  border-color: var(--ak-sys-color-status-danger-border);
+  color: var(--ak-sys-color-status-danger-fg);
+  background: var(--ak-sys-color-status-danger-bg);
+}
+
 /* StatCard presents a precomputed fact; it never derives business state. */
 .ak-stat-grid {
   display: grid;

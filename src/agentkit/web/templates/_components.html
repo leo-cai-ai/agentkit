@@ -39,5 +39,16 @@
 {%- endmacro %}
 
 {% macro status_pill(status) -%}
-  <span class="status-pill status-{{ status | lower }}">{{ status }}</span>
+  {% set status_key = status | lower %}
+  {% set status_labels = {
+    'completed': 'Completed',
+    'running': 'Running',
+    'waiting_for_approval': 'Awaiting approval',
+    'rejected': 'Rejected',
+    'blocked': 'Blocked',
+    'failed': 'Failed'
+  } %}
+  <span class="status-pill status-{{ status_key }}" title="{{ status_key | replace('_', ' ') | title }}">
+    {{ status_labels.get(status_key, status_key | replace('_', ' ') | title) }}
+  </span>
 {%- endmacro %}

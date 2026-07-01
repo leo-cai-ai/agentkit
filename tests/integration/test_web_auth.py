@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from types import SimpleNamespace
 
 import pytest
 
@@ -294,6 +295,65 @@ def test_login_error_uses_accessible_field_state(client):
     assert 'id="login-error" role="alert"' in html
     assert 'aria-invalid="true"' in html
     assert 'aria-errormessage="login-error"' in html
+
+
+def test_operations_uses_stable_columns_and_collapsible_json(client, monkeypatch, tmp_path):
+    import agentkit.web.app as web_app
+    from agentkit.core.audit import SQLiteAuditLog
+
+    db_path = tmp_path / "operations.sqlite"
+    audit = SQLiteAuditLog(db_path)
+    run_id = audit.start_run(
+        tenant_id="tenant-test",
+        user_id="console-administrator-with-a-long-id",
+        text="Rank candidates and explain the recommendation with supporting evidence.",
+    )
+    audit.record(run_id, "run_paused", {"status": "waiting_for_approval"})
+    audit.record(
+        run_id,
+        "context_prepared_with_a_long_event_name",
+        {
+            "nested": {"items": [1, True, None], "label": "测试"},
+            "unsafe": "</pre><script>alert(1)</script>",
+        },
+    )
+    runtime = SimpleNamespace(
+        db_path=db_path,
+        gateway=SimpleNamespace(audit=audit),
+        tenant_config={"tenant_id": "tenant-test"},
+    )
+    monkeypatch.setattr(web_app, "get_runtime", lambda: runtime)
+
+    _login(client)
+    response = client.get(f"/operations?run_id={run_id}")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+
+    assert "Awaiting approval" in html
+    assert 'class="data-table ak-data-table ak-operations-runs-table"' in html
+    assert html.count('<th scope="col">') == 4
+    assert 'class="ak-run-request-link"' in html
+    assert html.count(f"/operations?run_id={run_id}#run-detail") == 1
+    assert 'aria-current="location"' in html
+    assert re.search(
+        r'<time datetime="\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}">',
+        html,
+    )
+    assert 'class="ak-operations-back-link" href="#recent-requests-title"' in html
+    assert 'class="ak-event-timeline"' in html
+    assert 'class="ak-json-details"' in html
+    assert 'class="ak-json-viewer" tabindex="0"' in html
+    assert '"nested": {' in html
+    assert "<script>alert(1)</script>" not in html
+    assert "\\u003cscript\\u003ealert" in html
+
+    pages_css = client.get("/static/css/pages.css").get_data(as_text=True)
+    assert ".ak-run-status-cell" in pages_css
+    assert ".ak-run-time-cell" in pages_css
+    assert "white-space: nowrap" in pages_css
+    assert ".ak-json-viewer" in pages_css
+    assert "@media (max-width: 87.5rem)" in pages_css
+    assert '"status status"' in pages_css
 
 
 def test_post_without_csrf_rejected(client):
