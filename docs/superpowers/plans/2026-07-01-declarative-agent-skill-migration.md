@@ -351,12 +351,12 @@ tools:
     description: 从 ATS 获取职位需求。
     entrypoint: scripts.tools:get_job
     supports_batch: false
-    idempotent: true
+    idempotent: false
   - id: ats.get_candidates
     description: 从 ATS 获取候选人资料。
     entrypoint: scripts.tools:get_candidates
     supports_batch: true
-    idempotent: true
+    idempotent: false
 capabilities:
   - id: candidate.rank
     entrypoint: scripts.handler:run
@@ -436,7 +436,7 @@ def test_social_growth_manifest_exposes_all_existing_capabilities(repo_root: Pat
 
 - [ ] **Step 3：创建社媒 Agent 声明并保留单 Agent 边界**
 
-`agents/social-growth/agent.md` 使用 `id: xhs_growth`、`domain: marketing.social_growth`、`prompt_file: prompts/agents/social_growth.md`。`skills` 列表必须按字典序声明九个既有 capability。上下文策略只能读取 `brand-guidelines`、`growth-campaigns`，可读写 Artifact 类型限定为 `xhs-research`、`xhs-analysis`、`xhs-strategy`、`xhs-draft`、`xhs-review`、`xhs-publish-package`、`xhs-metrics`。
+`agents/social-growth/agent.md` 使用 `id: xhs_growth`、`domain: marketing.social_growth`、`prompt_file: prompts/agents/social_growth.md`。`skills` 列表必须按字典序声明九个既有 capability。上下文策略只能读取 `brand-guidelines`、`growth-campaigns`，可读写 Artifact 类型限定为 `xhs.trend.research`、`xhs.case.extract`、`xhs.case.compare`、`xhs.strategy.plan`、`xhs.copy.generate`、`xhs.copy.review`、`xhs.publish.prepare`、`xhs.metrics.track`。
 
 - [ ] **Step 4：将社媒工具、provider 与全部 handler 迁入 Skill 包**
 
@@ -563,7 +563,92 @@ git add agents/customer-service src/agentkit/domain_packs/customer_service src/a
 git commit -m "feat: isolate declarative agent conversations"
 ```
 
-### Task 6：以声明式目录替换运行时业务包加载
+### Task 6：强制执行 Agent 的 Artifact 写入边界
+
+**文件：**
+
+- 修改：`src/agentkit/core/artifacts.py`
+- 修改：`src/agentkit/core/executor.py`
+- 修改：`src/agentkit/core/gateway.py`
+- 修改：`tests/unit/test_workflow_artifacts.py`
+- 修改：`tests/unit/test_persistent_artifacts.py`
+
+- [ ] **Step 1：先写未授权 Artifact 类型被拒绝的失败测试**
+
+```python
+def test_policy_artifact_store_rejects_kind_outside_agent_allowlist() -> None:
+    store = PolicyArtifactStore(
+        delegate=InMemoryArtifactStore(),
+        agent_id="hr_recruiter",
+        writable_kinds={"candidate-ranking-report"},
+    )
+
+    with pytest.raises(ArtifactPolicyViolation, match="hr_recruiter"):
+        store.put(kind="xhs.copy.generate", payload={"title": "测试"})
+
+
+def test_policy_artifact_store_stamps_owner_agent() -> None:
+    store = PolicyArtifactStore(
+        delegate=InMemoryArtifactStore(),
+        agent_id="xhs_growth",
+        writable_kinds={"xhs.copy.generate"},
+    )
+
+    record = store.put(kind="xhs.copy.generate", payload={"title": "测试"})
+
+    assert record.metadata["agent_id"] == "xhs_growth"
+```
+
+- [ ] **Step 2：运行测试并确认失败**
+
+运行：`pytest tests/unit/test_workflow_artifacts.py -k policy_artifact_store -v`
+
+预期：失败，因为 `PolicyArtifactStore` 和 `ArtifactPolicyViolation` 尚不存在。
+
+- [ ] **Step 3：实现 Artifact 策略包装器**
+
+在 `artifacts.py` 中增加 `ArtifactPolicyViolation(PermissionError)` 和实现 `ArtifactStore` 协议的 `PolicyArtifactStore`。包装器仅允许 `writable_kinds` 中的 `kind`，将 `agent_id` 合并到 metadata，并委托 `get()`、`list()` 给底层存储。拒绝时不得写入底层存储。
+
+```python
+class PolicyArtifactStore:
+    def __init__(self, *, delegate: ArtifactStore, agent_id: str, writable_kinds: set[str]) -> None:
+        self._delegate = delegate
+        self._agent_id = agent_id
+        self._writable_kinds = writable_kinds
+
+    def put(self, *, kind: str, payload: Any, summary: str = "", metadata: dict[str, Any] | None = None) -> ArtifactRecord:
+        if kind not in self._writable_kinds:
+            raise ArtifactPolicyViolation(f"Agent {self._agent_id} 无权写入 Artifact 类型 {kind}")
+        value = {**dict(metadata or {}), "agent_id": self._agent_id}
+        return self._delegate.put(kind=kind, payload=payload, summary=summary, metadata=value)
+
+    def get(self, artifact_id: str) -> ArtifactRecord:
+        return self._delegate.get(artifact_id)
+
+    def list(self) -> list[ArtifactRecord]:
+        return self._delegate.list()
+```
+
+- [ ] **Step 4：在执行器中根据已选 Agent 包装 Artifact 存储**
+
+向 `PlanExecutor.__init__()` 注入 `AgentRegistry`，并由 `AgentGateway` 传入现有 `agents`。在创建 Artifact 存储后从 `request.context["agent"]` 获取 Agent；若该 Agent 已注册，则读取 `profile.context_policy["writable_artifact_kinds"]`，用 `PolicyArtifactStore` 包装存储。若 Agent 未指定或不是业务 Agent，保留现有 run-scoped 存储并记录 `artifact_policy_unscoped` 审计事件。捕获 `ArtifactPolicyViolation` 时记录 `artifact_policy_denied`，将当前步骤返回为 `artifact_policy_denied`，不得继续执行后续步骤。
+
+本期 Artifact 存储本来就以 `tenant_id + run_id` 严格隔离，且不提供跨 run 获取接口；因此本任务只强制写入策略。跨 Agent Artifact 读取仍是显式 handoff 的后续能力，不能通过直接读取对方会话或存储实现。
+
+- [ ] **Step 5：运行 Artifact 单测并确认通过**
+
+运行：`pytest tests/unit/test_workflow_artifacts.py tests/unit/test_persistent_artifacts.py -v`
+
+预期：通过；允许的类型被写入且带有 owner Agent，未授权类型无持久化记录且产生拒绝结果。
+
+- [ ] **Step 6：提交 Artifact 策略边界**
+
+```bash
+git add src/agentkit/core/artifacts.py src/agentkit/core/executor.py src/agentkit/core/gateway.py tests/unit/test_workflow_artifacts.py tests/unit/test_persistent_artifacts.py
+git commit -m "feat: enforce agent artifact write policies"
+```
+
+### Task 7：以声明式目录替换运行时业务包加载
 
 **文件：**
 
@@ -640,7 +725,7 @@ git add src/agentkit/runtime/bootstrap.py tenants/company_alpha.json tests/integ
 git commit -m "feat: load enabled agents from manifests"
 ```
 
-### Task 7：替换 CLI 检查与脚手架，删除业务 Pack 依赖
+### Task 8：替换 CLI 检查与脚手架，删除业务 Pack 依赖
 
 **文件：**
 
@@ -702,7 +787,7 @@ git add src/agentkit/cli.py src/agentkit/runtime/scaffold.py src/agentkit/runtim
 git commit -m "feat: replace pack tooling with agent manifests"
 ```
 
-### Task 8：更新架构文档、中文注释并完成全量验证
+### Task 9：更新架构文档、中文注释并完成全量验证
 
 **文件：**
 
