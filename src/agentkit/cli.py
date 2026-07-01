@@ -104,10 +104,7 @@ def _browser_login(
 
 
 def _check_postgres(settings: Any) -> bool:
-    """Verify PG connectivity and ensure configured Postgres schemas exist."""
-    from agentkit.core.audit import PostgresAuditLog
-    from agentkit.core.memory.pg_store import PgConversationStore
-    from agentkit.core.memory.pg_vector_store import PgVectorStore
+    """Verify PostgreSQL connectivity and required extensions."""
     from agentkit.core.pg import connection, require_psycopg
 
     target = (
@@ -141,6 +138,15 @@ def _check_postgres(settings: Any) -> bool:
     except Exception as exc:  # noqa: BLE001 - report any driver/connection error
         print(f"[FAIL] postgres connectivity error: {exc}", file=sys.stderr)
         return False
+    return True
+
+
+def _ensure_postgres_schemas(settings: Any) -> bool:
+    """Ensure PostgreSQL storage schemas needed by the configured backends."""
+    from agentkit.core.audit import PostgresAuditLog
+    from agentkit.core.memory.pg_store import PgConversationStore
+    from agentkit.core.memory.pg_vector_store import PgVectorStore
+
     try:
         storage_backend = str(getattr(settings, "storage_backend", "sqlite")).lower()
         vector_backend = str(getattr(settings, "vector_store_backend", "sqlite")).lower()
@@ -165,7 +171,8 @@ def _init_db() -> int:
     configure_logging()
 
     from agentkit.config import get_settings
-    from agentkit.runtime.bootstrap import DATA_DIR
+    from agentkit.core.migrations import run_storage_migrations
+    from agentkit.runtime.bootstrap import DATA_DIR, resolve_tenant_id
 
     settings = get_settings()
     ok = True
@@ -184,9 +191,27 @@ def _init_db() -> int:
     vector_backend = settings.vector_store_backend
     print(f"[..] storage_backend = {storage_backend}")
     print(f"[..] vector_store_backend = {vector_backend}")
-    if storage_backend == "postgres" or vector_backend == "postgres":
-        ok = _check_postgres(settings) and ok
-    else:
+    uses_postgres = storage_backend == "postgres" or vector_backend == "postgres"
+    postgres_ready = True
+    if uses_postgres:
+        postgres_ready = _check_postgres(settings)
+        ok = postgres_ready and ok
+
+    migrations_ready = False
+    if postgres_ready:
+        tenant_id = resolve_tenant_id()
+        sqlite_path = DATA_DIR / f"{tenant_id}.sqlite"
+        try:
+            applied = run_storage_migrations(settings, sqlite_path=sqlite_path)
+            print(f"[ok] runtime migrations ready: {applied or 'up-to-date'}")
+            migrations_ready = True
+        except Exception as exc:  # noqa: BLE001 - report migration failures to CLI users
+            ok = False
+            print(f"[FAIL] could not apply runtime migrations: {exc}", file=sys.stderr)
+
+    if uses_postgres and postgres_ready and migrations_ready:
+        ok = _ensure_postgres_schemas(settings) and ok
+    elif not uses_postgres:
         print("[ok] sqlite runtime storage + vector store (no external database required)")
 
     if ok:

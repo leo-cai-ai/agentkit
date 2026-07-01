@@ -252,7 +252,7 @@ flowchart TB
 
 ## 9. 工具 / 连接器执行加固（`core/tool_executor.py`、`core/net.py`）
 
-- `ToolExecutor`：每次工具调用进入共享有界 `ThreadPoolExecutor`（`AGENTKIT_TOOL_MAX_WORKERS`），提供超时、重试（仅对幂等工具或带 `_idempotency_key`）、幂等缓存、审计与追踪、`contextvars` 传播。
+- `ToolExecutor`：每次工具调用进入共享有界 `ThreadPoolExecutor`（`AGENTKIT_TOOL_MAX_WORKERS`），提供超时、重试（仅对幂等工具或带 `_idempotency_key`）、审计与追踪、`contextvars` 传播。带 key 的 durable ledger 是 `tool_idempotency_records`，scope 为 `(tenant, tool, key)`；同 key 的不同业务 payload 被拒绝，keyed 超时或持久化歧义记录 `idempotency_outcome_unknown`，需要对账，不能视为 exactly-once。
 - `ToolDefinition.idempotent` / `timeout_seconds` 控制重试与超时语义。
 - **SSRF 防护**（`core/net.py`）：`EgressPolicy` + `validate_url` + `safe_request`——默认仅允许 https 到**公网 IP**，禁私网/环回；`AGENTKIT_EGRESS_ALLOWED_DOMAINS` 白名单进一步收紧，`egress_max_response_bytes` 限制响应大小。
 - 连接器示例：`connectors/mock_ats.py`、`connectors/mock_xhs.py`。
@@ -320,9 +320,8 @@ flowchart TB
 上下文。`agentkit.core.workflow.WorkflowRunner` 提供顺序 workflow 的轻量执行框架：
 
 - 每个 step 重新构造 `SkillContext`，只暴露该 step 允许的 tools。
-- 每个 step 可写入 run-scoped artifact，返回给下游的是 `summary + artifact_id`。
-- artifact 写入会产生 `artifact_written` 审计事件，便于追溯。
-- 当前默认实现是 `InMemoryArtifactStore`，生产可替换为 SQLite/Postgres/object store。
+- 每个 step 可写入 run-scoped JSON artifact，返回给下游的是 `summary + artifact_id`；runtime 将它持久化到 `workflow_artifacts`。
+- artifact 写入会产生 `artifact_written` / `artifact_persisted` 审计事件，便于追溯；payload 上限由 `AGENTKIT_ARTIFACT_MAX_PAYLOAD_BYTES` 控制（默认 `1048576` bytes）。
 
 `social_growth` 是参考实现：`xhs.growth.campaign` 编排
 `xhs.trend.research -> xhs.case.extract -> xhs.case.compare -> xhs.strategy.plan
@@ -366,11 +365,12 @@ flowchart TB
 | 会话历史/消息 | SQLite（per-tenant） | PostgreSQL `conversations` / `messages` / `conversation_summaries` |
 | 长期语义记忆 | SQLite `memories` 表 | PostgreSQL + pgvector `memories` |
 | 企业知识库 RAG | Chroma `data/chroma` + `agentkit.core.rag` | OpenSearch / Milvus / pgvector / custom reranker |
-| Workflow artifacts | run-scoped `InMemoryArtifactStore` + 审计引用 | SQLite / PostgreSQL / object store |
+| Workflow artifacts | SQLite / PostgreSQL `workflow_artifacts`（JSON、run-scoped） | object store（需自定义） |
+| Tool idempotency | SQLite / PostgreSQL `tool_idempotency_records`（`tenant/tool/key`） | 集中式 ledger（需自定义） |
 | 审批检查点 | 内存 / SQLite | PostgreSQL LangGraph checkpointer |
 | 限流令牌桶 | 进程内 / SQLite | （接缝可接 Redis） |
 
-所有表均运行时幂等创建，无独立迁移工具。
+`agentkit init-db` 和 `bootstrap.build_runtime` 都会应用 runtime schema migrations；迁移包含上述 durable tables。
 
 ---
 

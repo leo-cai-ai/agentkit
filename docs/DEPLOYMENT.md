@@ -144,7 +144,7 @@ GRANT ALL PRIVILEGES ON DATABASE agentkitdb TO agentkit;
 CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
-3) 审计、会话、checkpoint 与 `memories` 表由 `agentkit init-db` 或首次使用时自动创建，通常无需手动建。若要按最小权限预建，先运行：
+3) 审计、会话、checkpoint、`memories`，以及 durable execution 的 `workflow_artifacts` / `tool_idempotency_records` 表由 `agentkit init-db` 或 runtime 启动时的 schema migrations 创建，通常无需手动建。若要按最小权限预建，先运行：
 
 ```bash
 AGENTKIT_STORAGE_BACKEND=postgres \
@@ -177,8 +177,9 @@ CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories (tenant_id, agent, use
 agentkit init-db
 ```
 
-- 校验 `data/` 可写；
-- 后端为 `postgres` 时：连库、确保 `vector` 扩展、审计表、会话表与 `memories` 表就绪；
+- 校验 `data/` 可写，并为当前 tenant 应用 runtime schema migrations；
+- 后端为 `postgres` 时：先连库、确保 `vector` 扩展，再应用迁移并确保审计表、会话表与 `memories` 表就绪；
+- `workflow_artifacts` 只接受 JSON，`AGENTKIT_ARTIFACT_MAX_PAYLOAD_BYTES` 默认限制为 `1048576` bytes。`tool_idempotency_records` 按 `(tenant, tool, key)` 隔离；同 key 的不同 payload 被拒绝，keyed 超时或持久化歧义会记录 `outcome_unknown`，必须对账，不保证 exactly-once；
 - 成功退出码 `0`，失败 `1`（适合放进部署/CI 的就绪门禁）。
 
 容器内执行：`docker compose run --rm web agentkit init-db`。
@@ -326,4 +327,4 @@ agentkit init-db                   # 校验存储（表为幂等自动迁移/创
 docker compose up -d --build
 ```
 
-数据存储（SQLite / PostgreSQL / pgvector 表）均为运行时幂等创建，无独立迁移工具；升级一般无需手动改表。
+数据存储（SQLite / PostgreSQL / pgvector 表）由 `init-db` 和 runtime 启动时的版本化 schema migrations 幂等应用；升级后运行 `agentkit init-db`。

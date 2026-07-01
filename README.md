@@ -159,7 +159,7 @@ New-NetFirewallRule -DisplayName "Ollama WSL proxy 11435" -Direction Inbound -Ac
 docker compose run --rm web python -c "import urllib.request; print(urllib.request.urlopen('http://host.docker.internal:11435/v1/models', timeout=5).read().decode()[:500])"
 ```
 
-**连通性自检**：`agentkit init-db` 校验 `data/` 可写；当 runtime storage 或 vector 后端为 `postgres` 时还会连库、确保 `vector` 扩展、审计表、会话表与 `memories` 表就绪，成功退出码 0、失败 1（适合放进部署/CI 的就绪检查）：
+**连通性自检**：`agentkit init-db` 校验 `data/` 可写，并为选定租户应用 runtime schema migrations（`workflow_artifacts`、`tool_idempotency_records` 等）；runtime 启动也会应用这些迁移。当 runtime storage 或 vector 后端为 `postgres` 时还会连库、确保 `vector` 扩展、审计表、会话表与 `memories` 表就绪，成功退出码 0、失败 1（适合放进部署/CI 的就绪检查）：
 
 ```bash
 agentkit init-db
@@ -375,7 +375,7 @@ AGENTKIT_PG_SSLMODE=require
 
 - **超时**：每次工具调用在共享有界工作线程池中执行并受超时约束（`AGENTKIT_TOOL_TIMEOUT_SECONDS`，默认 30；`ToolDefinition.timeout_seconds` 可按工具覆盖；`AGENTKIT_TOOL_MAX_WORKERS` 默认 32 控制进程内工具并发上限）。超时抛 `ToolTimeoutError` 解除阻塞；同步 handler 无法被 Python 强杀，但线程数量不会无限增长，未开始的排队任务会尝试取消。
 - **重试**：瞬时失败按指数退避重试（`AGENTKIT_TOOL_MAX_RETRIES`，默认 0），但**仅对可安全重放的调用**生效——工具标记 `idempotent=True`，或 args 带 `_idempotency_key`；非幂等副作用绝不自动重试。
-- **幂等缓存**：携带 `_idempotency_key` 时，结果在该 run 生命周期内缓存（同 key 不重复执行，且不跨 run 复用）。
+- **持久幂等**：携带 `_idempotency_key` 时，durable ledger 按 `(tenant, tool, key)` 记录结果；同 key 配不同业务 payload 会被拒绝。keyed 调用超时或结果持久化存在歧义时会产生 `idempotency_outcome_unknown`，必须人工/外部系统对账后再继续；这不是 exactly-once 保证。
 - **审计 + 追踪**：记录 `tool_call_started` / `tool_call_finished` / `tool_call_failed`（含 `duration_ms`、`attempts`、`cached`），并建立 `tool.call` span。
 - **上下文透传**：run_id、usage sink、预算守卫、流式 sink 通过 `copy_context()` 透传进工作线程，工具内部再调 LLM 也保持关联与受控。
 
@@ -884,7 +884,9 @@ retry browser submission; an uncertain post-click outcome requires manual
 reconciliation in Creator Center.
 
 The workflow uses `WorkflowRunner` plus run-scoped artifacts: each step executes
-with only its allowed tools and writes a compact summary plus `artifact_id`.
+with only its allowed tools and writes a compact summary plus `artifact_id` to
+the durable `workflow_artifacts` table. Artifact payloads must be JSON and are
+limited by `AGENTKIT_ARTIFACT_MAX_PAYLOAD_BYTES` (default `1048576` bytes).
 Downstream steps consume summaries and selected artifacts instead of carrying
 every raw note/video/result through the LLM context.
 
