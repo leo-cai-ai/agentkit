@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     # deployments should set this to "postgres" so all durable runtime state
     # lives in the configured PostgreSQL database.
     storage_backend: Literal["sqlite", "postgres"] = "sqlite"
+    artifact_max_payload_bytes: int = Field(default=1_048_576, gt=0)
 
     # LLM resilience: ordered fallback providers tried when the primary fails,
     # each guarded by a per-provider circuit breaker. Comma-separated provider

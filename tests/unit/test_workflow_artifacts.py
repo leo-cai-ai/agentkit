@@ -19,6 +19,8 @@ def test_artifact_store_returns_refs_and_keeps_payloads_out_of_refs():
         "summary": "Compared cases.",
         "metadata": {"step": "compare"},
         "created_at": record.created_at,
+        "payload_sha256": record.payload_sha256,
+        "payload_bytes": record.payload_bytes,
     }
 
 

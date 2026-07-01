@@ -46,6 +46,7 @@ def _fresh_settings(monkeypatch, **env):
         "AGENTKIT_WEB_SEARCH_EXECUTABLE_PATH",
         "AGENTKIT_MEMORY_WINDOW_TURNS",
         "AGENTKIT_MEMORY_MAX_CONTEXT_TOKENS",
+        "AGENTKIT_ARTIFACT_MAX_PAYLOAD_BYTES",
     ]:
         monkeypatch.delenv(var, raising=False)
     for key, value in env.items():
@@ -73,6 +74,7 @@ def test_defaults(monkeypatch):
     assert s.web_search_headless is True
     assert s.web_search_profile_root == "data/browser-profiles"
     assert s.web_search_storage_state_root is None
+    assert s.artifact_max_payload_bytes == 1_048_576
 
 
 def test_rate_limit_env_overrides(monkeypatch):
@@ -211,6 +213,11 @@ def test_memory_env_overrides(monkeypatch):
     )
     assert s.memory_window_turns == 3
     assert s.memory_max_context_tokens == 1200
+
+
+def test_artifact_payload_limit_env_override(monkeypatch):
+    s = _fresh_settings(monkeypatch, AGENTKIT_ARTIFACT_MAX_PAYLOAD_BYTES="2048")
+    assert s.artifact_max_payload_bytes == 2048
 
 
 def test_embedding_defaults(monkeypatch):
