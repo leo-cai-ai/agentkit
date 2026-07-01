@@ -1,4 +1,4 @@
-"""Canonical deterministic scoring for the candidate-rank skill."""
+"""候选人排序的确定性评分规则。"""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from typing import Any
 
 
 def score_candidate(*, required_skills: list[str], candidate: dict[str, Any]) -> dict[str, Any]:
+    """按职位必备技能和经验计算候选人的可解释分数。"""
     required = set(required_skills)
     skills = set(candidate.get("skills", []))
     matched = sorted(required & skills)

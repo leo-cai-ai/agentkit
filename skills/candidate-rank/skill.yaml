@@ -1,0 +1,65 @@
+package_id: candidate-rank
+tools:
+  - id: ats.get_job
+    description: 从 ATS 获取职位需求。
+    entrypoint: scripts.tools:get_job
+    supports_batch: false
+    idempotent: false
+  - id: ats.get_candidates
+    description: 从 ATS 获取候选人资料。
+    entrypoint: scripts.tools:get_candidates
+    supports_batch: true
+    idempotent: false
+capabilities:
+  - id: candidate.rank
+    domain: hr.recruitment
+    description: 根据岗位要求对候选人进行排序。
+    entrypoint: scripts.handler:run
+    execution_mode: plan_execute
+    permissions:
+      - hr.job.read
+      - hr.candidate.read
+    tools:
+      - ats.get_job
+      - ats.get_candidates
+    input_schema:
+      type: object
+      required:
+        - job_id
+        - candidate_ids
+      x-agentkit-infer-from-message: true
+      properties:
+        job_id:
+          type: string
+          minLength: 1
+          description: ATS 职位需求编号。
+          x-agentkit-label: 职位编号
+        candidate_ids:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            minLength: 1
+          description: 需要排序的候选人编号。
+          x-agentkit-label: 候选人编号
+        top_n:
+          type: integer
+          minimum: 1
+          default: 5
+          description: 返回的候选人数量上限。
+          x-agentkit-label: 返回人数
+    output_schema:
+      type: object
+      properties:
+        ranked_candidates:
+          type: array
+        evaluated_count:
+          type: integer
+    batch_key: candidate_ids
+    keywords:
+      - 筛选
+      - 候选人
+      - 简历
+      - candidate
+      - rank
+      - resume

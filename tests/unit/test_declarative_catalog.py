@@ -9,6 +9,8 @@ import pytest
 from agentkit.core.registry import AgentRegistry, SkillRegistry, ToolRegistry
 from agentkit.runtime.declarative_catalog import load_catalog, register_catalog
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 def test_load_catalog_parses_agent_context_and_capabilities(tmp_path: Path) -> None:
     """加载器会解析 Agent 上下文策略和 Skill capability。"""
@@ -83,6 +85,30 @@ def test_register_catalog_derives_agent_tools_from_capabilities(tmp_path: Path) 
     assert agents.get("hr_recruiter").allowed_skills == ["candidate.rank"]
     assert agents.get("hr_recruiter").allowed_tools == ["ats.get_job", "ats.get_candidates"]
     assert callable(skills.get("candidate.rank").handler)
+
+
+def test_hr_manifest_compiles_existing_candidate_rank_contract() -> None:
+    """HR 声明迁移后必须保持原有 Skill 契约。"""
+    catalog = load_catalog(REPO_ROOT)
+    agents, skills, tools = AgentRegistry(), SkillRegistry(), ToolRegistry()
+
+    register_catalog(
+        catalog,
+        enabled_agent_ids={"hr_recruiter"},
+        agents=agents,
+        skills=skills,
+        tools=tools,
+    )
+
+    profile = agents.get("hr_recruiter")
+    skill = skills.get("candidate.rank")
+    assert profile.domain == "hr.recruitment"
+    assert profile.allowed_skills == ["candidate.rank"]
+    assert profile.allowed_tools == ["ats.get_job", "ats.get_candidates"]
+    assert skill.permissions == ["hr.job.read", "hr.candidate.read"]
+    assert skill.execution_mode == "plan_execute"
+    assert skill.batch_key == "candidate_ids"
+    assert skill.tools == ["ats.get_job", "ats.get_candidates"]
 
 
 def _write_valid_catalog(tmp_path: Path, *, entrypoint: str = "scripts.handler:run") -> None:
