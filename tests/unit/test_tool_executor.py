@@ -13,6 +13,7 @@ from agentkit.core.contracts import ToolDefinition
 from agentkit.core.idempotency import (
     IdempotencyClaim,
     IdempotencyError,
+    IdempotencyFailedError,
     IdempotencyOutcomeUnknownError,
     build_idempotency_store,
     key_digest,
@@ -21,6 +22,7 @@ from agentkit.core.log_context import bind_run_id, current_run_id
 from agentkit.core.tool_executor import (
     ToolExecutionError,
     ToolExecutor,
+    ToolSafeFailureError,
     ToolTimeoutError,
 )
 
@@ -171,6 +173,124 @@ def test_durable_timeout_marks_outcome_unknown_for_fresh_executor(tmp_path) -> N
     assert calls["n"] == 1
 
 
+def test_durable_unconfirmed_failure_marks_unknown_and_blocks_replay(tmp_path) -> None:
+    audit = InMemoryAuditLog()
+    calls = {"n": 0}
+    raw_key = "payment-idempotency-secret"
+
+    def charge(_: dict) -> dict:
+        calls["n"] += 1
+        raise RuntimeError("remote accepted, response lost")
+
+    store = build_idempotency_store(
+        backend="sqlite",
+        tenant_id="t",
+        sqlite_path=tmp_path / "runtime.sqlite",
+    )
+    tool = _tool(charge, name="payments.charge")
+
+    with pytest.raises(ToolExecutionError, match="remote accepted, response lost"):
+        ToolExecutor(tenant_id="t", audit=audit, run_id="first", idempotency_store=store).call(
+            tool, {"_idempotency_key": raw_key}
+        )
+    with pytest.raises(IdempotencyOutcomeUnknownError):
+        ToolExecutor(tenant_id="t", audit=audit, run_id="second", idempotency_store=store).call(
+            tool, {"_idempotency_key": raw_key}
+        )
+
+    assert calls == {"n": 1}
+    unknown_events = [
+        event
+        for event in audit.events_for("first")
+        if event["type"] == "idempotency_outcome_unknown"
+    ]
+    assert [event["payload"] for event in unknown_events] == [
+        {
+            "tool": "payments.charge",
+            "key_digest": key_digest(raw_key),
+            "category": "unconfirmed_failure",
+        }
+    ]
+
+
+def test_durable_tool_execution_error_is_preserved_and_marks_unknown(tmp_path) -> None:
+    original_error = ToolExecutionError("response state is unknown")
+    calls = {"n": 0}
+
+    def charge(_: dict) -> dict:
+        calls["n"] += 1
+        raise original_error
+
+    store = build_idempotency_store(
+        backend="sqlite",
+        tenant_id="t",
+        sqlite_path=tmp_path / "runtime.sqlite",
+    )
+    tool = _tool(charge, name="payments.charge")
+
+    with pytest.raises(ToolExecutionError) as failure:
+        ToolExecutor(tenant_id="t", idempotency_store=store).call(
+            tool, {"_idempotency_key": "payment-key"}
+        )
+    assert failure.value is original_error
+
+    with pytest.raises(IdempotencyOutcomeUnknownError):
+        ToolExecutor(tenant_id="t", idempotency_store=store).call(
+            tool, {"_idempotency_key": "payment-key"}
+        )
+    assert calls == {"n": 1}
+
+
+def test_durable_safe_failure_replays_known_failure(tmp_path) -> None:
+    calls = {"n": 0}
+
+    def charge(_: dict) -> dict:
+        calls["n"] += 1
+        raise ToolSafeFailureError("payment was rejected before submit")
+
+    store = build_idempotency_store(
+        backend="sqlite",
+        tenant_id="t",
+        sqlite_path=tmp_path / "runtime.sqlite",
+    )
+    tool = _tool(charge, name="payments.charge")
+
+    with pytest.raises(ToolSafeFailureError):
+        ToolExecutor(tenant_id="t", idempotency_store=store).call(
+            tool, {"_idempotency_key": "payment-key"}
+        )
+    with pytest.raises(IdempotencyFailedError):
+        ToolExecutor(tenant_id="t", idempotency_store=store).call(
+            tool, {"_idempotency_key": "payment-key"}
+        )
+    assert calls == {"n": 1}
+
+
+@pytest.mark.parametrize("key_name", ["_idempotency_key", "idempotency_key"])
+def test_failure_redacts_idempotency_key_from_logs_audit_and_error(
+    key_name: str, caplog, tmp_path
+) -> None:
+    audit = InMemoryAuditLog()
+    raw_key = "raw-idempotency-secret"
+
+    def reject(args: dict) -> dict:
+        raise RuntimeError(f"connector rejected key={args[key_name]}")
+
+    store = build_idempotency_store(
+        backend="sqlite",
+        tenant_id="t",
+        sqlite_path=tmp_path / "runtime.sqlite",
+    )
+    executor = ToolExecutor(tenant_id="t", audit=audit, run_id="r1", idempotency_store=store)
+    with caplog.at_level(logging.WARNING, logger="agentkit.tools"):
+        with pytest.raises(ToolExecutionError) as failure:
+            executor.call(_tool(reject), {key_name: raw_key})
+
+    assert raw_key not in caplog.text
+    assert raw_key not in str(failure.value)
+    assert raw_key not in str(audit.events_for("r1"))
+
+
 def test_durable_key_does_not_retry_non_idempotent_timeout(tmp_path) -> None:
     starts = {"n": 0}
 
@@ -222,7 +342,7 @@ def test_durable_store_rejects_cross_tenant_before_cache_or_handler(tmp_path) ->
     ("failing_finish", "call_kind", "expected_error"),
     [
         ("unknown", "timeout", ToolTimeoutError),
-        ("failure", "failure", ToolExecutionError),
+        ("failure", "safe_failure", ToolSafeFailureError),
     ],
 )
 def test_durable_non_success_finish_errors_preserve_tool_failure_semantics(
@@ -236,7 +356,7 @@ def test_durable_non_success_finish_errors_preserve_tool_failure_semantics(
         timeout_seconds = 0.01
     else:
         def handler(_: dict) -> dict:
-            raise RuntimeError("tool failed")
+            raise ToolSafeFailureError("tool failed")
 
         timeout_seconds = 1.0
 

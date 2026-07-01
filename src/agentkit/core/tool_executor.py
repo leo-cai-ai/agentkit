@@ -25,6 +25,7 @@ from __future__ import annotations
 import contextvars
 import threading
 import time
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any, Protocol
@@ -72,8 +73,24 @@ class ToolExecutionError(RuntimeError):
     """Raised when a tool call fails (after retries) or times out."""
 
 
+class ToolSafeFailureError(ToolExecutionError):
+    """Raised only when a side effect is known not to have been submitted."""
+
+
 class ToolTimeoutError(ToolExecutionError):
     """Raised when a tool call exceeds its timeout."""
+
+
+def safe_tool_error_message(exc: BaseException, args: Mapping[str, Any]) -> str:
+    """Format a tool error without exposing idempotency transport values."""
+    message = str(exc)
+    for key in ("_idempotency_key", "idempotency_key"):
+        value = args.get(key)
+        if value is not None:
+            raw_value = str(value)
+            if raw_value:
+                message = message.replace(raw_value, "[REDACTED]")
+    return message
 
 
 class ToolExecutor:
@@ -103,14 +120,12 @@ class ToolExecutor:
 
     def call(self, tool: ToolDefinition, args: dict[str, Any]) -> dict[str, Any]:
         run_id = self._run_id or current_run_id()
-        if (
-            self._idempotency_store is not None
-            and self._idempotency_store.tenant_id != self._tenant_id
-        ):
+        idempotency_store = self._idempotency_store
+        if idempotency_store is not None and idempotency_store.tenant_id != self._tenant_id:
             raise IdempotencyError("Idempotency store tenant does not match executor tenant")
         idem_key = args.get("_idempotency_key")
         cache_key = (
-            (tool.name, str(idem_key)) if self._idempotency_store is None and idem_key else None
+            (tool.name, str(idem_key)) if idempotency_store is None and idem_key else None
         )
 
         if cache_key is not None and cache_key in self._idempotency_cache:
@@ -118,11 +133,12 @@ class ToolExecutor:
             return self._idempotency_cache[cache_key]
 
         claim: IdempotencyClaim | None = None
-        durable_key = str(idem_key) if self._idempotency_store is not None and idem_key else None
-        if durable_key is not None:
+        durable_key: str | None = None
+        if idempotency_store is not None and idem_key:
+            durable_key = str(idem_key)
             event_payload = {"tool": tool.name, "key_digest": key_digest(durable_key)}
             try:
-                claim = self._idempotency_store.begin(
+                claim = idempotency_store.begin(
                     tool_name=tool.name,
                     idempotency_key=durable_key,
                     args=args,
@@ -152,7 +168,7 @@ class ToolExecutor:
             self._record(run_id, "idempotency_claimed", event_payload)
 
         retryable = bool(tool.idempotent) or (
-            self._idempotency_store is None and idem_key is not None
+            idempotency_store is None and idem_key is not None
         )
         attempts_allowed = (self._max_retries + 1) if retryable else 1
         timeout = tool.timeout_seconds if tool.timeout_seconds is not None else self._timeout
@@ -173,12 +189,13 @@ class ToolExecutor:
                     result = self._invoke(tool.handler, args, timeout)
                 except Exception as exc:  # noqa: BLE001 - normalize to ToolExecutionError
                     last_exc = exc
+                    safe_error = safe_tool_error_message(exc, args)
                     _log.warning(
                         "tool '%s' failed (attempt %d/%d): %s",
                         tool.name,
                         attempt + 1,
                         attempts_allowed,
-                        exc,
+                        safe_error,
                     )
                     if attempt + 1 < attempts_allowed:
                         time.sleep(self._retry_base_delay * (2**attempt))
@@ -191,14 +208,19 @@ class ToolExecutor:
                             "tool": tool.name,
                             "attempts": attempt + 1,
                             "duration_ms": duration_ms,
-                            "error": str(exc),
+                            "error": safe_error,
                         },
                     )
-                    if claim is not None and self._idempotency_store is not None:
-                        if isinstance(exc, ToolTimeoutError):
+                    if claim is not None and idempotency_store is not None:
+                        if isinstance(exc, ToolSafeFailureError):
                             try:
-                                self._idempotency_store.finish_unknown(claim, str(exc))
-                            except Exception:  # noqa: BLE001 - preserve the tool timeout
+                                idempotency_store.finish_failure(claim, safe_error)
+                            except Exception:  # noqa: BLE001 - preserve the original tool error
+                                _log.exception("Failed to persist durable idempotency outcome")
+                        else:
+                            try:
+                                idempotency_store.finish_unknown(claim, safe_error)
+                            except Exception:  # noqa: BLE001 - preserve the original tool error
                                 _log.exception("Failed to persist durable idempotency outcome")
                             else:
                                 self._record(
@@ -207,24 +229,23 @@ class ToolExecutor:
                                     {
                                         "tool": tool.name,
                                         "key_digest": key_digest(claim.idempotency_key),
-                                        "category": "timeout",
+                                        "category": (
+                                            "timeout"
+                                            if isinstance(exc, ToolTimeoutError)
+                                            else "unconfirmed_failure"
+                                        ),
                                     },
                                 )
-                        else:
-                            try:
-                                self._idempotency_store.finish_failure(claim, str(exc))
-                            except Exception:  # noqa: BLE001 - preserve the tool failure
-                                _log.exception("Failed to persist durable idempotency outcome")
                     if isinstance(exc, ToolExecutionError):
                         raise
-                    raise ToolExecutionError(f"tool '{tool.name}' failed: {exc}") from exc
+                    raise ToolExecutionError(f"tool '{tool.name}' failed: {safe_error}") from exc
                 else:
-                    if claim is not None and self._idempotency_store is not None:
+                    if claim is not None and idempotency_store is not None:
                         try:
-                            self._idempotency_store.finish_success(claim, result)
+                            idempotency_store.finish_success(claim, result)
                         except Exception as exc:  # noqa: BLE001 - preserve an unknown outcome
                             try:
-                                self._idempotency_store.finish_unknown(
+                                idempotency_store.finish_unknown(
                                     claim,
                                     "persistence_failure",
                                 )

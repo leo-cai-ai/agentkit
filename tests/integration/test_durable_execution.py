@@ -244,3 +244,91 @@ def test_injected_durable_ledger_reuses_keyed_mutation_across_executors(
         "mutation": {"value": 7, "execution": 1}
     }
     assert calls == {"count": 1}
+
+
+def test_deferred_action_redacts_plain_idempotency_key_in_failure_audit() -> None:
+    audit = InMemoryAuditLog()
+    raw_key = "raw-idempotency-secret"
+    tenant_config: dict = {}
+    tools = ToolRegistry()
+
+    def charge(args: dict) -> dict:
+        raise RuntimeError(f"connector rejected key={args['idempotency_key']}")
+
+    tools.register(
+        ToolDefinition(
+            name="payments.charge",
+            domain="payments",
+            description="",
+            handler=charge,
+        )
+    )
+    skills = SkillRegistry()
+    skills.register(
+        SkillDefinition(
+            name="payments.workflow",
+            domain="payments",
+            description="",
+            input_schema={},
+            output_schema={},
+            permissions=[],
+            execution_mode="workflow",
+            tools=["payments.charge"],
+            handler=lambda _ctx, _args: {},
+        )
+    )
+    executor = PlanExecutor(
+        tenant_id="tenant-a",
+        tenant_config=tenant_config,
+        skills=skills,
+        tools=tools,
+        policy=PolicyGuard(tenant_config),
+        audit=audit,
+    )
+    plan = TaskPlan(
+        route=RouteDecision(skill_name="payments.workflow", reason="test"),
+        steps=[
+            PlanStep(
+                step_id=1,
+                skill_name="payments.workflow",
+                mode="workflow",
+                args={},
+            )
+        ],
+    )
+    request = TaskRequest(
+        user_id="user-1",
+        roles=[],
+        text="charge",
+        context={
+            "approved_skills": ["payments.workflow"],
+            "approved_content_hash": "content-hash",
+        },
+    )
+    action = {
+        "action_id": "payment-action",
+        "approval_skill": "payments.workflow",
+        "content_hash": "content-hash",
+        "primary_result_key": "charge",
+        "tool_calls": [
+            {
+                "result_key": "charge",
+                "tool_name": "payments.charge",
+                "args": {"idempotency_key": raw_key},
+            }
+        ],
+    }
+
+    result = executor.execute_deferred_action(
+        run_id="r1",
+        request=request,
+        plan=plan,
+        output={"final": {}},
+        action=action,
+    )
+
+    assert raw_key not in str(result)
+    failed_events = [
+        event for event in audit.events_for("r1") if event["type"] == "deferred_action_failed"
+    ]
+    assert raw_key not in str(failed_events)

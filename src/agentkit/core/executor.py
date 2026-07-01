@@ -17,7 +17,7 @@ from .policy import PolicyGuard
 from .prompt_library import PromptLibrary
 from .registry import SkillRegistry, ToolRegistry
 from .schema_validation import SkillInputError, validate_skill_input, validate_skill_output
-from .tool_executor import ToolExecutor
+from .tool_executor import ToolExecutor, safe_tool_error_message
 
 DEFAULT_EXECUTE_BRIEF_SYSTEM = (
     "You are the LLM execute-preflight node in a governed LangGraph runtime. "
@@ -257,30 +257,31 @@ class PlanExecutor:
                 results[result_key] = invoker.call(self._tools.get(tool_name), dict(args))
             except Exception as exc:  # noqa: BLE001 - preserve partial primary success
                 failure_status = self._deferred_failure_status(exc)
+                safe_error = safe_tool_error_message(exc, args)
                 self._audit.record(
                     run_id,
                     "deferred_action_failed",
                     {
                         "action_id": action.get("action_id"),
                         "tool": tool_name,
-                        "error": str(exc),
+                        "error": safe_error,
                         "primary_completed": primary_result_key in results,
                         "failure_status": failure_status,
                     },
                 )
                 if primary_result_key in results:
-                    warnings.append(f"post-publication tool '{tool_name}' failed: {exc}")
+                    warnings.append(f"post-publication tool '{tool_name}' failed: {safe_error}")
                     break
                 return {
                     **output,
                     "error": "deferred_action_failed",
-                    "reason": str(exc),
+                    "reason": safe_error,
                     "final": {
                         **final,
                         "publish": {
                             **dict(final.get("publish") or {}),
                             "status": failure_status,
-                            "error": str(exc),
+                            "error": safe_error,
                         },
                     },
                 }
