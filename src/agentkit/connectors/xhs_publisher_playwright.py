@@ -193,6 +193,49 @@ class XhsPublishOutcomeUnknown(WebSearchError):
     """The publish click occurred but the final platform outcome is unknown."""
 
 
+class _PublishEvidenceRecorder:
+    """只保存提交确认所需的脱敏网络元数据。"""
+
+    def __init__(self) -> None:
+        self._responses: list[dict[str, str | int]] = []
+
+    def attach(self, page: Any) -> None:
+        listener = getattr(page, "on", None)
+        if callable(listener):
+            listener("response", self._record_response)
+
+    def summary(self) -> str:
+        if not self._responses:
+            return "none"
+        return "; ".join(
+            "{method} {path} status={status} resource_type={resource_type}".format(**item)
+            for item in self._responses
+        )
+
+    def _record_response(self, response: Any) -> None:
+        try:
+            request = response.request
+            method = str(request.method).upper()
+            parsed = urlparse(str(request.url))
+            hostname = (parsed.hostname or "").lower()
+            if (
+                method == "GET"
+                or parsed.scheme != "https"
+                or not (hostname == "xiaohongshu.com" or hostname.endswith(".xiaohongshu.com"))
+            ):
+                return
+            item: dict[str, str | int] = {
+                "method": method,
+                "path": parsed.path or "/",
+                "status": int(response.status),
+                "resource_type": str(request.resource_type),
+            }
+        except Exception:  # noqa: BLE001 - 诊断监听不得影响发布流程
+            return
+        self._responses.append(item)
+        del self._responses[:-20]
+
+
 class XhsPublishLedger:
     """Durable deduplication ledger for a non-idempotent browser side effect."""
 
@@ -283,6 +326,7 @@ class XhsPublishAdapter:
         media_strategy: str = "upload",
         text_image_style: str = "涂鸦",
         text_image_generation_timeout_seconds: float = 120.0,
+        observation_seconds: float = 0.0,
     ) -> None:
         parsed = urlparse(publish_url)
         hostname = (parsed.hostname or "").lower()
@@ -299,7 +343,10 @@ class XhsPublishAdapter:
             raise ValueError("XHS text-image style must not be empty")
         if text_image_generation_timeout_seconds <= 0:
             raise ValueError("XHS text-image generation timeout must be positive")
+        if observation_seconds < 0:
+            raise ValueError("XHS publish observation duration must not be negative")
         self.text_image_generation_timeout_ms = int(text_image_generation_timeout_seconds * 1000)
+        self.observation_seconds = float(observation_seconds)
 
     def prepare_package(
         self,
@@ -411,7 +458,9 @@ class XhsPublishAdapter:
         _log.info("Xiaohongshu reviewed title and body populated")
 
         _log.info("Xiaohongshu publish button ready; submitting reviewed content")
-        self._click_publish_control(page, timeout_ms=timeout_ms)
+        evidence = _PublishEvidenceRecorder()
+        evidence.attach(page)
+        click_metadata = self._click_publish_control(page, timeout_ms=timeout_ms)
         try:
             page.wait_for_function(
                 "() => /发布成功|提交成功|已发布|审核中/.test(document.body.innerText) "
@@ -420,13 +469,26 @@ class XhsPublishAdapter:
             )
         except Exception as exc:  # noqa: BLE001 - click already happened
             state = self._state(page)
+            reason = "Xiaohongshu did not confirm publication after the publish click."
             if state.get("challenge") or state.get("phoneVerification"):
-                raise XhsPublishOutcomeUnknown(
-                    "Human verification appeared after the publish click; reconcile the post."
-                ) from exc
+                reason = "Human verification appeared after the publish click."
+            diagnostics = self._capture_diagnostics(
+                page,
+                field_name="publish-confirmation",
+                extra=(
+                    f"click={click_metadata!r}; network_evidence={evidence.summary()!r}; "
+                    f"page_state={state!r}"
+                ),
+            )
+            if self.observation_seconds > 0:
+                observation_ms = int(self.observation_seconds * 1000)
+                _log.warning(
+                    "Xiaohongshu publish outcome is unknown; keeping headed browser open for %d ms",
+                    observation_ms,
+                )
+                self._wait_for_timeout(page, observation_ms)
             raise XhsPublishOutcomeUnknown(
-                "Xiaohongshu did not confirm publication after the publish click. "
-                "Reconcile the post in Creator Center before retrying."
+                f"{reason} Reconcile the post in Creator Center before retrying; {diagnostics}"
             ) from exc
 
         state = self._state(page)
@@ -655,7 +717,7 @@ class XhsPublishAdapter:
         query["target"] = "image"
         return urlunparse(parsed._replace(query=urlencode(query)))
 
-    def _click_publish_control(self, page: Any, *, timeout_ms: int) -> None:
+    def _click_publish_control(self, page: Any, *, timeout_ms: int) -> dict[str, Any]:
         control = self._wait_locator(
             page,
             _PUBLISH_BUTTON_SELECTORS,
@@ -664,7 +726,7 @@ class XhsPublishAdapter:
         )
         if control.get_attribute("is-publish") != "true":
             control.click()
-            return
+            return {"host_box": None, "position": None}
         if control.get_attribute("submit-disabled") != "false":
             raise BrowserPageChanged("Xiaohongshu publish control is disabled")
         box = control.bounding_box()
@@ -677,12 +739,14 @@ class XhsPublishAdapter:
 
         # xhs-publish-btn 的 closed shadow root 包含左侧暂存和右侧发布按钮。
         # 已确认右侧按钮宽度为 120 像素；窄宿主退化为右半区域的中心。
-        control.click(
-            position={
-                "x": max(width / 2.0, width - right_button_width / 2.0),
-                "y": height / 2.0,
-            }
-        )
+        position = {
+            "x": max(width / 2.0, width - right_button_width / 2.0),
+            "y": height / 2.0,
+        }
+        host_box = {name: float(box[name]) for name in ("x", "y", "width", "height")}
+        _log.info("Xiaohongshu publish click target: host=%s position=%s", host_box, position)
+        control.click(position=position)
+        return {"host_box": host_box, "position": position}
 
     def _poll_evaluate(
         self,
@@ -822,7 +886,7 @@ class XhsPublishAdapter:
         else:
             time.sleep(timeout_ms / 1000)
 
-    def _capture_diagnostics(self, page: Any, *, field_name: str) -> str:
+    def _capture_diagnostics(self, page: Any, *, field_name: str, extra: str = "") -> str:
         summaries: list[str] = []
         for index, context in enumerate(self._locator_contexts(page)):
             try:
@@ -849,7 +913,8 @@ class XhsPublishAdapter:
             screenshot_result = str(screenshot)
         except Exception as exc:  # noqa: BLE001 - keep selector diagnostics available
             screenshot_result = f"unavailable:{type(exc).__name__}"
-        return f"diagnostic={' | '.join(summaries)}; screenshot={screenshot_result}"
+        prefix = f"{extra}; " if extra else ""
+        return f"{prefix}diagnostic={' | '.join(summaries)}; screenshot={screenshot_result}"
 
 
 class PlaywrightXhsPublishingProvider:

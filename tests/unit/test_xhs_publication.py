@@ -197,6 +197,30 @@ class _DiscardingLocator(_Locator):
         return None
 
 
+class _FakeRequest:
+    def __init__(self, *, url: str, method: str, resource_type: str) -> None:
+        self.url = url
+        self.method = method
+        self.resource_type = resource_type
+
+
+class _FakeResponse:
+    def __init__(self, request: _FakeRequest, *, status: int) -> None:
+        self.request = request
+        self.status = status
+
+
+class _ResponseLocator(_Locator):
+    def __init__(self, page, response: _FakeResponse, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.page = page
+        self.response = response
+
+    def click(self, **kwargs) -> None:
+        super().click(**kwargs)
+        self.page.emit_response(self.response)
+
+
 class _PublishPage:
     def __init__(self, *, login: bool = False, phone_verification: bool = False) -> None:
         self.login = login
@@ -261,6 +285,36 @@ class _PublishPage:
 
     def screenshot(self, *, path: str, **_kwargs) -> None:
         Path(path).write_bytes(b"png")
+
+
+class _UnknownPublishPage(_PublishPage):
+    def __init__(self) -> None:
+        super().__init__()
+        self.handlers: dict[str, list] = {}
+        self.wait_calls: list[int] = []
+        request = _FakeRequest(
+            url="https://creator.xiaohongshu.com/api/sns/v1/note?body=secret-body",
+            method="POST",
+            resource_type="fetch",
+        )
+        self.button = _ResponseLocator(
+            self,
+            _FakeResponse(request, status=200),
+            attributes={"is-publish": "true", "submit-disabled": "false"},
+        )
+
+    def on(self, event: str, callback) -> None:
+        self.handlers.setdefault(event, []).append(callback)
+
+    def emit_response(self, response: _FakeResponse) -> None:
+        for callback in self.handlers.get("response", []):
+            callback(response)
+
+    def wait_for_function(self, *_args, **_kwargs) -> None:
+        raise TimeoutError("publication is not confirmed")
+
+    def wait_for_timeout(self, timeout_ms: int) -> None:
+        self.wait_calls.append(timeout_ms)
 
 
 class _TextImagePublishPage(_PublishPage):
@@ -358,6 +412,42 @@ def test_publish_targets_right_side_of_closed_shadow_host(tmp_path) -> None:
     )
 
     assert page.button.click_options["position"] == {"x": 192.0, "y": 20.0}
+
+
+def test_unknown_publish_outcome_includes_redacted_network_evidence_and_waits(tmp_path) -> None:
+    page = _UnknownPublishPage()
+    adapter = XhsPublishAdapter(asset_root=tmp_path / "assets", observation_seconds=90)
+    media = tmp_path / "cover.png"
+    media.write_bytes(b"png")
+
+    with pytest.raises(XhsPublishOutcomeUnknown) as error:
+        adapter.publish(
+            page,
+            package={"title": "标题", "body": "正文", "media_paths": [str(media)]},
+            timeout_ms=1000,
+        )
+
+    message = str(error.value)
+    assert "POST /api/sns/v1/note" in message
+    assert "200" in message
+    assert "secret-body" not in message
+    assert page.wait_calls == [90_000]
+
+
+def test_unknown_publish_outcome_does_not_wait_when_observation_is_disabled(tmp_path) -> None:
+    page = _UnknownPublishPage()
+    adapter = XhsPublishAdapter(asset_root=tmp_path / "assets", observation_seconds=0)
+    media = tmp_path / "cover.png"
+    media.write_bytes(b"png")
+
+    with pytest.raises(XhsPublishOutcomeUnknown):
+        adapter.publish(
+            page,
+            package={"title": "标题", "body": "正文", "media_paths": [str(media)]},
+            timeout_ms=1000,
+        )
+
+    assert page.wait_calls == []
 
 
 def test_playwright_publish_adapter_generates_reviewed_text_images(tmp_path) -> None:

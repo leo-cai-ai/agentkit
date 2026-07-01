@@ -206,6 +206,16 @@ def build_playwright_publishing_provider(
     )
 
     browser_config = _browser_config(settings, config)
+    observation_seconds = (
+        0.0
+        if browser_config.headless
+        else float(
+            config.get(
+                "browser_publish_observation_seconds",
+                settings.browser_publish_observation_seconds,
+            )
+        )
+    )
     adapter = XhsPublishAdapter(
         publish_url=str(config.get("publish_url", settings.xhs_publish_url)),
         asset_root=str(config.get("publish_asset_root", settings.xhs_publish_asset_root)),
@@ -222,6 +232,7 @@ def build_playwright_publishing_provider(
                 settings.xhs_text_image_generation_timeout_seconds,
             )
         ),
+        observation_seconds=observation_seconds,
     )
     ledger = XhsPublishLedger(
         str(config.get("publish_ledger_path", settings.xhs_publish_ledger_path))

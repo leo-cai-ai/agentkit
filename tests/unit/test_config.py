@@ -38,6 +38,7 @@ def _fresh_settings(monkeypatch, **env):
         "AGENTKIT_WEB_SEARCH_BROWSER",
         "AGENTKIT_WEB_SEARCH_HEADLESS",
         "AGENTKIT_WEB_SEARCH_TIMEOUT_SECONDS",
+        "AGENTKIT_BROWSER_PUBLISH_OBSERVATION_SECONDS",
         "AGENTKIT_WEB_SEARCH_MAX_SCROLLS",
         "AGENTKIT_WEB_SEARCH_SCROLL_PAUSE_SECONDS",
         "AGENTKIT_WEB_SEARCH_PROFILE_ROOT",
@@ -74,7 +75,17 @@ def test_defaults(monkeypatch):
     assert s.web_search_headless is True
     assert s.web_search_profile_root == "data/browser-profiles"
     assert s.web_search_storage_state_root is None
+    assert s.browser_publish_observation_seconds == 90.0
     assert s.artifact_max_payload_bytes == 1_048_576
+
+
+def test_xhs_publish_observation_seconds_env_override(monkeypatch):
+    settings = _fresh_settings(
+        monkeypatch,
+        AGENTKIT_BROWSER_PUBLISH_OBSERVATION_SECONDS="15",
+    )
+
+    assert settings.browser_publish_observation_seconds == 15.0
 
 
 def test_rate_limit_env_overrides(monkeypatch):

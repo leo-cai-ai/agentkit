@@ -251,6 +251,7 @@ class Settings(BaseSettings):
     web_search_storage_state_root: str | None = None
     web_search_browser_channel: str | None = None
     web_search_executable_path: str | None = None
+    browser_publish_observation_seconds: float = Field(default=90.0, ge=0.0, le=300.0)
 
     # PostgreSQL connection (used when a backend is set to 'postgres', e.g.
     # vector_store_backend=postgres with the pgvector extension). Either set a
