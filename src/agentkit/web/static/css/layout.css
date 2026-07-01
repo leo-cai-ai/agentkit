@@ -1,0 +1,379 @@
+/* =====================================================================
+   Authenticated AppShell and PageHeader
+
+   This layer owns global navigation and page framing only. Page-specific
+   grids and interactive islands remain in their existing modules.
+   ===================================================================== */
+
+.ak-app-page {
+  min-block-size: 100vh;
+  min-block-size: 100dvh;
+  color: var(--ak-sys-color-text-primary);
+  background:
+    radial-gradient(circle at 80% 0%, var(--ak-sys-color-accent-soft), transparent 36rem),
+    var(--ak-sys-color-bg-canvas);
+  background-size: auto;
+  color-scheme: var(--ak-sys-color-scheme);
+}
+
+.ak-skip-link {
+  position: fixed;
+  inset-block-start: var(--ak-sys-space-2);
+  inset-inline-start: var(--ak-sys-space-2);
+  z-index: 100;
+  padding: var(--ak-sys-space-2) var(--ak-sys-space-3);
+  border: 1px solid var(--ak-sys-color-border-interactive);
+  border-radius: var(--ak-sys-radius-sm);
+  color: var(--ak-sys-color-text-primary);
+  background: var(--ak-sys-color-bg-elevated);
+  font-size: 0.875rem;
+  font-weight: 700;
+  transform: translateY(calc(-100% - var(--ak-sys-space-4)));
+}
+
+.ak-skip-link:focus-visible {
+  outline: var(--ak-sys-focus-width) solid var(--ak-sys-color-focus-ring);
+  outline-offset: var(--ak-sys-focus-offset);
+  transform: translateY(0);
+}
+
+.ak-app-shell {
+  min-block-size: 100vh;
+  min-block-size: 100dvh;
+  display: grid;
+  grid-template-columns: var(--ak-sys-size-sidebar) minmax(0, 1fr);
+  align-items: start;
+}
+
+.ak-app-sidebar {
+  position: sticky;
+  inset: auto;
+  inset-block-start: 0;
+  inline-size: auto;
+  block-size: 100vh;
+  block-size: 100dvh;
+  min-block-size: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--ak-sys-space-4);
+  padding: var(--ak-sys-space-4) var(--ak-sys-space-3);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 0;
+  border-inline-end: 1px solid var(--ak-sys-color-border-default);
+  background: var(--ak-sys-color-bg-elevated);
+}
+
+.ak-brand {
+  min-inline-size: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--ak-sys-space-3);
+  padding: 0 var(--ak-sys-space-1) var(--ak-sys-space-4);
+  border-block-end: 1px solid var(--ak-sys-color-border-default);
+}
+
+.ak-brand:focus-visible,
+.ak-primary-nav a:focus-visible {
+  outline: var(--ak-sys-focus-width) solid var(--ak-sys-color-focus-ring);
+  outline-offset: var(--ak-sys-focus-offset);
+}
+
+.ak-brand-mark {
+  inline-size: 2.25rem;
+  block-size: 2.25rem;
+  flex: 0 0 auto;
+  border-radius: var(--ak-sys-radius-sm);
+  color: var(--ak-sys-color-text-inverse);
+  background: var(--ak-sys-color-accent-default);
+  box-shadow: none;
+}
+
+.ak-brand strong {
+  color: var(--ak-sys-color-text-primary);
+  font-size: 0.9375rem;
+}
+
+.ak-brand small {
+  margin-block-start: 0.125rem;
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  letter-spacing: 0.1em;
+}
+
+.ak-primary-nav {
+  display: grid;
+  gap: var(--ak-sys-space-1);
+}
+
+.ak-primary-nav a {
+  min-block-size: var(--ak-sys-size-control-md);
+  display: flex;
+  align-items: center;
+  padding: var(--ak-sys-space-2) var(--ak-sys-space-3);
+  border-radius: var(--ak-sys-radius-sm);
+  color: var(--ak-sys-color-text-secondary);
+  font-size: 0.875rem;
+  font-weight: 650;
+  line-height: 1.35;
+  letter-spacing: 0;
+  white-space: nowrap;
+  transition:
+    background-color var(--ak-sys-motion-duration-fast) var(--ak-sys-motion-easing-standard),
+    color var(--ak-sys-motion-duration-fast) var(--ak-sys-motion-easing-standard);
+}
+
+.ak-primary-nav a::before {
+  content: none;
+}
+
+.ak-primary-nav a:hover {
+  color: var(--ak-sys-color-text-primary);
+  background: var(--ak-sys-color-bg-surface);
+}
+
+.ak-primary-nav a.active,
+.ak-primary-nav a[aria-current="page"] {
+  color: var(--ak-sys-color-text-primary);
+  background: var(--ak-sys-color-accent-soft);
+}
+
+.ak-tenant-summary {
+  min-inline-size: 0;
+  margin: auto 0 0;
+  padding: var(--ak-sys-space-3);
+  border: 1px solid var(--ak-sys-color-border-default);
+  border-radius: var(--ak-sys-radius-sm);
+  background: var(--ak-sys-color-bg-surface);
+}
+
+.ak-tenant-summary > span {
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.4;
+  text-transform: none;
+  letter-spacing: 0.01em;
+}
+
+.ak-tenant-summary > strong {
+  margin-block-start: var(--ak-sys-space-1);
+  color: var(--ak-sys-color-text-primary);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ak-app-main {
+  min-inline-size: 0;
+  min-block-size: 100vh;
+  min-block-size: 100dvh;
+  margin: 0;
+  padding: 0 var(--ak-sys-space-page) var(--ak-sys-space-8);
+}
+
+.ak-app-main:focus {
+  outline: var(--ak-sys-focus-width) solid var(--ak-sys-color-focus-ring);
+  outline-offset: calc(-1 * var(--ak-sys-focus-width));
+}
+
+.ak-page-header {
+  min-block-size: var(--ak-sys-size-page-header);
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ak-sys-space-4);
+  margin: 0 0 var(--ak-sys-space-4);
+  padding: var(--ak-sys-space-3) 0;
+  border: 0;
+  border-block-end: 1px solid var(--ak-sys-color-border-default);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.ak-page-header-content {
+  min-inline-size: 0;
+  display: grid;
+  gap: var(--ak-sys-space-1);
+}
+
+.ak-page-header h1 {
+  margin: 0;
+  color: var(--ak-sys-color-text-primary);
+  font-size: 1.625rem;
+  font-weight: 750;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  overflow-wrap: anywhere;
+}
+
+.ak-page-description {
+  margin: 0;
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.ak-page-header-actions:empty {
+  display: none;
+}
+
+@media (max-width: 75rem) and (min-width: 56.3125rem) {
+  .ak-app-shell {
+    grid-template-columns: var(--ak-sys-size-sidebar-narrow) minmax(0, 1fr);
+  }
+
+  .ak-app-main {
+    padding-inline: var(--ak-sys-space-4);
+  }
+}
+
+@media (max-width: 70rem) {
+  .live-panel {
+    position: static;
+    inset: auto;
+  }
+}
+
+@media (max-width: 56.25rem) {
+  .ak-app-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ak-app-sidebar {
+    position: sticky;
+    inset-block-start: 0;
+    z-index: 20;
+    block-size: auto;
+    min-block-size: 0;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--ak-sys-space-3);
+    padding: var(--ak-sys-space-2) var(--ak-sys-space-4);
+    overflow: visible;
+    border-inline-end: 0;
+    border-block-end: 1px solid var(--ak-sys-color-border-default);
+  }
+
+  .ak-brand {
+    padding: 0;
+    border: 0;
+  }
+
+  .ak-brand-mark {
+    inline-size: 2rem;
+    block-size: 2rem;
+  }
+
+  .ak-primary-nav {
+    display: flex;
+    flex-wrap: nowrap;
+    justify-content: center;
+    gap: var(--ak-sys-space-1);
+    min-inline-size: 0;
+    padding: var(--ak-sys-focus-offset);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .ak-primary-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .ak-primary-nav a {
+    flex: 0 0 auto;
+  }
+
+  .ak-tenant-summary {
+    margin: 0;
+    padding: var(--ak-sys-space-2) var(--ak-sys-space-3);
+  }
+
+  .ak-tenant-summary > span {
+    display: none;
+  }
+
+  .ak-tenant-summary > strong {
+    max-inline-size: 10rem;
+    margin: 0;
+  }
+
+  .ak-app-main {
+    padding-inline: var(--ak-sys-space-4);
+  }
+}
+
+@media (max-width: 40rem) {
+  .ak-app-sidebar {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .ak-brand {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .ak-primary-nav {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-content: flex-start;
+    gap: var(--ak-sys-focus-offset);
+    inline-size: 100%;
+    padding-block-start: var(--ak-sys-space-2);
+    border-block-start: 1px solid var(--ak-sys-color-border-default);
+  }
+
+  .ak-primary-nav a {
+    min-inline-size: var(--ak-sys-size-control-md);
+    justify-content: center;
+    padding-inline: var(--ak-sys-space-1);
+    font-size: 0.8125rem;
+  }
+
+  .ak-tenant-summary {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .ak-page-header {
+    align-items: flex-start;
+  }
+
+  .ak-page-header h1 {
+    font-size: 1.5rem;
+  }
+}
+
+@media (max-width: 30rem) {
+  .ak-app-sidebar,
+  .ak-app-main {
+    padding-inline: var(--ak-sys-space-3);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ak-primary-nav a {
+    transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .ak-app-page,
+  .ak-app-sidebar {
+    color: CanvasText;
+    background: Canvas;
+  }
+
+  .ak-brand:focus-visible,
+  .ak-primary-nav a:focus-visible,
+  .ak-skip-link:focus-visible {
+    outline-color: Highlight;
+  }
+}
