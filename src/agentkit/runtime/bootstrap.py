@@ -10,9 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from agentkit.config import get_settings
+from agentkit.core.artifacts import ArtifactRecord, build_artifact_store
 from agentkit.core.audit import PostgresAuditLog, SQLiteAuditLog
 from agentkit.core.contracts import AgentProfile
 from agentkit.core.gateway import AgentGateway, build_checkpointer
+from agentkit.core.idempotency import build_idempotency_store
+from agentkit.core.migrations import run_storage_migrations
 from agentkit.core.prompts import load_prompt_files
 from agentkit.core.registry import AgentRegistry, SkillRegistry, ToolRegistry
 from agentkit.core.skill_store import SkillFileStore, attach_skill_packages
@@ -123,6 +126,7 @@ def build_runtime(
     tools = ToolRegistry()
     settings = get_settings()
     storage_backend = str(getattr(settings, "storage_backend", "sqlite")).lower()
+    run_storage_migrations(settings, sqlite_path=db_path)
     audit: SQLiteAuditLog
     if storage_backend in ("postgres", "pg"):
         audit = PostgresAuditLog(
@@ -179,6 +183,29 @@ def build_runtime(
         sqlite_path=db_path.with_name(f"{resolved_tenant_id}_checkpoints.sqlite"),
         settings=settings,
     )
+    idempotency_store = build_idempotency_store(
+        backend=storage_backend,
+        tenant_id=tenant_config["tenant_id"],
+        sqlite_path=db_path,
+        settings=settings,
+    )
+
+    def artifact_store_factory(run_id: str):
+        return build_artifact_store(
+            backend=storage_backend,
+            tenant_id=tenant_config["tenant_id"],
+            run_id=run_id,
+            sqlite_path=db_path,
+            settings=settings,
+            max_payload_bytes=settings.artifact_max_payload_bytes,
+            on_write=lambda record: _record_persisted_artifact(
+                audit=audit,
+                run_id=run_id,
+                backend=storage_backend,
+                record=record,
+            ),
+        )
+
     gateway = AgentGateway(
         tenant_id=tenant_config["tenant_id"],
         tenant_config=tenant_config,
@@ -187,6 +214,8 @@ def build_runtime(
         tools=tools,
         audit=audit,
         checkpointer=checkpointer,
+        artifact_store_factory=artifact_store_factory,
+        idempotency_store=idempotency_store,
     )
     chat_service = _build_chat_service(
         tenant_id=tenant_config["tenant_id"],
@@ -203,6 +232,23 @@ def build_runtime(
         tenant_id=resolved_tenant_id,
         chat_service=chat_service,
         manifest=manifest,
+    )
+
+
+def _record_persisted_artifact(
+    *, audit: Any, run_id: str, backend: str, record: ArtifactRecord
+) -> None:
+    audit.record(run_id, "artifact_written", record.ref())
+    audit.record(
+        run_id,
+        "artifact_persisted",
+        {
+            "artifact_id": record.artifact_id,
+            "kind": record.kind,
+            "payload_sha256": record.payload_sha256,
+            "payload_bytes": record.payload_bytes,
+            "backend": backend,
+        },
     )
 
 

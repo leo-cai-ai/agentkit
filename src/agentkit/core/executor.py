@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import asdict
 from typing import Any
 
-from .artifacts import ArtifactRecord, InMemoryArtifactStore
+from .artifacts import ArtifactRecord, ArtifactStore, InMemoryArtifactStore
 from .audit import InMemoryAuditLog, PostgresAuditLog, SQLiteAuditLog
 from .contracts import IntentFrame, SkillContext, TaskPlan, TaskRequest
 from .conversation import ConversationFallback
+from .idempotency import IdempotencyStore
 from .llm_client import require_chat_json
 from .policy import PolicyGuard
 from .prompt_library import PromptLibrary
@@ -36,6 +38,8 @@ class PlanExecutor:
         policy: PolicyGuard,
         audit: InMemoryAuditLog | SQLiteAuditLog | PostgresAuditLog,
         prompt_library: PromptLibrary | None = None,
+        artifact_store_factory: Callable[[str], ArtifactStore] | None = None,
+        idempotency_store: IdempotencyStore | None = None,
     ) -> None:
         self._tenant_id = tenant_id
         self._tenant_config = tenant_config
@@ -44,6 +48,8 @@ class PlanExecutor:
         self._policy = policy
         self._audit = audit
         self._prompts = prompt_library or PromptLibrary()
+        self._artifact_store_factory = artifact_store_factory
+        self._idempotency_store = idempotency_store
         self._conversation = ConversationFallback(
             tenant_id=tenant_id,
             tenant_config=tenant_config,
@@ -61,12 +67,16 @@ class PlanExecutor:
         execution_brief = self._llm_execution_brief(request=request, plan=plan, intent=intent)
         self._audit.record(run_id, "execution_llm_briefed", execution_brief)
 
-        # One hardened tool invoker per run: timeout/retry/idempotency/audit, with
-        # a run-scoped idempotency cache (so the same key isn't re-executed within
-        # the run, and never reused across runs).
+        # One hardened tool invoker per run: timeout/retry/idempotency/audit. A
+        # configured durable ledger safely reuses keyed side-effect outcomes
+        # across executor instances; direct construction keeps the run-local default.
         invoker = self._build_tool_invoker(run_id)
-        artifacts = InMemoryArtifactStore(
-            on_write=lambda record: self._record_artifact(run_id, record)
+        artifacts = (
+            self._artifact_store_factory(run_id)
+            if self._artifact_store_factory is not None
+            else InMemoryArtifactStore(
+                on_write=lambda record: self._record_artifact(run_id, record)
+            )
         )
 
         if not plan.steps:
@@ -351,6 +361,7 @@ class PlanExecutor:
             max_workers=max_workers,
             max_retries=max_retries,
             retry_base_delay=retry_base_delay,
+            idempotency_store=self._idempotency_store,
         )
 
     def _execute_batch(self, *, ctx: SkillContext, skill_name: str, args: dict) -> dict:

@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from .artifacts import ArtifactStore
 from .audit import InMemoryAuditLog, PostgresAuditLog, SQLiteAuditLog
 from .contracts import RouteDecision, TaskPlan, TaskRequest, TaskResponse
 from .executor import PlanExecutor
 from .governance import HumanApprovalGate, OutputReviewer, PlanReviewer
 from .hooks import AgentLifecycleHooks
+from .idempotency import IdempotencyStore
 from .input_resolution import SkillInputResolver
 from .intent import IntentDecomposer
 from .langgraph_agent import EnterpriseAgentGraph
@@ -37,6 +40,8 @@ class AgentGateway:
         checkpointer: Any = _UNSET,
         fastpath: bool | None = None,
         combined_intent_route: bool | None = None,
+        artifact_store_factory: Callable[[str], ArtifactStore] | None = None,
+        idempotency_store: IdempotencyStore | None = None,
     ) -> None:
         self._tenant_id = tenant_id
         self._tenant_config = tenant_config
@@ -69,6 +74,8 @@ class AgentGateway:
             policy=PolicyGuard(tenant_config),
             audit=audit,
             prompt_library=prompt_library,
+            artifact_store_factory=artifact_store_factory,
+            idempotency_store=idempotency_store,
         )
         self._agent_graph = EnterpriseAgentGraph(
             tenant_id=tenant_id,
