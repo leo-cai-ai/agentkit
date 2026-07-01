@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 
+from agentkit.core import migrations
 from agentkit.core.audit import SQLiteAuditLog
 from agentkit.core.migrations import run_sqlite_migrations
 
@@ -195,6 +196,42 @@ def test_sqlite_migrations_are_safe_during_concurrent_bootstrap(tmp_path) -> Non
     assert not any(caller.is_alive() for caller in callers)
     assert errors == []
     assert sorted(results) == [[], [1]]
+
+
+def test_sqlite_migrations_close_connection(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "runtime.sqlite"
+    original_connect = sqlite3.connect
+    connections = []
+
+    class TrackingConnection:
+        def __init__(self, connection) -> None:
+            self._connection = connection
+            self.closed = False
+
+        def __enter__(self):
+            self._connection.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self._connection.__exit__(*args)
+
+        def __getattr__(self, name):
+            return getattr(self._connection, name)
+
+        def close(self) -> None:
+            self.closed = True
+            self._connection.close()
+
+    def tracking_connect(*args, **kwargs):
+        connection = TrackingConnection(original_connect(*args, **kwargs))
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(migrations.sqlite3, "connect", tracking_connect)
+
+    assert run_sqlite_migrations(db_path) == [1]
+    assert len(connections) == 1
+    assert connections[0].closed is True
 
 
 def test_sqlite_audit_log_bootstraps_migrations(tmp_path) -> None:

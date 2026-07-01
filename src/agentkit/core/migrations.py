@@ -159,26 +159,28 @@ def run_sqlite_migrations(path: str | Path) -> list[int]:
     """Apply outstanding runtime-storage migrations to a SQLite database."""
     database_path = Path(path)
     database_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(database_path) as conn:
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            applied = _sqlite_applied_versions(conn)
-            applied_now: list[int] = []
-            for version, statements in _SQLITE_MIGRATIONS.items():
-                if version in applied:
-                    continue
-                for statement in statements:
-                    conn.execute(statement)
-                conn.execute(
-                    "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
-                    (version, round(time.time(), 3)),
-                )
-                applied_now.append(version)
-        except Exception:
-            conn.rollback()
-            raise
-        else:
-            conn.commit()
+    conn = sqlite3.connect(database_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        applied = _sqlite_applied_versions(conn)
+        applied_now: list[int] = []
+        for version, statements in _SQLITE_MIGRATIONS.items():
+            if version in applied:
+                continue
+            for statement in statements:
+                conn.execute(statement)
+            conn.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+                (version, round(time.time(), 3)),
+            )
+            applied_now.append(version)
+    except Exception:
+        conn.rollback()
+        raise
+    else:
+        conn.commit()
+    finally:
+        conn.close()
     return applied_now
 
 
