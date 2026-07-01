@@ -50,6 +50,8 @@ class AgentProfile:
     model: str = "default"
     max_tokens: int = 100_000
     prompt_file: str = ""
+    # Agent 的上下文边界由声明式 agent.md 提供；平台级 Agent 可保留空策略。
+    context_policy: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
