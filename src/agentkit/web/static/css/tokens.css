@@ -52,6 +52,7 @@
   --ak-ref-radius-lg: 12px;
   --ak-ref-radius-full: 999px;
   --ak-ref-size-control-md: 2.25rem;
+  --ak-ref-size-control-lg: 3rem;
   --ak-ref-size-control-touch: 2.75rem;
   --ak-ref-size-stat-card: 5.5rem;
   --ak-ref-size-row: 2.5rem;
@@ -60,6 +61,7 @@
   --ak-ref-size-page-header: 3.5rem;
   --ak-ref-size-focus-ring: 2px;
   --ak-ref-size-focus-offset: 2px;
+  --ak-ref-z-popover: 40;
   --ak-ref-space-0: 0;
   --ak-ref-space-1: 0.25rem;
   --ak-ref-space-2: 0.5rem;
@@ -119,11 +121,14 @@
   --ak-sys-shadow-panel: var(--ak-ref-shadow-panel);
   --ak-sys-shadow-accent-ring: 0 0 0 3px var(--ak-sys-color-accent-soft);
   --ak-sys-shadow-focus: var(--ak-sys-shadow-accent-ring);
+  --ak-sys-radius-xs: var(--ak-ref-radius-xs);
   --ak-sys-radius-sm: var(--ak-ref-radius-sm);
   --ak-sys-radius-md: var(--ak-ref-radius-md);
   --ak-sys-radius-lg: var(--ak-ref-radius-lg);
   --ak-sys-radius-full: var(--ak-ref-radius-full);
   --ak-sys-size-control-md: var(--ak-ref-size-control-md);
+  --ak-sys-size-control-lg: var(--ak-ref-size-control-lg);
+  --ak-sys-size-control-touch: var(--ak-ref-size-control-touch);
   --ak-sys-size-stat-card: var(--ak-ref-size-stat-card);
   --ak-sys-size-row: var(--ak-ref-size-row);
   --ak-sys-size-sidebar: var(--ak-ref-size-sidebar);
@@ -143,6 +148,7 @@
   --ak-sys-color-focus-ring: var(--ak-sys-color-accent-default);
   --ak-sys-focus-width: var(--ak-ref-size-focus-ring);
   --ak-sys-focus-offset: var(--ak-ref-size-focus-offset);
+  --ak-sys-z-popover: var(--ak-ref-z-popover);
   --ak-sys-font-mono: var(--ak-ref-font-mono);
   --ak-sys-font-sans: var(--ak-ref-font-sans);
   --ak-sys-motion-duration-fast: var(--ak-ref-duration-fast);

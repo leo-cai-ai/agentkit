@@ -6,39 +6,62 @@
   <script id="ui-config" type="application/json">{{ ui | tojson }}</script>
   {% set agent_options = chat_agents if chat_agents is defined and chat_agents else ui.chat_agents | default([]) %}
   <section class="chat-layout ak-chat-layout">
-    <article class="panel ak-panel chat-panel" aria-labelledby="chat-workforce-title">
+    <article class="panel ak-panel chat-panel ak-chat-workspace" aria-labelledby="chat-workforce-title">
       <div class="panel-head ak-panel-header">
         <h2 id="chat-workforce-title">Ask The AI Workforce</h2>
         <span>Unified chat console</span>
       </div>
 
-      <section class="chat-surface">
-        <fieldset class="agent-selector field-wide">
+      <section class="chat-surface ak-chat-surface">
+        <fieldset class="agent-selector field-wide ak-agent-switcher">
           <legend>Active Agent</legend>
-          <div class="agent-card-grid ak-agent-card-grid" role="radiogroup" aria-label="Active agent">
+          <div class="ak-agent-button-group" role="radiogroup" aria-label="Active agent">
             {% for agent in agent_options %}
               {% set demo_prompt = ui.demo_prompts.get(agent.name, ui.demo_prompt) if ui.demo_prompts is defined else ui.demo_prompt %}
-              <label class="agent-card ak-agent-card" data-agent-card="{{ agent.name }}" data-demo-prompt="{{ demo_prompt }}">
-                <input type="radio" name="agent" value="{{ agent.name }}" {{ 'checked' if agent.name == ui.default_agent else '' }}>
-                <span class="agent-card-top">
-                  <strong>{{ agent.label | default(agent.name | replace('_', ' ') | title) }}</strong>
-                  <em>{{ agent.status | default('online') }}</em>
+              {% set agent_label = agent.label | default(agent.name | replace('_', ' ') | title) %}
+              {% set skill_count = agent.allowed_skills | default([]) | length %}
+              <label
+                class="ak-agent-option"
+                data-agent-card="{{ agent.name }}"
+                data-demo-prompt="{{ demo_prompt }}"
+              >
+                <input
+                  type="radio"
+                  name="agent"
+                  value="{{ agent.name }}"
+                  aria-describedby="agent-detail-{{ loop.index }}"
+                  {{ 'checked' if agent.name == ui.default_agent else '' }}
+                >
+                <span class="ak-agent-option-label">
+                  <strong>{{ agent_label }}</strong>
                 </span>
-                <span class="agent-domain">{{ agent.domain | default('configured agent') }}</span>
-                <span class="agent-mission">{{ agent.mission | default(agent.description | default('Ready for governed tasks.')) }}</span>
-                {% set skill_count = agent.allowed_skills | default([]) | length %}
-                <span class="agent-skills">{{ skill_count }} {{ 'skill' if skill_count == 1 else 'skills' }}</span>
+                <span id="agent-detail-{{ loop.index }}" class="ak-agent-tooltip" role="tooltip">
+                  <span class="ak-agent-tooltip-header">
+                    <b>{{ agent_label }}</b>
+                  </span>
+                  <span class="ak-agent-tooltip-domain">{{ agent.domain | default('configured agent') }}</span>
+                  <span class="ak-agent-tooltip-description">{{ agent.mission | default(agent.description | default('Ready for governed tasks.')) }}</span>
+                  <span class="ak-agent-tooltip-meta">{{ skill_count }} {{ 'skill' if skill_count == 1 else 'skills' }}</span>
+                </span>
               </label>
             {% else %}
-              <label class="agent-card ak-agent-card active" data-agent-card="{{ ui.default_agent }}" data-demo-prompt="{{ ui.demo_prompt }}">
-                <input type="radio" name="agent" value="{{ ui.default_agent }}" checked>
-                <span class="agent-card-top">
+              <label
+                class="ak-agent-option active"
+                data-agent-card="{{ ui.default_agent }}"
+                data-demo-prompt="{{ ui.demo_prompt }}"
+              >
+                <input type="radio" name="agent" value="{{ ui.default_agent }}" aria-describedby="agent-detail-fallback" checked>
+                <span class="ak-agent-option-label">
                   <strong>{{ ui.default_agent | replace('_', ' ') | title }}</strong>
-                  <em>online</em>
                 </span>
-                <span class="agent-domain">configured agent</span>
-                <span class="agent-mission">Restart the Flask service to load full agent metadata.</span>
-                <span class="agent-skills">runtime fallback</span>
+                <span id="agent-detail-fallback" class="ak-agent-tooltip" role="tooltip">
+                  <span class="ak-agent-tooltip-header">
+                    <b>{{ ui.default_agent | replace('_', ' ') | title }}</b>
+                  </span>
+                  <span class="ak-agent-tooltip-domain">configured agent</span>
+                  <span class="ak-agent-tooltip-description">Restart the Flask service to load full agent metadata.</span>
+                  <span class="ak-agent-tooltip-meta">Runtime fallback</span>
+                </span>
               </label>
             {% endfor %}
           </div>
@@ -65,23 +88,56 @@
             </button>
             <ul id="conversation-menu" class="conversation-menu" data-conversation-menu role="listbox" aria-label="Conversation history" hidden></ul>
           </div>
-          <button class="secondary conversation-new" type="button" data-new-conversation>
+          <button class="secondary conversation-new" type="button" data-new-conversation aria-label="New conversation">
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.2v9.6M3.2 8h9.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-            New chat
+            <span>New chat</span>
           </button>
         </div>
 
-        <div id="chat-thread" class="chat-thread" aria-live="polite">
+        <div
+          id="chat-thread"
+          class="chat-thread ak-chat-thread"
+          role="log"
+          aria-label="Conversation messages"
+          aria-live="polite"
+          aria-relevant="additions"
+          tabindex="0"
+        >
           <div class="chat-message assistant">
             <span>Agent</span>
             <p>Select an agent and start chatting. Try <code>who are you</code> or <code>{{ ui.demo_prompt }}</code></p>
           </div>
         </div>
 
-        <form id="chat-form" class="chat-input-row">
-          <input name="message" aria-label="Message" placeholder="Message the AI workforce" autocomplete="off">
-          <button class="primary" type="submit">Send</button>
-          <button class="secondary" type="button" data-chat-demo>Use Demo Prompt</button>
+        <form id="chat-form" class="chat-input-row ak-chat-composer" aria-label="Message composer">
+          <textarea
+            id="chat-message"
+            name="message"
+            data-chat-input
+            rows="1"
+            aria-label="Message"
+            aria-describedby="chat-message-hint"
+            placeholder="Message the AI workforce"
+            autocomplete="off"
+            enterkeyhint="send"
+          ></textarea>
+          <div class="ak-chat-composer-toolbar">
+            <button class="secondary ak-composer-demo" type="button" data-chat-demo>
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path d="m8 1 .8 3.1L12 5l-3.2.9L8 9l-.8-3.1L4 5l3.2-.9L8 1Zm4 8 .5 1.8 1.8.5-1.8.5L12 14l-.5-2.2-1.8-.5 1.8-.5L12 9Z" fill="currentColor"/>
+              </svg>
+              Use Demo Prompt
+            </button>
+            <div class="ak-composer-submit-group">
+              <span id="chat-message-hint" class="ak-composer-hint">Enter to send · Shift+Enter for new line</span>
+              <button class="primary ak-composer-send" type="submit" disabled>
+                <span>Send</span>
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <path d="M8 13V3m0 0L4.5 6.5M8 3l3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </button>
+            </div>
+          </div>
         </form>
       </section>
     </article>
@@ -99,31 +155,6 @@
         <li>Persist audit trail</li>
       </ol>
 
-      <div class="agent-status-panel">
-        <div class="mini-panel-head">
-          <h3>Agent Status</h3>
-          <span>Selectable workforce</span>
-        </div>
-        <div class="agent-status-list">
-          {% for agent in agent_options %}
-            <div class="agent-status-item" data-agent-status="{{ agent.name }}">
-              <div>
-                <strong>{{ agent.label | default(agent.name | replace('_', ' ') | title) }}</strong>
-                <span>{{ agent.domain | default('configured agent') }}</span>
-              </div>
-              <em>{{ agent.status | default('online') }}</em>
-            </div>
-          {% else %}
-            <div class="agent-status-item active" data-agent-status="{{ ui.default_agent }}">
-              <div>
-                <strong>{{ ui.default_agent | replace('_', ' ') | title }}</strong>
-                <span>metadata pending</span>
-              </div>
-              <em>selected</em>
-            </div>
-          {% endfor %}
-        </div>
-      </div>
     </aside>
   </section>
 

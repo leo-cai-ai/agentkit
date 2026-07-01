@@ -635,8 +635,8 @@ target.scrollIntoView({
 | `--ak-sys-color-status-{success,info,warning,danger,neutral}-{fg,bg,border}` | color | 是 | Theme | 每个 tone 作为完整组合验证 |
 | `--ak-sys-color-focus-ring`、`--ak-sys-focus-{width,offset}` | color/length | 是 | Theme | focus 可见性和相邻对比度 |
 | `--ak-sys-font-{sans,mono}`、字号/字重/行高尺度 | typography | 是 | Theme 可替换字体 | fallback、缩放和中英文排版 |
-| `--ak-sys-radius-{sm,md,lg,full}` | length | 是 | Theme | inset、surface、overlay 维持 6/8/12px 的稳定层级，胶囊形态仅使用 full |
-| `--ak-sys-size-{control-sm,control-md,row,stat-card}`、`--ak-sys-space-{panel,grid}` | dimension | 是 | Density | compact 不缩小正文、焦点或触控下限；卡片与网格不各自定义间距 |
+| `--ak-sys-radius-{xs,sm,md,lg,full}` | length | 是 | Theme | segmented item、inset、surface、overlay 维持 4/6/8/12px 的稳定层级，胶囊形态仅使用 full |
+| `--ak-sys-size-{control-sm,control-md,control-lg,control-touch,row,stat-card}`、`--ak-sys-space-{panel,grid}` | dimension | 是 | Density | compact 不缩小正文、焦点或触控下限；复合控件和触屏目标使用共享尺寸 |
 | `--ak-sys-size-{sidebar,sidebar-narrow,page-header}`、`--ak-sys-space-page` | dimension | 是 | Layout + Density | Shell 不重复硬编码宽度，长标题允许自然增高 |
 | `--ak-sys-motion-{fast,normal,easing}` | duration/easing | 是 | Motion preference | reduced-motion 可覆盖 |
 | `--ak-sys-shadow-{raised,overlay}` | shadow | 是 | Theme | 仅 overlay/elevated 使用 |

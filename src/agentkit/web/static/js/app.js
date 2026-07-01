@@ -15,15 +15,22 @@ let currentConversationId = null;
 let conversationCache = [];
 let chatBusy = false;
 
-// Disable both the Send and "Use Demo Prompt" buttons while a turn is running so
-// a previous chat/action turn can't be re-triggered before it finishes.
+function syncChatComposerState() {
+  const form = document.getElementById("chat-form");
+  if (!form) return;
+  const input = form.querySelector("[data-chat-input]");
+  const submit = form.querySelector('button[type="submit"]');
+  const demo = form.querySelector("[data-chat-demo]");
+  if (submit) submit.disabled = chatBusy || !input?.value.trim();
+  if (demo) demo.disabled = chatBusy;
+  form.setAttribute("aria-busy", String(chatBusy));
+}
+
+// Disable both actions while a turn is running so a previous turn cannot be
+// re-triggered before it finishes. The textarea remains editable as a draft.
 function setChatBusy(busy) {
   chatBusy = busy;
-  document
-    .querySelectorAll('#chat-form button[type="submit"], #chat-form [data-chat-demo]')
-    .forEach((button) => {
-      button.disabled = busy;
-    });
+  syncChatComposerState();
 }
 
 function escapeHtml(value) {
@@ -470,22 +477,8 @@ function setExecutionState(label, activeIndex = -1, done = false) {
 }
 
 function setAgentStatus(agentName, label) {
-  const toneByLabel = {
-    completed: "success",
-    failed: "danger",
-    rejected: "danger",
-    running: "info",
-    waiting: "warning",
-  };
-  document.querySelectorAll("[data-agent-status]").forEach((item) => {
-    const isSelected = item.dataset.agentStatus === agentName;
-    item.classList.toggle("active", isSelected);
-    const status = item.querySelector("em");
-    if (status) {
-      status.textContent = isSelected ? label : "online";
-      status.dataset.tone = isSelected ? toneByLabel[label] || "neutral" : "success";
-    }
-  });
+  const card = getAgentCard(agentName);
+  if (card) card.dataset.state = label;
 }
 
 function applyAgentMode() {
@@ -495,12 +488,13 @@ function applyAgentMode() {
 
 function bindAgentSelector() {
   const radios = Array.from(document.querySelectorAll('input[name="agent"]'));
+  const cards = Array.from(document.querySelectorAll("[data-agent-card]"));
   const update = async (isUserChange) => {
     if (!document.querySelector('input[name="agent"]:checked') && radios[0]) {
       radios[0].checked = true;
     }
     const selected = getSelectedAgentName();
-    document.querySelectorAll("[data-agent-card]").forEach((card) => {
+    cards.forEach((card) => {
       card.classList.toggle("active", card.dataset.agentCard === selected);
     });
     setAgentStatus(selected, "selected");
@@ -518,6 +512,16 @@ function bindAgentSelector() {
     }
   };
   radios.forEach((radio) => radio.addEventListener("change", () => update(true)));
+  cards.forEach((card) => {
+    const revealTooltip = () => delete card.dataset.tooltipHidden;
+    card.addEventListener("pointerenter", revealTooltip);
+    card.addEventListener("focusin", revealTooltip);
+    card.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      card.dataset.tooltipHidden = "true";
+      event.stopPropagation();
+    });
+  });
   update(false);
 }
 
@@ -877,7 +881,7 @@ function buildApprovalChatPayload(action) {
   };
 }
 
-async function runUnifiedChatTurn(message, selectedAgent, submit) {
+async function runUnifiedChatTurn(message, selectedAgent) {
   const isNewConversation = !currentConversationId;
   const requestPayload = collectChatPayload(message);
   const bubble = addLiveAssistantMessage(getSelectedAgentLabel());
@@ -935,27 +939,39 @@ async function runUnifiedChatTurn(message, selectedAgent, submit) {
     if (bubble) bubble.p.textContent = error.message;
     setExecutionState("Failed");
     setAgentStatus(selectedAgent, "failed");
-  } finally {
-    submit.disabled = false;
   }
 }
 
 function bindChatForm() {
   const chatForm = document.getElementById("chat-form");
   if (!chatForm) return;
-  const input = chatForm.querySelector('input[name="message"]');
+  const input = chatForm.querySelector("[data-chat-input]");
   const submit = chatForm.querySelector('button[type="submit"]');
+  if (!input || !submit) return;
+  let isComposing = false;
+  const resizeInput = () => {
+    input.style.height = "auto";
+    const maxHeight = Number.parseFloat(getComputedStyle(input).maxHeight);
+    const nextHeight = Number.isFinite(maxHeight)
+      ? Math.min(input.scrollHeight, maxHeight)
+      : input.scrollHeight;
+    input.style.height = `${nextHeight}px`;
+    input.style.overflowY = Number.isFinite(maxHeight) && input.scrollHeight > maxHeight
+      ? "auto"
+      : "hidden";
+  };
   const runChat = async (message) => {
     if (chatBusy) return;
     if (!message.trim()) return;
     addChatMessage("user", message);
     input.value = "";
+    resizeInput();
     setChatBusy(true);
     const selectedAgent = getSelectedAgentName();
     setAgentStatus(selectedAgent, "running");
     setExecutionState("Processing", 0);
     try {
-      await runUnifiedChatTurn(message, selectedAgent, submit);
+      await runUnifiedChatTurn(message, selectedAgent);
     } finally {
       setChatBusy(false);
     }
@@ -964,7 +980,26 @@ function bindChatForm() {
     event.preventDefault();
     runChat(input.value);
   });
+  input.addEventListener("input", () => {
+    resizeInput();
+    syncChatComposerState();
+  });
+  input.addEventListener("compositionstart", () => {
+    isComposing = true;
+  });
+  input.addEventListener("compositionend", () => {
+    isComposing = false;
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.shiftKey) return;
+    if (event.isComposing || isComposing || event.keyCode === 229) return;
+    event.preventDefault();
+    if (!chatBusy && input.value.trim()) chatForm.requestSubmit(submit);
+  });
   document.querySelector("[data-chat-demo]")?.addEventListener("click", () => runChat(getSelectedAgentDemoPrompt()));
+  window.addEventListener("resize", resizeInput, { passive: true });
+  resizeInput();
+  syncChatComposerState();
 }
 
 function bindConversationBar() {

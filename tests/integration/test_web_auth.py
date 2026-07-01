@@ -120,6 +120,8 @@ def test_page_stylesheets_load_in_expected_order(client):
     assert "--ak-sys-space-panel" in token_css
     assert "--ak-sys-size-stat-card" in token_css
     assert "--ak-sys-space-grid" in token_css
+    assert "--ak-sys-size-control-lg" in token_css
+    assert "--ak-sys-size-control-touch" in token_css
     reference_colors = dict(re.findall(r"(--ak-ref-color-[\w-]+):\s*(#[0-9a-fA-F]{6})", token_css))
     muted = reference_colors["--ak-ref-color-neutral-400"]
     for surface in ("neutral-800", "neutral-850", "neutral-900"):
@@ -227,8 +229,36 @@ def test_authenticated_shell_preserves_structure_and_accessibility(client):
         'aria-label="Message"',
         'aria-controls="conversation-menu"',
         'id="conversation-menu"',
+        'class="ak-agent-option',
+        'class="ak-agent-tooltip" role="tooltip"',
+        'class="chat-thread ak-chat-thread"',
+        'role="log"',
+        'class="chat-input-row ak-chat-composer"',
+        "data-chat-input",
+        'class="ak-chat-composer-toolbar"',
+        'aria-label="New conversation"',
     ):
         assert contract in chat_html
+    assert "agent-status-panel" not in chat_html
+    assert '<input name="message"' not in chat_html
+
+    pages_css = client.get("/static/css/pages.css").get_data(as_text=True)
+    for contract in (
+        ".ak-agent-button-group",
+        ".ak-agent-tooltip",
+        ".ak-chat-workspace",
+        ".ak-chat-thread",
+        ".ak-chat-composer",
+        "min-block-size: var(--ak-sys-size-control-lg)",
+    ):
+        assert contract in pages_css
+    workspace_rule = re.search(r"\.ak-chat-workspace\s*\{([^}]+)\}", pages_css)
+    assert workspace_rule is not None
+    assert "min-block-size: 38rem" in workspace_rule.group(1)
+    assert "100vh" in workspace_rule.group(1)
+    assert "100dvh" in workspace_rule.group(1)
+    assert "52rem" not in workspace_rule.group(1)
+    assert "@media (max-width: 56.25rem)" in pages_css
 
     application_js = client.get("/static/js/app.js").get_data(as_text=True)
     dynamic_class_values = re.findall(r'class="([^"]*)"', application_js)
@@ -244,7 +274,13 @@ def test_authenticated_shell_preserves_structure_and_accessibility(client):
         'aria-selected="${active}"',
         'event.key === "ArrowDown"',
         'event.key === "Home"',
-        'status.dataset.tone',
+        'card.dataset.state = label',
+        'chatForm.querySelector("[data-chat-input]")',
+        "event.isComposing || isComposing",
+        "event.shiftKey",
+        "chatForm.requestSubmit(submit)",
+        "Math.min(input.scrollHeight, maxHeight)",
+        'card.dataset.tooltipHidden = "true"',
         'tableHtml(rankedCandidates, "Ranked candidates")',
         '<h2 id="raw-plan-title" class="json-title">',
     ):
