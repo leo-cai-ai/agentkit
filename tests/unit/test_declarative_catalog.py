@@ -7,7 +7,11 @@ from pathlib import Path
 import pytest
 
 from agentkit.core.registry import AgentRegistry, SkillRegistry, ToolRegistry
-from agentkit.runtime.declarative_catalog import load_catalog, register_catalog
+from agentkit.runtime.declarative_catalog import (
+    load_catalog,
+    register_catalog,
+    resolve_enabled_agent_ids,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -172,6 +176,21 @@ def test_social_growth_manifest_exposes_all_existing_capabilities() -> None:
         "xhs.rpa.publish_note",
         "xhs.metrics.fetch",
     ]
+
+
+def test_explicit_enabled_agents_take_precedence_over_legacy_domains() -> None:
+    """租户显式选择 Agent 时不得被旧领域配置扩大权限。"""
+    catalog = load_catalog(REPO_ROOT)
+
+    enabled = resolve_enabled_agent_ids(
+        catalog,
+        {
+            "enabled_agents": ["customer_service"],
+            "enabled_domains": ["hr.recruitment", "marketing.social_growth"],
+        },
+    )
+
+    assert enabled == {"customer_service"}
 
 
 def _write_valid_catalog(

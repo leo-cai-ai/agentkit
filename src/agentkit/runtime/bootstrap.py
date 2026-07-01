@@ -19,7 +19,11 @@ from agentkit.core.migrations import run_storage_migrations
 from agentkit.core.prompts import load_prompt_files
 from agentkit.core.registry import AgentRegistry, SkillRegistry, ToolRegistry
 from agentkit.core.skill_store import SkillFileStore, attach_skill_packages
-from agentkit.runtime.pack_registry import discover_packs
+from agentkit.runtime.declarative_catalog import (
+    load_catalog,
+    register_catalog,
+    resolve_enabled_agent_ids,
+)
 
 # Root that holds the editable config tree (tenants/ prompts/ skills/ data/).
 # When running from a source checkout this is the repo root
@@ -100,6 +104,7 @@ def _runtime_manifest(*, tenant_id: str, tenant_config: dict[str, Any]) -> dict[
             "sha256": _sha256_file(tenant_path) if tenant_path.is_file() else "",
         },
         "enabled_domains": list(tenant_config.get("enabled_domains", [])),
+        "enabled_agents": list(tenant_config.get("enabled_agents", [])),
         "prompt_files": prompts,
     }
 
@@ -141,20 +146,18 @@ def build_runtime(
             "Supported backends: 'sqlite', 'postgres'."
         )
 
-    # Load only the domain packs this tenant enabled. Packs are discovered at
-    # runtime (in-repo scan + installed entry points), so adding a business
-    # domain is a single pack plus an `enabled_domains` entry -- no edits here.
-    available_packs = discover_packs()
-    for domain in tenant_config.get("enabled_domains", []):
-        register_pack = available_packs.get(domain)
-        if register_pack is None:
-            continue
-        register_pack(
-            agents=agents,
-            skills=skills,
-            tools=tools,
-            tenant_config=tenant_config,
-        )
+    # 业务 Agent、Skill 与工具全部从声明式目录加载。没有 enabled_agents 时，
+    # 兼容按 enabled_domains 选择，保证已有租户可平滑迁移。
+    catalog = load_catalog(AGENTKIT_ROOT)
+    enabled_agent_ids = resolve_enabled_agent_ids(catalog, tenant_config)
+    register_catalog(
+        catalog,
+        enabled_agent_ids=enabled_agent_ids,
+        agents=agents,
+        skills=skills,
+        tools=tools,
+        tenant_config=tenant_config,
+    )
 
     # Platform agents are business-agnostic and always available. The router is
     # allowed to dispatch to whatever skills the enabled packs registered.

@@ -153,6 +153,27 @@ def register_catalog(
         )
 
 
+def resolve_enabled_agent_ids(
+    catalog: DeclarativeCatalog,
+    tenant_config: dict[str, Any],
+) -> set[str]:
+    """优先读取显式 Agent 列表，并兼容旧领域开关。"""
+    configured = tenant_config.get("enabled_agents")
+    if isinstance(configured, list) and configured:
+        selected = {str(value) for value in configured}
+        unknown = sorted(selected - set(catalog.agents))
+        if unknown:
+            raise ValueError(f"租户引用了未知 Agent: {', '.join(unknown)}")
+        return selected
+
+    enabled_domains = {str(value) for value in tenant_config.get("enabled_domains", [])}
+    return {
+        manifest.agent_id
+        for manifest in catalog.agents.values()
+        if manifest.domain in enabled_domains
+    }
+
+
 def parse_agent_markdown(path: str | Path) -> tuple[dict[str, Any], str]:
     """读取带 YAML front matter 的 Agent Markdown 文件。"""
     source_path = Path(path)
@@ -539,4 +560,5 @@ __all__ = [
     "load_catalog",
     "parse_agent_markdown",
     "register_catalog",
+    "resolve_enabled_agent_ids",
 ]

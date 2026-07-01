@@ -1,5 +1,6 @@
 {
   "tenant_id": "AI-ABC",
+  "enabled_agents": ["hr_recruiter", "xhs_growth", "customer_service"],
   "enabled_domains": ["hr.recruitment", "marketing.social_growth", "support.customer_service"],
   "agent_identity": {
     "name": "Javes",
