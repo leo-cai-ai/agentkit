@@ -255,38 +255,9 @@ class SQLiteAuditLog:
         return conn
 
     def _init_schema(self) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS task_runs (
-                    run_id TEXT PRIMARY KEY,
-                    tenant_id TEXT NOT NULL,
-                    user_id TEXT NOT NULL,
-                    text TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    started_at REAL NOT NULL,
-                    finished_at REAL
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS audit_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id TEXT NOT NULL,
-                    ts REAL NOT NULL,
-                    event_type TEXT NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    FOREIGN KEY(run_id) REFERENCES task_runs(run_id)
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_audit_events_run_id
-                ON audit_events(run_id, id)
-                """
-            )
+        from .migrations import run_sqlite_migrations
+
+        run_sqlite_migrations(self._db_path)
 
 
 class PostgresAuditLog(SQLiteAuditLog):
@@ -617,46 +588,6 @@ class PostgresAuditLog(SQLiteAuditLog):
         return connection(self._settings)
 
     def _init_schema(self) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS task_runs (
-                    run_id TEXT PRIMARY KEY,
-                    tenant_id TEXT NOT NULL,
-                    user_id TEXT NOT NULL,
-                    text TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    started_at DOUBLE PRECISION NOT NULL,
-                    finished_at DOUBLE PRECISION
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS audit_events (
-                    id BIGSERIAL PRIMARY KEY,
-                    run_id TEXT NOT NULL,
-                    ts DOUBLE PRECISION NOT NULL,
-                    event_type TEXT NOT NULL,
-                    payload_json JSONB NOT NULL
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_audit_events_run_id
-                ON audit_events(run_id, id)
-                """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_audit_events_type
-                ON audit_events(event_type)
-                """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_task_runs_tenant_started
-                ON task_runs(tenant_id, started_at DESC)
-                """
-            )
+        from .migrations import run_postgres_migrations
+
+        run_postgres_migrations(self._settings)
