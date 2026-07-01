@@ -144,6 +144,7 @@ class _Locator:
         visible: bool = True,
         count: int = 1,
         attributes: dict[str, str] | None = None,
+        box: dict[str, float] | None = None,
     ) -> None:
         self.visible = visible
         self._count = count
@@ -152,6 +153,7 @@ class _Locator:
         self.value = ""
         self.clicked = False
         self.click_options: dict = {}
+        self.box = box or {"x": 280.0, "y": 630.0, "width": 680.0, "height": 90.0}
 
     @property
     def first(self):
@@ -176,12 +178,23 @@ class _Locator:
     def get_attribute(self, name: str):
         return self.attributes.get(name)
 
+    def input_value(self) -> str:
+        return self.value
+
+    def inner_text(self) -> str:
+        return self.value
+
     def bounding_box(self) -> dict[str, float]:
-        return {"x": 280.0, "y": 630.0, "width": 680.0, "height": 90.0}
+        return self.box
 
     def click(self, **_kwargs) -> None:
         self.clicked = True
         self.click_options = dict(_kwargs)
+
+
+class _DiscardingLocator(_Locator):
+    def fill(self, _value: str) -> None:
+        return None
 
 
 class _PublishPage:
@@ -310,8 +323,41 @@ def test_playwright_publish_adapter_prepares_and_submits_exact_content(tmp_path)
     assert page.title.value == package["title"]
     assert "#亲子游" in page.body.value
     assert page.button.clicked is True
-    assert page.button.click_options["position"] == {"x": 414.8, "y": 45.0}
+    assert page.button.click_options["position"] == {"x": 620.0, "y": 45.0}
     assert result["status"] == "published"
+
+
+def test_publish_stops_before_click_when_title_does_not_persist(tmp_path) -> None:
+    page = _PublishPage()
+    page.title = _DiscardingLocator()
+    adapter = XhsPublishAdapter(asset_root=tmp_path / "assets")
+    media = tmp_path / "cover.png"
+    media.write_bytes(b"png")
+
+    with pytest.raises(BrowserPageChanged, match="title.*value mismatch"):
+        adapter.publish(
+            page,
+            package={"title": "标题", "body": "正文", "media_paths": [str(media)]},
+            timeout_ms=1000,
+        )
+
+    assert page.button.clicked is False
+
+
+def test_publish_targets_right_side_of_closed_shadow_host(tmp_path) -> None:
+    page = _PublishPage()
+    page.button.box = {"x": 100.0, "y": 200.0, "width": 252.0, "height": 40.0}
+    adapter = XhsPublishAdapter(asset_root=tmp_path / "assets")
+    media = tmp_path / "cover.png"
+    media.write_bytes(b"png")
+
+    adapter.publish(
+        page,
+        package={"title": "标题", "body": "正文", "media_paths": [str(media)]},
+        timeout_ms=1000,
+    )
+
+    assert page.button.click_options["position"] == {"x": 192.0, "y": 20.0}
 
 
 def test_playwright_publish_adapter_generates_reviewed_text_images(tmp_path) -> None:

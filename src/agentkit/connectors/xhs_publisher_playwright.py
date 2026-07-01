@@ -396,8 +396,18 @@ class XhsPublishAdapter:
             field_name="body",
         )
         _log.info("Xiaohongshu image editor fields are ready")
-        title.fill(content["title"])
-        body.fill(append_hashtags(content["body"], content["tags"]))
+        self._fill_and_verify(
+            page=page,
+            locator=title,
+            expected=content["title"],
+            field_name="title",
+        )
+        self._fill_and_verify(
+            page=page,
+            locator=body,
+            expected=append_hashtags(content["body"], content["tags"]),
+            field_name="body",
+        )
         _log.info("Xiaohongshu reviewed title and body populated")
 
         _log.info("Xiaohongshu publish button ready; submitting reviewed content")
@@ -430,6 +440,42 @@ class XhsPublishAdapter:
             "published_at": _now(),
             "content_hash": package.get("content_hash", ""),
         }
+
+    @staticmethod
+    def _normalized_field_value(value: str) -> str:
+        return " ".join(value.split())
+
+    @staticmethod
+    def _read_locator_value(locator: Any) -> str:
+        for name in ("input_value", "inner_text", "text_content"):
+            reader = getattr(locator, name, None)
+            if not callable(reader):
+                continue
+            try:
+                value = reader()
+            except Exception:  # noqa: BLE001 - 页面控件可能在重绘中替换
+                continue
+            if value is not None:
+                return str(value)
+        return ""
+
+    def _fill_and_verify(
+        self,
+        *,
+        page: Any,
+        locator: Any,
+        expected: str,
+        field_name: str,
+    ) -> None:
+        locator.fill(expected)
+        actual = self._read_locator_value(locator)
+        if self._normalized_field_value(actual) == self._normalized_field_value(expected):
+            return
+        diagnostics = self._capture_diagnostics(page, field_name=f"{field_name}-value")
+        raise BrowserPageChanged(
+            f"Xiaohongshu {field_name} value mismatch; "
+            f"expected_length={len(expected)} actual_length={len(actual)}; {diagnostics}"
+        )
 
     def _upload_media(
         self,
@@ -625,13 +671,16 @@ class XhsPublishAdapter:
         if not box or box.get("width", 0) <= 0 or box.get("height", 0) <= 0:
             raise BrowserPageChanged("Xiaohongshu publish control has no clickable bounds")
 
-        # xhs-publish-btn has a closed shadow root containing save and submit
-        # buttons. The submit button is the right-hand control in a symmetric,
-        # responsive action group centered inside the host.
+        width = float(box["width"])
+        height = float(box["height"])
+        right_button_width = min(120.0, width / 2.0)
+
+        # xhs-publish-btn 的 closed shadow root 包含左侧暂存和右侧发布按钮。
+        # 已确认右侧按钮宽度为 120 像素；窄宿主退化为右半区域的中心。
         control.click(
             position={
-                "x": float(box["width"]) * 0.61,
-                "y": float(box["height"]) * 0.5,
+                "x": max(width / 2.0, width - right_button_width / 2.0),
+                "y": height / 2.0,
             }
         )
 
