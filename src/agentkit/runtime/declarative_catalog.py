@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
+import importlib.util
+import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import yaml
 
-from agentkit.core.contracts import ExecutionMode
+from agentkit.core.contracts import AgentProfile, ExecutionMode, SkillDefinition, ToolDefinition
+from agentkit.core.registry import AgentRegistry, SkillRegistry, ToolRegistry
 
 _EXECUTION_MODES: set[str] = {"react", "plan_execute", "batch", "workflow", "no_tool"}
 _CONTEXT_LIST_FIELDS = {
@@ -87,6 +93,53 @@ def load_catalog(root: str | Path) -> DeclarativeCatalog:
         capabilities=capabilities,
         tools=tools,
     )
+
+
+def register_catalog(
+    catalog: DeclarativeCatalog,
+    *,
+    enabled_agent_ids: set[str],
+    agents: AgentRegistry,
+    skills: SkillRegistry,
+    tools: ToolRegistry,
+) -> None:
+    """将指定 Agent 的声明编译并写入既有运行时注册表。"""
+    unknown_agents = sorted(enabled_agent_ids - set(catalog.agents))
+    if unknown_agents:
+        raise ValueError(f"引用了未知 Agent: {', '.join(unknown_agents)}")
+
+    selected_agents = [catalog.agents[agent_id] for agent_id in sorted(enabled_agent_ids)]
+    capability_ids = _unique_in_order(
+        capability_id for agent in selected_agents for capability_id in agent.skills
+    )
+    tool_ids = _unique_in_order(
+        tool_id
+        for capability_id in capability_ids
+        for tool_id in catalog.capabilities[capability_id].tools
+    )
+
+    for tool_id in tool_ids:
+        tools.register(_compile_tool(catalog.root, catalog.tools[tool_id]))
+    for capability_id in capability_ids:
+        skills.register(_compile_capability(catalog.root, catalog.capabilities[capability_id]))
+    for manifest in selected_agents:
+        allowed_tools = _unique_in_order(
+            tool_id
+            for capability_id in manifest.skills
+            for tool_id in catalog.capabilities[capability_id].tools
+        )
+        agents.register(
+            AgentProfile(
+                name=manifest.agent_id,
+                domain=manifest.domain,
+                description=manifest.description,
+                allowed_skills=list(manifest.skills),
+                allowed_tools=allowed_tools,
+                max_tokens=manifest.max_tokens,
+                prompt_file=manifest.prompt_file,
+                context_policy=dict(manifest.context),
+            )
+        )
 
 
 def parse_agent_markdown(path: str | Path) -> tuple[dict[str, Any], str]:
@@ -175,11 +228,13 @@ def _build_tool_manifest(raw: Any, package_id: str, source_path: Path) -> ToolMa
     timeout = value.get("timeout_seconds")
     if timeout is not None and (not isinstance(timeout, int | float) or timeout < 0):
         raise ValueError(f"{source_path}: timeout_seconds 必须是非负数字或 null")
+    entrypoint = _required_string(value, "entrypoint", source_path)
+    _validate_entrypoint_format(entrypoint, source_path)
     return ToolManifest(
         tool_id=_required_string(value, "id", source_path),
         package_id=package_id,
         description=_required_string(value, "description", source_path),
-        entrypoint=_required_string(value, "entrypoint", source_path),
+        entrypoint=entrypoint,
         supports_batch=_optional_bool(value, "supports_batch", source_path, default=False),
         idempotent=_optional_bool(value, "idempotent", source_path, default=False),
         timeout_seconds=float(timeout) if timeout is not None else None,
@@ -201,12 +256,14 @@ def _build_capability_manifest(
     batch_key = value.get("batch_key")
     if batch_key is not None and (not isinstance(batch_key, str) or not batch_key):
         raise ValueError(f"{source_path}: batch_key 必须是非空字符串或 null")
+    entrypoint = _required_string(value, "entrypoint", source_path)
+    _validate_entrypoint_format(entrypoint, source_path)
     return CapabilityManifest(
         capability_id=_required_string(value, "id", source_path),
         package_id=package_id,
         domain=_required_string(value, "domain", source_path),
         description=_required_string(value, "description", source_path),
-        entrypoint=_required_string(value, "entrypoint", source_path),
+        entrypoint=entrypoint,
         execution_mode=execution_mode,  # type: ignore[arg-type]
         permissions=tuple(_required_string_list(value, "permissions", source_path)),
         tools=tuple(_required_string_list(value, "tools", source_path)),
@@ -246,6 +303,133 @@ def _validate_references(
         unknown = sorted(set(capability.tools) - set(tools))
         if unknown:
             raise ValueError(f"{capability.source_path}: 引用了未知工具: {', '.join(unknown)}")
+
+
+def _validate_entrypoint_format(entrypoint: str, source_path: Path) -> None:
+    """拒绝不在 Skill `scripts/` 包内的脚本入口。"""
+    module_path, separator, attribute = entrypoint.partition(":")
+    components = module_path.split(".")
+    if (
+        separator != ":"
+        or not attribute
+        or components[0] != "scripts"
+        or len(components) < 2
+        or any(not component.isidentifier() for component in components)
+        or not attribute.isidentifier()
+    ):
+        raise ValueError(f"{source_path}: 入口必须是 scripts 目录内的模块:function")
+
+
+def _compile_tool(root: Path, manifest: ToolManifest) -> ToolDefinition:
+    """将一个工具声明编译为运行时工具定义。"""
+    handler = _load_entrypoint(root, manifest.source_path.parent, manifest.entrypoint)
+    return ToolDefinition(
+        name=manifest.tool_id,
+        domain=_tool_domain(manifest.tool_id),
+        description=manifest.description,
+        handler=handler,
+        supports_batch=manifest.supports_batch,
+        idempotent=manifest.idempotent,
+        timeout_seconds=manifest.timeout_seconds,
+    )
+
+
+def _compile_capability(root: Path, manifest: CapabilityManifest) -> SkillDefinition:
+    """将一个 capability 声明编译为运行时 Skill 定义。"""
+    handler = _load_entrypoint(root, manifest.source_path.parent, manifest.entrypoint)
+    return SkillDefinition(
+        name=manifest.capability_id,
+        domain=manifest.domain,
+        description=manifest.description,
+        input_schema=dict(manifest.input_schema),
+        output_schema=dict(manifest.output_schema),
+        permissions=list(manifest.permissions),
+        execution_mode=manifest.execution_mode,
+        tools=list(manifest.tools),
+        handler=handler,
+        batch_key=manifest.batch_key,
+        keywords=list(manifest.keywords),
+    )
+
+
+def _load_entrypoint(
+    root: Path, package_root: Path, entrypoint: str
+) -> Callable[..., Any]:
+    """按受限模块名加载 Skill 脚本函数，支持脚本包内的相对导入。"""
+    del root  # 保留根目录参数，调用处可明确表达加载范围。
+    module_path, _, attribute = entrypoint.partition(":")
+    scripts_dir = (package_root / "scripts").resolve()
+    source_path = (package_root / (module_path.replace(".", "/") + ".py")).resolve()
+    if not source_path.is_file() or scripts_dir not in source_path.parents:
+        raise ValueError(f"{package_root}: 入口脚本不存在或不在 scripts 目录")
+    init_path = scripts_dir / "__init__.py"
+    if not init_path.is_file():
+        raise ValueError(f"{package_root}: scripts 目录必须包含 __init__.py")
+
+    package_name = f"agentkit_skill_{hashlib.sha256(str(package_root).encode()).hexdigest()[:16]}"
+    _ensure_script_package(
+        package_name=package_name,
+        package_root=package_root,
+        scripts_dir=scripts_dir,
+    )
+    module_name = f"{package_name}.{module_path}"
+    module = _load_source_module(module_name=module_name, source_path=source_path)
+    handler = getattr(module, attribute, None)
+    if not callable(handler):
+        raise ValueError(f"{source_path}: 入口函数 {attribute!r} 不可调用")
+    return handler
+
+
+def _ensure_script_package(*, package_name: str, package_root: Path, scripts_dir: Path) -> None:
+    """为一个 Skill 构造独立模块命名空间，避免不同包的脚本冲突。"""
+    if package_name not in sys.modules:
+        package = ModuleType(package_name)
+        package.__path__ = [str(package_root)]
+        package.__package__ = package_name
+        sys.modules[package_name] = package
+
+    scripts_name = f"{package_name}.scripts"
+    if scripts_name in sys.modules:
+        return
+    init_path = scripts_dir / "__init__.py"
+    spec = importlib.util.spec_from_file_location(
+        scripts_name,
+        init_path,
+        submodule_search_locations=[str(scripts_dir)],
+    )
+    if spec is None or spec.loader is None:
+        raise ValueError(f"{scripts_dir}: 无法创建脚本包加载器")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[scripts_name] = module
+    spec.loader.exec_module(module)
+
+
+def _load_source_module(*, module_name: str, source_path: Path) -> ModuleType:
+    """加载一个未安装的 Skill 脚本模块。"""
+    existing = sys.modules.get(module_name)
+    if isinstance(existing, ModuleType):
+        return existing
+    spec = importlib.util.spec_from_file_location(module_name, source_path)
+    if spec is None or spec.loader is None:
+        raise ValueError(f"{source_path}: 无法创建脚本加载器")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
+    return module
+
+
+def _unique_in_order(values: Any) -> list[str]:
+    """去重并保持声明顺序，避免迁移改变既有工具白名单顺序。"""
+    return list(dict.fromkeys(values))
+
+
+def _tool_domain(tool_id: str) -> str:
+    """工具没有单独声明 domain 时，使用其首段作为稳定归属。"""
+    return tool_id.split(".", 1)[0]
 
 
 def _load_yaml_object(source_path: Path) -> dict[str, Any]:
@@ -296,4 +480,5 @@ __all__ = [
     "ToolManifest",
     "load_catalog",
     "parse_agent_markdown",
+    "register_catalog",
 ]
