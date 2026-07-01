@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
+import uuid
+
+import pytest
 
 import agentkit.config as config_mod
 import agentkit.core.llm_client as llm_client
+from agentkit.config import Settings
+from agentkit.core import pg
+from agentkit.core.artifacts import build_artifact_store
 from agentkit.core.audit import InMemoryAuditLog
 from agentkit.core.contracts import (
     IntentFrame,
@@ -18,10 +25,87 @@ from agentkit.core.contracts import (
 )
 from agentkit.core.executor import PlanExecutor
 from agentkit.core.idempotency import build_idempotency_store
+from agentkit.core.migrations import run_postgres_migrations
 from agentkit.core.policy import PolicyGuard
 from agentkit.core.registry import SkillRegistry, ToolRegistry
 from agentkit.llm.fake import FakeProvider
 from agentkit.runtime.bootstrap import build_runtime
+
+
+def _postgres_contract_scope() -> str:
+    return uuid.uuid4().hex
+
+
+def test_postgres_contract_scope_is_unique() -> None:
+    first = _postgres_contract_scope()
+    second = _postgres_contract_scope()
+
+    assert first != second
+    assert f"contract-{first}" != f"contract-{second}"
+    assert f"{first}-artifact-run" != f"{second}-artifact-run"
+    assert f"{first}-contract-key" != f"{second}-contract-key"
+
+
+@pytest.mark.skipif(
+    not os.getenv("AGENTKIT_TEST_PG_DSN"),
+    reason="AGENTKIT_TEST_PG_DSN is not configured",
+)
+def test_postgres_storage_contracts() -> None:
+    scope = _postgres_contract_scope()
+    tenant_id = f"contract-{scope}"
+    run_id = f"{scope}-artifact-run"
+    idempotency_key = f"{scope}-contract-key"
+    settings = Settings(
+        _env_file=None,
+        storage_backend="postgres",
+        pg_dsn=os.environ["AGENTKIT_TEST_PG_DSN"],
+    )
+    run_postgres_migrations(settings)
+
+    try:
+        artifacts = build_artifact_store(
+            backend="postgres",
+            tenant_id=tenant_id,
+            run_id=run_id,
+            settings=settings,
+        )
+        written = artifacts.put(kind="contract.value", payload={"value": 1})
+        assert artifacts.get(written.artifact_id).payload == {"value": 1}
+
+        store = build_idempotency_store(
+            backend="postgres",
+            tenant_id=tenant_id,
+            settings=settings,
+        )
+        claim = store.begin(
+            tool_name="contract.write",
+            idempotency_key=idempotency_key,
+            args={"value": 1},
+        )
+        assert claim.claimed is True
+        store.finish_success(claim, {"written": True})
+
+        cached = build_idempotency_store(
+            backend="postgres",
+            tenant_id=tenant_id,
+            settings=settings,
+        ).begin(
+            tool_name="contract.write",
+            idempotency_key=idempotency_key,
+            args={"value": 1},
+        )
+        assert cached.claimed is False
+        assert cached.result == {"written": True}
+    finally:
+        with pg.connection(settings) as conn:
+            conn.execute(
+                "DELETE FROM workflow_artifacts WHERE tenant_id = %s",
+                (tenant_id,),
+            )
+            conn.execute(
+                "DELETE FROM tool_idempotency_records WHERE tenant_id = %s",
+                (tenant_id,),
+            )
 
 
 def test_runtime_artifact_factory_persists_and_audits_without_payload(
