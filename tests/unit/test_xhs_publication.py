@@ -310,11 +310,20 @@ class _UnknownPublishPage(_PublishPage):
         for callback in self.handlers.get("response", []):
             callback(response)
 
+    def evaluate(self, expression: str, *args):
+        value = super().evaluate(expression, *args)
+        if isinstance(value, dict) and "const text" in expression:
+            return {**value, "text": "secret-page-body"}
+        return value
+
     def wait_for_function(self, *_args, **_kwargs) -> None:
         raise TimeoutError("publication is not confirmed")
 
     def wait_for_timeout(self, timeout_ms: int) -> None:
         self.wait_calls.append(timeout_ms)
+
+    def goto(self, url: str, **kwargs) -> None:
+        super().goto(f"{url}&token=secret-page-query", **kwargs)
 
 
 class _TextImagePublishPage(_PublishPage):
@@ -431,6 +440,8 @@ def test_unknown_publish_outcome_includes_redacted_network_evidence_and_waits(tm
     assert "POST /api/sns/v1/note" in message
     assert "200" in message
     assert "secret-body" not in message
+    assert "secret-page-body" not in message
+    assert "secret-page-query" not in message
     assert page.wait_calls == [90_000]
 
 

@@ -47,8 +47,7 @@ _PUBLISH_PAGE_STATE = r"""
       ),
     phoneVerification,
     login: /扫码登录|手机号登录|登录后|请先登录/i.test(text) || /\/login(?:\?|$)/i.test(url),
-    success: /发布成功|提交成功|已发布|审核中/i.test(text) || /published|success/i.test(url),
-    text: text.slice(0, 1000)
+    success: /发布成功|提交成功|已发布|审核中/i.test(text) || /published|success/i.test(url)
   };
 }
 """.replace("__XHS_PHONE_VERIFICATION_PATTERN__", XHS_PHONE_VERIFICATION_PATTERN)
@@ -477,7 +476,7 @@ class XhsPublishAdapter:
                 field_name="publish-confirmation",
                 extra=(
                     f"click={click_metadata!r}; network_evidence={evidence.summary()!r}; "
-                    f"page_state={state!r}"
+                    f"page_state={self._redacted_publish_state(state)!r}"
                 ),
             )
             if self.observation_seconds > 0:
@@ -492,7 +491,10 @@ class XhsPublishAdapter:
             ) from exc
 
         state = self._state(page)
-        _log.info("Xiaohongshu confirmed publication: %s", state.get("url") or "")
+        _log.info(
+            "Xiaohongshu confirmed publication at path: %s",
+            self._redacted_url_path(state.get("url")),
+        )
         return {
             "channel": "xiaohongshu",
             "provider": "playwright",
@@ -793,6 +795,21 @@ class XhsPublishAdapter:
     def _state(page: Any) -> dict[str, Any]:
         return dict(page.evaluate(_PUBLISH_PAGE_STATE) or {})
 
+    @staticmethod
+    def _redacted_url_path(value: Any) -> str:
+        parsed = urlparse(str(value or ""))
+        return parsed.path or "/"
+
+    @classmethod
+    def _redacted_publish_state(cls, state: dict[str, Any]) -> dict[str, bool | str]:
+        return {
+            "url_path": cls._redacted_url_path(state.get("url")),
+            "challenge": bool(state.get("challenge")),
+            "phone_verification": bool(state.get("phoneVerification")),
+            "login": bool(state.get("login")),
+            "success": bool(state.get("success")),
+        }
+
     @classmethod
     def _first_locator(
         cls,
@@ -899,7 +916,7 @@ class XhsPublishAdapter:
             inputs: list[Any] = raw_inputs if isinstance(raw_inputs, list) else []
             actions: list[Any] = raw_actions if isinstance(raw_actions, list) else []
             summaries.append(
-                f"frame[{index}] url={str(detail.get('url') or '')[:240]!r} "
+                f"frame[{index}] url_path={self._redacted_url_path(detail.get('url'))!r} "
                 f"inputs={inputs[:10]!r} actions={actions[:15]!r}"
             )
 
