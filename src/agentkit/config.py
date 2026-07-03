@@ -70,6 +70,15 @@ class Settings(BaseSettings):
     tool_max_retries: int = Field(default=0, ge=0)
     tool_retry_base_delay: float = Field(default=0.2, ge=0.0)
 
+    # 统一自主执行的全局硬上限；Agent 和 Skill 只能进一步收紧。
+    autonomy_max_model_calls: int = Field(default=64, gt=0)
+    autonomy_max_tool_calls: int = Field(default=128, gt=0)
+    autonomy_max_iterations: int = Field(default=32, gt=0)
+    autonomy_max_plan_steps: int = Field(default=32, gt=0)
+    autonomy_max_replans: int = Field(default=4, ge=0)
+    autonomy_max_tokens: int = Field(default=200_000, gt=0)
+    autonomy_timeout_seconds: float = Field(default=3600.0, gt=0)
+
     # Outbound egress policy for SSRF-safe tool HTTP (agentkit.core.net). By
     # default only https to public IPs is allowed; set egress_allowed_domains to a
     # comma-separated allow-list to restrict further. egress_allow_http permits

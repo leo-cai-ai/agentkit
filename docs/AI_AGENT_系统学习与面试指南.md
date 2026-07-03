@@ -293,7 +293,7 @@ core/rag/eval.py
 
 - 阅读 `core/contracts.py`、`runtime/bootstrap.py`、`runtime/declarative_catalog.py`。
 - 对照三个 `agents/*/agent.md`，理解 Skill 白名单和上下文策略。
-- 理解租户 `enabled_agents` 如何选择业务 Agent，以及 `enabled_domains` 的兼容用途。
+- 理解租户 `enabled_agents` 如何显式选择业务 Agent，以及为什么不应隐式扩大能力边界。
 - 阅读一个 Skill 的 `skill.yaml` 和 provider 脚本。
 - 输出：解释 Agent、Skill、Tool、Connector 各自职责，并说明旧 Domain Pack 为什么只作为兼容层保留。
 

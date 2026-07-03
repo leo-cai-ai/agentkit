@@ -63,6 +63,8 @@ def test_defaults(monkeypatch):
     assert s.llm_requests_per_second == 0.9
     assert s.llm_rate_limiter_enabled is True
     assert s.tool_max_workers == 32
+    assert s.autonomy_max_model_calls == 64
+    assert s.autonomy_max_tokens == 200_000
     assert s.web_token_business_roles == ""
     assert s.auth_proxy_business_roles_header == "X-Forwarded-Business-Roles"
     assert s.xhs_research_provider == "mock"

@@ -222,11 +222,15 @@ def _validate_catalog(*, as_json: bool) -> int:
         sys.stdout.reconfigure(encoding="utf-8")
     configure_logging()
 
-    from agentkit.runtime.bootstrap import AGENTKIT_ROOT
+    from agentkit.config import get_settings
+    from agentkit.runtime.bootstrap import AGENTKIT_ROOT, build_global_budget
     from agentkit.runtime.declarative_catalog import load_catalog
 
     try:
-        catalog = load_catalog(AGENTKIT_ROOT)
+        catalog = load_catalog(
+            AGENTKIT_ROOT,
+            global_budget=build_global_budget(get_settings()),
+        )
     except (OSError, ValueError) as exc:
         print(f"[FAIL] {exc}", file=sys.stderr)
         return 1
@@ -248,7 +252,13 @@ def _validate_catalog(*, as_json: bool) -> int:
 
 def _runtime_doctor_checks(tenant_id: str | None = None) -> list[dict[str, Any]]:
     """返回不调用 LLM 的部署预检结果。"""
-    from agentkit.runtime.bootstrap import AGENTKIT_ROOT, load_tenant_config, resolve_tenant_id
+    from agentkit.config import get_settings
+    from agentkit.runtime.bootstrap import (
+        AGENTKIT_ROOT,
+        build_global_budget,
+        load_tenant_config,
+        resolve_tenant_id,
+    )
     from agentkit.runtime.declarative_catalog import load_catalog, resolve_enabled_agent_ids
 
     checks: list[dict[str, Any]] = []
@@ -265,7 +275,10 @@ def _runtime_doctor_checks(tenant_id: str | None = None) -> list[dict[str, Any]]
     add("tenant config", True, resolved_tenant)
 
     try:
-        catalog = load_catalog(AGENTKIT_ROOT)
+        catalog = load_catalog(
+            AGENTKIT_ROOT,
+            global_budget=build_global_budget(get_settings()),
+        )
         selected = resolve_enabled_agent_ids(catalog, tenant_config)
     except (OSError, ValueError) as exc:
         add("declarative catalog", False, str(exc))

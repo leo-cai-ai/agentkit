@@ -15,9 +15,10 @@ from agentkit.core.audit import PostgresAuditLog, SQLiteAuditLog
 from agentkit.core.execution.batch import BatchStrategy
 from agentkit.core.execution.direct import DirectStrategy
 from agentkit.core.execution.llm_models import StructuredPlanModel, StructuredReactModel
-from agentkit.core.execution.models import ToolProvider
+from agentkit.core.execution.models import AutonomyBudget, ToolProvider
 from agentkit.core.execution.parallel import ParallelStrategy
 from agentkit.core.execution.plan import PlanExecuteStrategy
+from agentkit.core.execution.protocol import ExecutionStrategy
 from agentkit.core.execution.react import ReactStrategy
 from agentkit.core.execution.registry import StrategyRegistry
 from agentkit.core.execution.selector import StrategySelector
@@ -46,7 +47,6 @@ from agentkit.runtime.conversation_persistence import (
     ExtractingMemoryWriter,
 )
 from agentkit.runtime.declarative_catalog import (
-    DEFAULT_GLOBAL_BUDGET,
     load_catalog,
     register_catalog,
     resolve_enabled_agent_ids,
@@ -157,6 +157,7 @@ def build_runtime(
     settings = get_settings()
     storage_backend = str(getattr(settings, "storage_backend", "sqlite")).lower()
     run_storage_migrations(settings, sqlite_path=db_path)
+    audit: PostgresAuditLog | SQLiteAuditLog
     if storage_backend in {"postgres", "pg"}:
         audit = PostgresAuditLog(settings, tenant_id=tenant_key)
     elif storage_backend in {"", "sqlite"}:
@@ -167,7 +168,8 @@ def build_runtime(
     agents = AgentRegistry()
     skills = SkillRegistry()
     tools = ToolRegistry()
-    catalog = load_catalog(AGENTKIT_ROOT)
+    global_budget = build_global_budget(settings)
+    catalog = load_catalog(AGENTKIT_ROOT, global_budget=global_budget)
     enabled_agent_ids = resolve_enabled_agent_ids(catalog, tenant_config)
     register_catalog(
         catalog,
@@ -255,7 +257,7 @@ def build_runtime(
         tools=tools,
         audit=audit,
         checkpointer=checkpointer,
-        selector=StrategySelector(skills=skills, global_budget=DEFAULT_GLOBAL_BUDGET),
+        selector=StrategySelector(skills=skills, global_budget=global_budget),
         strategies=strategies,
         conversation_context=conversation_context,
         conversation_persistence=conversation_persistence,
@@ -282,7 +284,7 @@ def _build_strategies(checkpointer: Any) -> StrategyRegistry:
     batch = BatchStrategy()
     parallel = ParallelStrategy()
     react = ReactStrategy(model=StructuredReactModel(), checkpointer=checkpointer)
-    base = [direct, workflow, batch, parallel, react]
+    base: list[ExecutionStrategy] = [direct, workflow, batch, parallel, react]
     step_strategies = StrategyRegistry(base)
     plan = PlanExecuteStrategy(
         model=StructuredPlanModel(),
@@ -290,6 +292,19 @@ def _build_strategies(checkpointer: Any) -> StrategyRegistry:
         checkpointer=checkpointer,
     )
     return StrategyRegistry([*base, plan])
+
+
+def build_global_budget(settings: Any) -> AutonomyBudget:
+    """把部署配置编译为 Agent/Skill 不可超过的全局预算。"""
+    return AutonomyBudget(
+        max_model_calls=int(settings.autonomy_max_model_calls),
+        max_tool_calls=int(settings.autonomy_max_tool_calls),
+        max_iterations=int(settings.autonomy_max_iterations),
+        max_plan_steps=int(settings.autonomy_max_plan_steps),
+        max_replans=int(settings.autonomy_max_replans),
+        max_tokens=int(settings.autonomy_max_tokens),
+        timeout_seconds=float(settings.autonomy_timeout_seconds),
+    )
 
 
 def _build_tool_backends(
@@ -345,6 +360,7 @@ def _record_persisted_artifact(
 __all__ = [
     "AGENTKIT_ROOT",
     "AgentKitRuntime",
+    "build_global_budget",
     "build_runtime",
     "list_tenants",
     "load_tenant_config",

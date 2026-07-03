@@ -1,17 +1,41 @@
-关于运行成本，你的判断是对的：如果所有企业、所有任务都完整跑 intent → route → plan → plan review → approval analysis → execution preflight → output review → final generation，LLM token 和延迟都会偏重。工业级不等于每次都全流程，应该是“按风险和场景启用治理深度”。
-我建议把运行模式分层：
-lite：小企业/低风险流程。少量 LLM 调用，甚至 deterministic route + direct tool + final answer。
-standard：默认企业模式。保留 intent/route/plan/execution/final，只有高风险时才触发 review/approval。
-strict：金融、医疗、法务、人事等高风险。完整治理链路、fail-closed、审批、输出复核。
-offline/eval：批量测试、回归、成本评估，不走真实业务副作用。
-成本控制上，核心不是只换便宜模型，而是减少不必要调用：
-用规则/配置先做 fast-path：明确 agent + 明确 skill 的请求不必每次 route。
-简单任务跳过 plan review/output review，只对高风险 skill、敏感数据、外部发布、写操作启用。
-模型路由：分类/路由用小模型，最终表达或复杂推理才用大模型。
-Prompt 分层：公共治理 prompt 短化，业务上下文按需注入，不要每个节点都塞全量 tenant/工具说明。
-记忆/RAG 控制 top-k 和摘要长度，避免把历史和知识库内容无脑拼进上下文。
-RAG 默认低成本路径是：一次 embedding 查询 + BM25 + Chroma 向量召回 + 加权融合；`AGENTKIT_RAG_QUERY_REWRITE=none`、`AGENTKIT_RAG_RERANKER=none/keyword` 不增加额外 LLM 调用。只有在短问句、口语化、多跳问题、同义词多或召回评估不达标时，再对特定 tenant/agent 开启 `AGENTKIT_RAG_QUERY_REWRITE=llm` 或 `AGENTKIT_RAG_RERANKER=llm`。
-每个 run 设 token/cost budget，超过预算降级或要求确认。
-缓存稳定结果：tool catalog、routing hints、RAG 检索、低风险 plan 可以缓存。
-观测成本：按 tenant / agent / skill / node 统计 token、耗时、失败率，才能知道哪个节点最贵。
-最终建议：AgentKit 默认做成 standard，但 tenant 可以配置 runtime_profile=lite|standard|strict。这样小企业能低成本落地，大企业或高风险场景再打开完整治理链路。
+# Agent 成本与 Token 控制
+
+企业 Agent 的成本不只是模型单价，还包括模型调用次数、上下文大小、Tool 调用、长任务占用时间、重试和人工审批等待。
+
+## 优先级
+
+1. 能用 Direct/Workflow 的任务不使用 ReAct/Plan。
+2. 分类、路由和结构化提取使用小模型。
+3. RAG 控制 Top-K、Chunk 和总 Token，默认不使用 LLM Query Rewrite/Rerank。
+4. 长输出写 Artifact，图状态只传引用和摘要。
+5. 只有幂等且确认为短暂错误的操作才能重试。
+
+## 三层预算
+
+```text
+global deployment ceiling
+  └─ Agent budget
+      └─ Skill limits
+```
+
+三层按字段取最小值，包括 Model Calls、Tool Calls、Iterations、Plan Steps、Replans、Tokens 和 Timeout。部署变量以 `AGENTKIT_AUTONOMY_` 开头，启动时会拒绝超过全局上限的 Manifest。
+
+## 上下文
+
+- 会话只取 Agent 声明的窗口。
+- Memory 只取相关 Top-K。
+- RAG 同时限制 Collection、Top-K 和上下文 Token。
+- Tool 列表只向 ReAct 暴露当前 Skill 允许的子集。
+- Plan 只向 Planner 暴露当前 Agent 的候选 Skill。
+
+## 度量
+
+建议按 tenant/agent/skill/strategy/model 聚合：
+
+- Token 和 Model Calls。
+- Tool Calls、超时和重试。
+- 平均与 P95 延迟。
+- 审批率、拒绝率和恢复耗时。
+- 预算耗尽、无进展和计划失效率。
+
+成本优化必须和质量回归一起进行，不能只通过减少 Token 判断成功。
