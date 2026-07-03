@@ -13,7 +13,6 @@ from agentkit.runtime.bootstrap import build_runtime
 
 def _responder(calls: list[str]):
     def respond(system: str, user: str) -> str:
-        normalized = system.lower()
         if "意图分解节点" in system:
             return json.dumps(
                 {
@@ -25,7 +24,7 @@ def _responder(calls: list[str]):
                     "signals": [],
                 }
             )
-        if "xiaohongshu (red) growth content strategist" in normalized:
+        if "小红书增长内容策划" in system:
             calls.append("article")
             return (
                 "TITLE: 暑假带娃旅行避坑\n"
@@ -33,7 +32,7 @@ def _responder(calls: list[str]):
                 "每天只安排一个重点项目，并准备下雨天可执行的室内备选。"
                 "#暑假旅行 #亲子游"
             )
-        if "final content-review gate" in normalized:
+        if "小红书内容发布前的最终审核节点" in system:
             calls.append("content_review")
             return json.dumps(
                 {"status": "approved", "reason": "grounded", "findings": []}

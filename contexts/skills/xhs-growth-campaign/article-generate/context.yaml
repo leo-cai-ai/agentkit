@@ -1,0 +1,42 @@
+id: skill.xhs-growth-campaign.article-generate
+version: 1
+owner: skill
+templates:
+  system: system.md
+  user: user.md
+fragments: [evidence-policy]
+instructions:
+  agent: true
+  skill: true
+inputs:
+  - name: article_evidence
+    source: skill.article_evidence
+    required: true
+    priority: 100
+    serializer: canonical_json
+    max_items: 20
+    max_chars: 14000
+    truncate: highest_score
+  - name: article_patterns
+    source: skill.article_patterns
+    required: true
+    priority: 90
+    serializer: canonical_json
+    max_items: 12
+    max_chars: 8000
+  - name: campaign
+    source: skill.campaign
+    required: true
+    priority: 100
+    serializer: canonical_json
+    max_chars: 4000
+exclude: [secrets, tool_credentials, source.instructions]
+limits:
+  max_input_tokens: 12000
+  response_reserve_tokens: 2500
+output:
+  mode: text
+audit:
+  record_input_names: true
+  record_content_hashes: true
+  record_rendered_content: false

@@ -32,10 +32,17 @@ class BatchStrategy:
         for offset in range(0, len(values), batch_size):
             shard_args = dict(request.arguments)
             shard_args[skill.batch_key] = values[offset : offset + batch_size]
+            shard_args["_batch_shard"] = True
             outputs.append(skill.handler(context.skill_context(skill), shard_args))
+        merger = getattr(skill.handler, "merge_batch", None)
+        output = (
+            merger(context.skill_context(skill), outputs, request.arguments)
+            if callable(merger)
+            else {"results": outputs}
+        )
         return StrategyResult(
             status="completed",
-            output={"results": outputs},
+            output=output,
             metrics={
                 "shards": math.ceil(len(values) / batch_size) if values else 0,
                 "items": len(values),

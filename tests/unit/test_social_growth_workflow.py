@@ -1,15 +1,18 @@
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from agentkit.core.artifacts import InMemoryArtifactStore
 from agentkit.core.contracts import SkillContext, TaskRequest, ToolDefinition
+from agentkit.core.execution.models import AutonomyBudget, AutonomyLimits
 from agentkit.runtime.declarative_catalog import (
     load_capability_handler,
     load_catalog,
     load_tool_factory,
 )
+from tests.context_support import SpyContextInvoker
 
 _CATALOG = load_catalog(Path(__file__).resolve().parents[2])
 run_growth_campaign = load_capability_handler(_CATALOG, "xhs.growth.campaign")
@@ -40,6 +43,74 @@ class _LimitProvider:
     def search_top_notes(self, *, topic: str, limit: int):
         self.limit = limit
         return [{"note_id": "n", "topic": topic}]
+
+
+def _campaign_context(
+    context_invoker: object,
+    *,
+    publishing_mode: str = "draft",
+) -> tuple[SkillContext, InMemoryArtifactStore]:
+    mock_xhs = MockXhsProvider()
+    mock_metrics = MockXhsMetricsProvider()
+    artifacts = InMemoryArtifactStore()
+    agent = SimpleNamespace(
+        max_tokens=100_000,
+        autonomy_budget=AutonomyBudget(20, 20, 10, 10, 1, 30_000, 60),
+        instructions="测试增长 Agent 指令",
+    )
+    skill = SimpleNamespace(
+        autonomy=AutonomyLimits(),
+        skill_instructions="测试小红书 Skill 指令",
+    )
+    return (
+        SkillContext(
+            tenant_id="AI-ABC",
+            tenant_selector="company_alpha",
+            run_id="r1",
+            agent=agent,  # type: ignore[arg-type]
+            skill=skill,  # type: ignore[arg-type]
+            tenant_config={
+                "social_growth": {
+                    "default_topic": "enterprise AI agents",
+                    "goal_days": 30,
+                    "target_followers": 10000,
+                    "cadence": "daily",
+                    "publishing_mode": publishing_mode,
+                }
+            },
+            tools={
+                "xhs.rpa.search_top_notes": ToolDefinition(
+                    name="xhs.rpa.search_top_notes",
+                    domain="marketing.social_growth",
+                    description="",
+                    handler=lambda args: search_top_notes_tool(args, mock_xhs),
+                ),
+                "xhs.rpa.create_publish_package": ToolDefinition(
+                    name="xhs.rpa.create_publish_package",
+                    domain="marketing.social_growth",
+                    description="",
+                    handler=lambda args: create_publish_package_tool(args, mock_xhs),
+                ),
+                "xhs.metrics.fetch": ToolDefinition(
+                    name="xhs.metrics.fetch",
+                    domain="marketing.social_growth",
+                    description="",
+                    handler=lambda args: fetch_metrics_tool(args, mock_metrics),
+                ),
+            },
+            request=TaskRequest(
+                user_id="u",
+                roles=["growth_manager"],
+                text=(
+                    "Research top 3 Xiaohongshu cases and prepare copy "
+                    "for 30 days 1w followers."
+                ),
+            ),
+            context_invoker=context_invoker,
+            artifacts=artifacts,
+        ),
+        artifacts,
+    )
 
 
 def test_xhs_search_tool_validates_and_caps_limit():
@@ -157,18 +228,11 @@ def test_compare_cases_uses_observed_metrics_without_inventing_saves():
     assert chinese[2]["pattern"] == "证据覆盖度"
 
 
-def test_copy_prompt_keeps_campaign_kpi_internal(monkeypatch):
-    captured = {}
-
-    def fake_stream(system, user):
-        captured["system"] = system
-        captured["user"] = user
-        return "TITLE: 企业级 Agent 落地先看这一点\nBODY: 一条基于真实案例的正文。"
-
-    import agentkit.core.llm_client as llm_client
-
-    monkeypatch.setattr(llm_client, "require_chat_streaming", fake_stream)
+def test_copy_context_keeps_campaign_kpi_internal():
+    spy = SpyContextInvoker("TITLE: 企业级 Agent 落地先看这一点\nBODY: 一条基于真实案例的正文。")
+    ctx, _artifacts = _campaign_context(spy)
     article = _maybe_llm_article(
+        ctx=ctx,
         article={"title": "fallback", "body": "fallback"},
         topic="enterprise AI agents",
         goal={"days": 30, "target_followers": 10000},
@@ -181,8 +245,12 @@ def test_copy_prompt_keeps_campaign_kpi_internal(monkeypatch):
 
     assert article["title"] == "企业级 Agent 落地先看这一点"
     assert article["body"] == "一条基于真实案例的正文。"
-    assert "INTERNAL KPI" in captured["system"]
-    assert "do not quote this as a reader-facing claim" in captured["user"]
+    request = spy.requests[-1]
+    assert request.context_id == "skill.xhs-growth-campaign.article-generate"
+    assert request.values["skill.campaign"]["internal_kpi"] == {
+        "days": 30,
+        "target_followers": 10000,
+    }
 
 
 def test_extracts_chinese_quoted_topic_from_original_request():
@@ -225,56 +293,9 @@ def test_copy_review_preserves_draft_but_requires_evidence_review():
     assert out["review"]["brand_safe"] is True
 
 
-def test_xhs_growth_campaign_runs_isolated_workflow(monkeypatch):
-    import agentkit.core.llm_client as llm_client
-
-    monkeypatch.setattr(llm_client, "require_chat_streaming", lambda system, user: "LLM body")
-    mock_xhs = MockXhsProvider()
-    mock_metrics = MockXhsMetricsProvider()
-    artifacts = InMemoryArtifactStore()
-    ctx = SkillContext(
-        tenant_id="AI-ABC",
-        tenant_selector="company_alpha",
-        run_id="r1",
-        agent=object(),  # type: ignore[arg-type]
-        skill=object(),  # type: ignore[arg-type]
-        tenant_config={
-            "social_growth": {
-                "default_topic": "enterprise AI agents",
-                "goal_days": 30,
-                "target_followers": 10000,
-                "cadence": "daily",
-                "publishing_mode": "draft",
-            }
-        },
-        tools={
-            "xhs.rpa.search_top_notes": ToolDefinition(
-                name="xhs.rpa.search_top_notes",
-                domain="marketing.social_growth",
-                description="",
-                handler=lambda args: search_top_notes_tool(args, mock_xhs),
-            ),
-            "xhs.rpa.create_publish_package": ToolDefinition(
-                name="xhs.rpa.create_publish_package",
-                domain="marketing.social_growth",
-                description="",
-                handler=lambda args: create_publish_package_tool(args, mock_xhs),
-            ),
-            "xhs.metrics.fetch": ToolDefinition(
-                name="xhs.metrics.fetch",
-                domain="marketing.social_growth",
-                description="",
-                handler=lambda args: fetch_metrics_tool(args, mock_metrics),
-            ),
-        },
-        request=TaskRequest(
-            user_id="u",
-            roles=["growth_manager"],
-            text="Research top 3 Xiaohongshu cases and prepare copy for 30 days 1w followers.",
-        ),
-        context_invoker=object(),
-        artifacts=artifacts,
-    )
+def test_xhs_growth_campaign_runs_isolated_workflow():
+    spy = SpyContextInvoker("LLM body")
+    ctx, artifacts = _campaign_context(spy)
 
     out = run_growth_campaign(
         ctx,
@@ -305,3 +326,27 @@ def test_xhs_growth_campaign_runs_isolated_workflow(monkeypatch):
         "xhs.metrics.track",
     ]
     assert len(artifacts.list()) == 8
+
+
+def test_xhs_article_and_review_use_distinct_contexts() -> None:
+    spy = SpyContextInvoker(
+        "TITLE: AI 实践\nBODY: 基于证据的正文 " * 20,
+        {"status": "approved", "reason": "证据充分", "findings": []},
+    )
+    ctx, _artifacts = _campaign_context(spy, publishing_mode="direct")
+
+    run_growth_campaign(
+        ctx,
+        {
+            "topic": "enterprise AI agents",
+            "top_n": 3,
+            "goal_days": 30,
+            "target_followers": 10000,
+            "cadence": "daily",
+        },
+    )
+
+    assert [request.context_id for request in spy.requests] == [
+        "skill.xhs-growth-campaign.article-generate",
+        "skill.xhs-growth-campaign.content-review",
+    ]

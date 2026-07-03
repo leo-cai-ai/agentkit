@@ -9,6 +9,7 @@ from agentkit.core.contracts import (
 )
 from agentkit.core.registry import AgentRegistry, SkillRegistry, ToolRegistry
 from agentkit.runtime.declarative_catalog import load_catalog, register_catalog
+from tests.context_support import SpyContextInvoker
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -18,6 +19,7 @@ def _ctx(
     *,
     agent: AgentProfile,
     skill: SkillDefinition,
+    context_invoker: object | None = None,
 ) -> SkillContext:
     request = TaskRequest(user_id="u", roles=["recruiter"], text="rank")
     return SkillContext(
@@ -29,7 +31,7 @@ def _ctx(
         tenant_config={},
         tools=tools,
         request=request,
-        context_invoker=object(),
+        context_invoker=context_invoker or object(),
     )
 
 
@@ -77,3 +79,25 @@ def test_rank_orders_by_score_and_skips_llm_on_shard():
     assert [c["candidate_id"] for c in ranked] == ["C-102", "C-104"]
     assert ranked[0]["score"] == 90
     assert ranked[1]["score"] == 76
+
+
+def test_candidate_summary_uses_skill_context_invoker() -> None:
+    agent, get_job, get_candidates, skill = _candidate_rank_components()
+    spy = SpyContextInvoker("推荐 A，因为技能匹配。")
+    ctx = _ctx(
+        {"ats.get_job": get_job, "ats.get_candidates": get_candidates},
+        agent=agent,
+        skill=skill,
+        context_invoker=spy,
+    )
+
+    result = skill.handler(
+        ctx,
+        {"job_id": "JOB-001", "candidate_ids": ["C-100", "C-101"], "top_n": 1},
+    )
+
+    call = spy.requests[-1]
+    assert call.context_id == "skill.candidate-rank.summary"
+    assert call.agent is ctx.agent
+    assert call.skill is ctx.skill
+    assert result["summary"] == "推荐 A，因为技能匹配。"

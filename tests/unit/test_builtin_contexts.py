@@ -13,6 +13,9 @@ EXPECTED = {
     "runtime.memory-summary": "text",
     "runtime.rag-query-rewrite": "json",
     "runtime.rag-rerank": "json",
+    "skill.candidate-rank.summary": "text",
+    "skill.xhs-growth-campaign.article-generate": "text",
+    "skill.xhs-growth-campaign.content-review": "json",
 }
 
 

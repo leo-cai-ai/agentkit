@@ -199,6 +199,36 @@ def test_batch_shards_and_merges() -> None:
     assert result.metrics == {"shards": 2, "items": 3}
 
 
+def test_batch_marks_shards_and_calls_merger_once() -> None:
+    shard_flags: list[bool] = []
+    merge_calls: list[list[dict]] = []
+
+    def handler(ctx, args):
+        shard_flags.append(args.get("_batch_shard") is True)
+        return {"ids": args["ids"]}
+
+    def merge(ctx, outputs, original_args):
+        merge_calls.append(outputs)
+        return {"ids": [item for output in outputs for item in output["ids"]]}
+
+    handler.merge_batch = merge
+    skill = _skill(
+        "demo.batch",
+        handler,
+        orchestration=OrchestrationMode.BATCH,
+        batch_key="ids",
+    )
+
+    result = BatchStrategy().execute(
+        context=_context(skill, batch_size=1),
+        request=StrategyRequest("批处理", {"ids": [1, 2, 3]}, _resolution("demo.batch")),
+    )
+
+    assert shard_flags == [True, True, True]
+    assert len(merge_calls) == 1
+    assert result.output == {"ids": [1, 2, 3]}
+
+
 def test_parallel_executes_independent_read_only_skills() -> None:
     first = _skill("demo.one", lambda ctx, args: {"one": args["value"]})
     second = _skill("demo.two", lambda ctx, args: {"two": args["value"]})

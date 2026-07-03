@@ -1,0 +1,27 @@
+id: skill.candidate-rank.summary
+version: 1
+owner: skill
+templates:
+  system: system.md
+  user: user.md
+fragments: [evidence-policy]
+instructions:
+  agent: true
+  skill: true
+inputs:
+  - name: ranking_result
+    source: skill.ranking_result
+    required: true
+    priority: 100
+    serializer: canonical_json
+    max_chars: 12000
+exclude: [secrets, tool_credentials, candidate.raw_profiles]
+limits:
+  max_input_tokens: 5000
+  response_reserve_tokens: 800
+output:
+  mode: text
+audit:
+  record_input_names: true
+  record_content_hashes: true
+  record_rendered_content: false

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from agentkit.core.context.models import ContextRenderRequest
 from agentkit.core.contracts import SkillContext
 
 from .scoring import score_candidate
@@ -30,13 +31,17 @@ def run(ctx: SkillContext, args: dict[str, Any]) -> dict[str, Any]:
         "evaluated_count": len(candidate_payload["candidates"]),
     }
     if not args.get("_batch_shard"):
-        summary = _ranking_summary(result)
+        summary = _ranking_summary(ctx, result)
         if summary:
             result["summary"] = summary
     return result
 
 
-def merge_batch(shard_results: list[dict], original_args: dict) -> dict:
+def merge_batch(
+    ctx: SkillContext,
+    shard_results: list[dict],
+    original_args: dict,
+) -> dict:
     """合并批分片结果后再生成一次最终推荐摘要。"""
     top_n = int(original_args.get("top_n", 5))
     merged_candidates: list[dict] = []
@@ -58,33 +63,31 @@ def merge_batch(shard_results: list[dict], original_args: dict) -> dict:
         "evaluated_count": evaluated_count,
         "ranked_candidates": merged_candidates[:top_n],
     }
-    summary = _ranking_summary(merged)
+    summary = _ranking_summary(ctx, merged)
     if summary:
         merged["summary"] = summary
     return merged
 
 
-def _ranking_summary(result: dict) -> str | None:
+def _ranking_summary(ctx: SkillContext, result: dict) -> str | None:
     """基于排序结果生成有依据的招聘建议。"""
-    from agentkit.core.llm_client import require_chat_streaming
-
     ranked = result.get("ranked_candidates", [])
     if not ranked:
         return None
-    rows = [
-        f"{index}. {candidate['name']} ({candidate['candidate_id']}): score={candidate['score']}, "
-        f"matched={candidate.get('matched_skills', [])}, "
-        f"missing={candidate.get('missing_skills', [])}"
-        for index, candidate in enumerate(ranked, start=1)
-    ]
-    system = (
-        "You are a recruiting assistant. Given a ranked candidate shortlist for a job, "
-        "write a concise hiring recommendation (<=120 words) that explains the ordering. "
-        "Ground every claim strictly in the provided scores and matched/missing skills; "
-        "do not invent skills, experience, or numbers."
+    budget = ctx.skill.autonomy.apply_to(ctx.agent.autonomy_budget)
+    response = ctx.context_invoker.invoke_streaming(
+        ContextRenderRequest(
+            context_id="skill.candidate-rank.summary",
+            tenant_id=ctx.tenant_id,
+            tenant_selector=ctx.tenant_selector,
+            run_id=ctx.run_id,
+            agent=ctx.agent,
+            skill=ctx.skill,
+            values={"skill.ranking_result": result},
+            global_token_limit=min(ctx.agent.max_tokens, budget.max_tokens),
+        )
     )
-    user = f"Job: {result.get('job_title') or result.get('job_id')}\nShortlist:\n" + "\n".join(rows)
-    return require_chat_streaming(system, user)
+    return str(response.value).strip()
 
 
 run.merge_batch = merge_batch  # type: ignore[attr-defined]

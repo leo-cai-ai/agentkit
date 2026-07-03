@@ -57,7 +57,8 @@ def test_full_graph_executes_batch_capability(monkeypatch, tmp_path) -> None:
     assert response.status == "completed"
     assert response.strategy == "batch"
     assert response.governance["strategy"] == "batch"
-    assert response.output["results"][0]["ranked_candidates"][0]["candidate_id"] == "C-100"
+    assert response.output["ranked_candidates"][0]["candidate_id"] == "C-100"
+    assert response.output["_batched"] is True
 
 
 def test_full_graph_handles_chitchat_inside_explicit_agent(monkeypatch, tmp_path) -> None:
