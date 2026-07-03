@@ -12,6 +12,8 @@ from .execution.models import (
     AutonomyLimits,
     ExecutionStrategyName,
     SkillExecutionPolicy,
+    ToolProvider,
+    ToolRisk,
 )
 
 IntentType = Literal[
@@ -48,6 +50,35 @@ class IntentFrame:
 
 
 @dataclass(frozen=True)
+class MemoryContextPolicy:
+    enabled: bool
+    scope: Literal["agent_user"]
+    window_turns: int
+    max_context_tokens: int
+
+
+@dataclass(frozen=True)
+class RagContextPolicy:
+    enabled: bool
+    collections: tuple[str, ...]
+    top_k: int
+    max_context_tokens: int
+
+
+@dataclass(frozen=True)
+class ArtifactContextPolicy:
+    readable: tuple[str, ...]
+    writable: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ContextPolicy:
+    memory: MemoryContextPolicy
+    rag: RagContextPolicy
+    artifacts: ArtifactContextPolicy
+
+
+@dataclass(frozen=True)
 class AgentProfile:
     name: str
     domain: str
@@ -55,11 +86,12 @@ class AgentProfile:
     allowed_skills: list[str]
     execution_policy: AgentExecutionPolicy
     autonomy_budget: AutonomyBudget
+    # Agent 的上下文边界由声明式 agent.md 提供。
+    context_policy: ContextPolicy
     model: str = "default"
     max_tokens: int = 100_000
     prompt_file: str = ""
-    # Agent 的上下文边界由声明式 agent.md 提供；平台级 Agent 可保留空策略。
-    context_policy: dict[str, Any] = field(default_factory=dict)
+    routing_hints: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -87,7 +119,13 @@ class ToolDefinition:
     name: str
     domain: str
     description: str
-    handler: Callable[[dict[str, Any]], dict[str, Any]]
+    handler: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+    provider: ToolProvider = ToolProvider.PYTHON
+    risk: ToolRisk = ToolRisk.GOVERNED
+    permissions: list[str] = field(default_factory=list)
+    input_schema: dict[str, Any] = field(default_factory=lambda: {"type": "object"})
+    mcp_server: str | None = None
+    mcp_tool: str | None = None
     supports_batch: bool = False
     # Connector-grade execution metadata (consumed by the ToolExecutor):
     # - idempotent: safe to retry on transient failure without duplicate effects.
@@ -115,6 +153,8 @@ class SkillContext:
         tool = self.tools[name]
         if self.invoker is not None:
             return self.invoker.call(tool, args)
+        if tool.handler is None:
+            raise RuntimeError(f"工具 {name} 没有可用的 Python Handler")
         return tool.handler(args)
 
     def write_artifact(

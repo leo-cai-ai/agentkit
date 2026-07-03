@@ -1,40 +1,209 @@
-"""声明式 Agent 与 Skill 目录的安全解析和校验。"""
+"""声明式 Agent、Skill 与 Tool 目录的严格解析和编译。"""
 
 from __future__ import annotations
 
 import hashlib
 import importlib.util
 import sys
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, fields
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Literal, TypeVar
 
 import yaml
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from agentkit.core.contracts import AgentProfile, ExecutionMode, SkillDefinition, ToolDefinition
+from agentkit.core.contracts import (
+    AgentProfile,
+    ArtifactContextPolicy,
+    ContextPolicy,
+    MemoryContextPolicy,
+    RagContextPolicy,
+    SkillDefinition,
+    ToolDefinition,
+)
+from agentkit.core.execution.models import (
+    AgentExecutionPolicy,
+    AutonomyBudget,
+    AutonomyLimits,
+    ExecutionStrategyName,
+    OrchestrationMode,
+    ReasoningStrategy,
+    SkillExecutionPolicy,
+    ToolPolicy,
+    ToolProvider,
+    ToolRisk,
+)
 from agentkit.core.registry import AgentRegistry, SkillRegistry, ToolRegistry
 
-_EXECUTION_MODES: set[str] = {"react", "plan_execute", "batch", "workflow", "no_tool"}
-_CONTEXT_LIST_FIELDS = {
-    "knowledge_collections",
-    "readable_artifact_kinds",
-    "writable_artifact_kinds",
-}
+DEFAULT_GLOBAL_BUDGET = AutonomyBudget(
+    max_model_calls=64,
+    max_tool_calls=128,
+    max_iterations=32,
+    max_plan_steps=32,
+    max_replans=4,
+    max_tokens=200_000,
+    timeout_seconds=3600,
+)
+
+_ModelT = TypeVar("_ModelT", bound=BaseModel)
+
+
+class _StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class _MemoryYaml(_StrictModel):
+    enabled: bool = True
+    scope: Literal["agent_user"] = "agent_user"
+    window_turns: int = Field(default=6, gt=0)
+    max_context_tokens: int = Field(default=4000, gt=0)
+
+
+class _RagYaml(_StrictModel):
+    enabled: bool = False
+    collections: list[str] = Field(default_factory=list)
+    top_k: int = Field(default=5, gt=0)
+    max_context_tokens: int = Field(default=1200, gt=0)
+
+
+class _ArtifactsYaml(_StrictModel):
+    readable: list[str] = Field(default_factory=list)
+    writable: list[str] = Field(default_factory=list)
+
+
+class _ContextYaml(_StrictModel):
+    memory: _MemoryYaml = Field(default_factory=_MemoryYaml)
+    rag: _RagYaml = Field(default_factory=_RagYaml)
+    artifacts: _ArtifactsYaml = Field(default_factory=_ArtifactsYaml)
+
+
+class _AgentExecutionYaml(_StrictModel):
+    default_strategy: ExecutionStrategyName
+    allowed_strategies: list[ExecutionStrategyName] = Field(min_length=1)
+    allow_dynamic_selection: bool = False
+    allow_side_effects: bool = False
+
+    @model_validator(mode="after")
+    def validate_default_strategy(self) -> _AgentExecutionYaml:
+        if self.default_strategy not in self.allowed_strategies:
+            raise ValueError("default_strategy 必须包含在 allowed_strategies 中")
+        return self
+
+
+class _SkillExecutionYaml(_StrictModel):
+    reasoning: ReasoningStrategy
+    orchestration: OrchestrationMode
+    tool_policy: ToolPolicy
+    allow_dynamic_selection: bool = False
+
+    @model_validator(mode="after")
+    def validate_risk_boundary(self) -> _SkillExecutionYaml:
+        if self.reasoning is ReasoningStrategy.REACT and self.tool_policy is ToolPolicy.SIDE_EFFECT:
+            raise ValueError("ReAct 不能声明 side_effect")
+        return self
+
+
+class _AgentAutonomyYaml(_StrictModel):
+    max_model_calls: int = Field(gt=0)
+    max_tool_calls: int = Field(gt=0)
+    max_iterations: int = Field(gt=0)
+    max_plan_steps: int = Field(gt=0)
+    max_replans: int = Field(ge=0)
+    max_tokens: int = Field(gt=0)
+    timeout_seconds: float = Field(gt=0)
+
+    def to_runtime(self) -> AutonomyBudget:
+        return AutonomyBudget(**self.model_dump())
+
+
+class _SkillAutonomyYaml(_StrictModel):
+    max_model_calls: int | None = Field(default=None, gt=0)
+    max_tool_calls: int | None = Field(default=None, gt=0)
+    max_iterations: int | None = Field(default=None, gt=0)
+    max_plan_steps: int | None = Field(default=None, gt=0)
+    max_replans: int | None = Field(default=None, ge=0)
+    max_tokens: int | None = Field(default=None, gt=0)
+    timeout_seconds: float | None = Field(default=None, gt=0)
+
+    def to_runtime(self) -> AutonomyLimits:
+        return AutonomyLimits(**self.model_dump())
+
+
+class _AgentYaml(_StrictModel):
+    id: str = Field(min_length=1)
+    domain: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    prompt_file: str = ""
+    skills: list[str]
+    context: _ContextYaml
+    execution: _AgentExecutionYaml
+    autonomy: _AgentAutonomyYaml
+    routing_hints: list[str] = Field(default_factory=list)
+
+
+class _ToolYaml(_StrictModel):
+    id: str = Field(min_length=1)
+    provider: ToolProvider
+    description: str = Field(min_length=1)
+    risk: ToolRisk
+    permissions: list[str] = Field(default_factory=list)
+    input_schema: dict[str, Any] = Field(default_factory=lambda: {"type": "object"})
+    entrypoint: str | None = None
+    factory_entrypoint: str | None = None
+    server: str | None = None
+    tool: str | None = None
+    supports_batch: bool = False
+    idempotent: bool = False
+    timeout_seconds: float | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def validate_provider_fields(self) -> _ToolYaml:
+        if self.provider is ToolProvider.PYTHON and not self.entrypoint:
+            raise ValueError("Python Tool 必须声明 entrypoint")
+        if self.provider is ToolProvider.MCP and (not self.server or not self.tool):
+            raise ValueError("MCP Tool 必须声明 server 和 tool")
+        if self.provider is ToolProvider.MCP and self.factory_entrypoint:
+            raise ValueError("MCP Tool 不能声明 factory_entrypoint")
+        return self
+
+
+class _CapabilityYaml(_StrictModel):
+    id: str = Field(min_length=1)
+    domain: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    entrypoint: str = Field(min_length=1)
+    execution: _SkillExecutionYaml
+    autonomy: _SkillAutonomyYaml = Field(default_factory=_SkillAutonomyYaml)
+    permissions: list[str] = Field(default_factory=list)
+    tools: list[str] = Field(default_factory=list)
+    input_schema: dict[str, Any] = Field(default_factory=lambda: {"type": "object"})
+    output_schema: dict[str, Any] = Field(default_factory=lambda: {"type": "object"})
+    batch_key: str | None = None
+    keywords: list[str] = Field(default_factory=list)
+
+
+class _SkillPackageYaml(_StrictModel):
+    package_id: str = Field(min_length=1)
+    tools: list[_ToolYaml] = Field(default_factory=list)
+    capabilities: list[_CapabilityYaml] = Field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class AgentManifest:
-    """单个 `agent.md` 的可执行元数据。"""
+    """单个 ``agent.md`` 的可执行元数据。"""
 
     agent_id: str
     domain: str
     description: str
     skills: tuple[str, ...]
     prompt_file: str
-    max_tokens: int
-    context: dict[str, Any]
+    context: ContextPolicy
+    execution: AgentExecutionPolicy
+    autonomy: AutonomyBudget
+    routing_hints: tuple[str, ...]
+    instructions: str
     source_path: Path
 
 
@@ -45,8 +214,14 @@ class ToolManifest:
     tool_id: str
     package_id: str
     description: str
-    entrypoint: str
+    provider: ToolProvider
+    risk: ToolRisk
+    permissions: tuple[str, ...]
+    input_schema: dict[str, Any]
+    entrypoint: str | None
     factory_entrypoint: str | None
+    mcp_server: str | None
+    mcp_tool: str | None
     supports_batch: bool
     idempotent: bool
     timeout_seconds: float | None
@@ -55,14 +230,15 @@ class ToolManifest:
 
 @dataclass(frozen=True)
 class CapabilityManifest:
-    """Skill 包导出的一个 AgentKit 运行时能力。"""
+    """Skill 包导出的一个运行时能力。"""
 
     capability_id: str
     package_id: str
     domain: str
     description: str
     entrypoint: str
-    execution_mode: ExecutionMode
+    execution: SkillExecutionPolicy
+    autonomy: AutonomyLimits
     permissions: tuple[str, ...]
     tools: tuple[str, ...]
     input_schema: dict[str, Any]
@@ -74,7 +250,7 @@ class CapabilityManifest:
 
 @dataclass(frozen=True)
 class DeclarativeCatalog:
-    """一个仓库根目录下发现的所有业务声明。"""
+    """一个仓库根目录下发现的全部业务声明。"""
 
     root: Path
     agents: dict[str, AgentManifest]
@@ -82,12 +258,22 @@ class DeclarativeCatalog:
     tools: dict[str, ToolManifest]
 
 
-def load_catalog(root: str | Path) -> DeclarativeCatalog:
-    """加载 `agents/` 与 `skills/`，并在启动前校验所有引用。"""
+def load_catalog(
+    root: str | Path,
+    *,
+    global_budget: AutonomyBudget = DEFAULT_GLOBAL_BUDGET,
+) -> DeclarativeCatalog:
+    """加载声明目录，并在启动前完成全部交叉校验。"""
+
     resolved_root = Path(root).resolve()
     agents = _load_agents(resolved_root / "agents")
     capabilities, tools = _load_skill_packages(resolved_root / "skills")
-    _validate_references(agents=agents, capabilities=capabilities, tools=tools)
+    _validate_references(
+        agents=agents,
+        capabilities=capabilities,
+        tools=tools,
+        global_budget=global_budget,
+    )
     return DeclarativeCatalog(
         root=resolved_root,
         agents=agents,
@@ -105,224 +291,225 @@ def register_catalog(
     tools: ToolRegistry,
     tenant_config: dict[str, Any] | None = None,
 ) -> None:
-    """将指定 Agent 的声明编译并写入既有运行时注册表。"""
+    """把租户启用的声明编译到运行时注册表。"""
+
     unknown_agents = sorted(enabled_agent_ids - set(catalog.agents))
     if unknown_agents:
         raise ValueError(f"引用了未知 Agent: {', '.join(unknown_agents)}")
 
-    selected_agents = [catalog.agents[agent_id] for agent_id in sorted(enabled_agent_ids)]
+    selected_agents = [catalog.agents[item] for item in sorted(enabled_agent_ids)]
     capability_ids = _unique_in_order(
-        capability_id for agent in selected_agents for capability_id in agent.skills
+        capability for agent in selected_agents for capability in agent.skills
     )
     tool_ids = _unique_in_order(
-        tool_id
+        tool
         for capability_id in capability_ids
-        for tool_id in catalog.capabilities[capability_id].tools
+        for tool in catalog.capabilities[capability_id].tools
     )
-
-    tool_factory_cache: dict[tuple[Path, str], dict[str, Callable[..., Any]]] = {}
-    config = dict(tenant_config or {})
+    factory_cache: dict[tuple[Path, str], dict[str, Callable[..., Any]]] = {}
     for tool_id in tool_ids:
         tools.register(
             _compile_tool(
                 catalog.root,
                 catalog.tools[tool_id],
-                tenant_config=config,
-                tool_factory_cache=tool_factory_cache,
+                tenant_config=dict(tenant_config or {}),
+                tool_factory_cache=factory_cache,
             )
         )
     for capability_id in capability_ids:
         skills.register(_compile_capability(catalog.root, catalog.capabilities[capability_id]))
     for manifest in selected_agents:
-        allowed_tools = _unique_in_order(
-            tool_id
-            for capability_id in manifest.skills
-            for tool_id in catalog.capabilities[capability_id].tools
-        )
         agents.register(
             AgentProfile(
                 name=manifest.agent_id,
                 domain=manifest.domain,
                 description=manifest.description,
                 allowed_skills=list(manifest.skills),
-                allowed_tools=allowed_tools,
-                max_tokens=manifest.max_tokens,
+                execution_policy=manifest.execution,
+                autonomy_budget=manifest.autonomy,
+                context_policy=manifest.context,
                 prompt_file=manifest.prompt_file,
-                context_policy=dict(manifest.context),
+                max_tokens=manifest.autonomy.max_tokens,
+                routing_hints=manifest.routing_hints,
             )
         )
 
 
 def resolve_enabled_agent_ids(
     catalog: DeclarativeCatalog,
-    tenant_config: dict[str, Any],
+    tenant_config: Mapping[str, Any],
 ) -> set[str]:
-    """优先读取显式 Agent 列表，并兼容旧领域开关。"""
-    configured = tenant_config.get("enabled_agents")
-    if isinstance(configured, list) and configured:
-        selected = {str(value) for value in configured}
-        unknown = sorted(selected - set(catalog.agents))
-        if unknown:
-            raise ValueError(f"租户引用了未知 Agent: {', '.join(unknown)}")
-        return selected
+    """读取显式 Agent 白名单；不再根据领域推断或扩大权限。"""
 
-    enabled_domains = {str(value) for value in tenant_config.get("enabled_domains", [])}
-    return {
-        manifest.agent_id
-        for manifest in catalog.agents.values()
-        if manifest.domain in enabled_domains
-    }
+    configured = tenant_config.get("enabled_agents")
+    if not isinstance(configured, list) or not configured:
+        raise ValueError("租户必须显式配置非空 enabled_agents")
+    selected = {str(value) for value in configured}
+    unknown = sorted(selected - set(catalog.agents))
+    if unknown:
+        raise ValueError(f"租户引用了未知 Agent: {', '.join(unknown)}")
+    return selected
 
 
 def parse_agent_markdown(path: str | Path) -> tuple[dict[str, Any], str]:
-    """读取带 YAML front matter 的 Agent Markdown 文件。"""
+    """读取带 YAML front matter 的 Agent Markdown。"""
+
     source_path = Path(path)
     lines = source_path.read_text(encoding="utf-8").splitlines()
     if not lines or lines[0].strip() != "---":
         raise ValueError(f"{source_path}: agent.md 必须以 YAML front matter 开始")
-
-    closing_index = next(
+    closing = next(
         (index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---"),
         None,
     )
-    if closing_index is None:
+    if closing is None:
         raise ValueError(f"{source_path}: agent.md 缺少 YAML front matter 结束标记")
-
-    value = yaml.safe_load("\n".join(lines[1:closing_index]))
+    value = yaml.safe_load("\n".join(lines[1:closing]))
     if not isinstance(value, dict):
         raise ValueError(f"{source_path}: YAML front matter 必须是对象")
-    return value, "\n".join(lines[closing_index + 1 :]).strip()
+    return value, "\n".join(lines[closing + 1 :]).strip()
 
 
 def _load_agents(root: Path) -> dict[str, AgentManifest]:
     if not root.exists():
         return {}
-
-    agents: dict[str, AgentManifest] = {}
+    result: dict[str, AgentManifest] = {}
     for source_path in sorted(root.glob("*/agent.md")):
-        raw, _body = parse_agent_markdown(source_path)
-        manifest = _build_agent_manifest(raw, source_path)
-        if manifest.agent_id in agents:
+        raw, body = parse_agent_markdown(source_path)
+        parsed = _validate_model(_AgentYaml, raw, source_path)
+        manifest = _build_agent_manifest(parsed, body, source_path)
+        if manifest.agent_id in result:
             raise ValueError(f"{source_path}: 重复的 Agent ID {manifest.agent_id}")
-        agents[manifest.agent_id] = manifest
-    return agents
+        result[manifest.agent_id] = manifest
+    return result
 
 
 def _load_skill_packages(
     root: Path,
 ) -> tuple[dict[str, CapabilityManifest], dict[str, ToolManifest]]:
-    if not root.exists():
-        return {}, {}
-
     capabilities: dict[str, CapabilityManifest] = {}
     tools: dict[str, ToolManifest] = {}
+    if not root.exists():
+        return capabilities, tools
     for source_path in sorted(root.glob("*/skill.yaml")):
-        raw = _load_yaml_object(source_path)
-        package_id = _required_string(raw, "package_id", source_path)
-        for tool_raw in _required_list(raw, "tools", source_path):
-            tool = _build_tool_manifest(tool_raw, package_id, source_path)
+        package = _validate_model(_SkillPackageYaml, _load_yaml_object(source_path), source_path)
+        for raw_tool in package.tools:
+            tool = _build_tool_manifest(raw_tool, package.package_id, source_path)
             if tool.tool_id in tools:
                 raise ValueError(f"{source_path}: 重复的工具 ID {tool.tool_id}")
             tools[tool.tool_id] = tool
-        for capability_raw in _required_list(raw, "capabilities", source_path):
-            capability = _build_capability_manifest(capability_raw, package_id, source_path)
+        for raw_capability in package.capabilities:
+            capability = _build_capability_manifest(
+                raw_capability, package.package_id, source_path
+            )
             if capability.capability_id in capabilities:
-                raise ValueError(f"{source_path}: 重复的 capability ID {capability.capability_id}")
+                raise ValueError(
+                    f"{source_path}: 重复的 capability ID {capability.capability_id}"
+                )
             capabilities[capability.capability_id] = capability
     return capabilities, tools
 
 
-def _build_agent_manifest(raw: dict[str, Any], source_path: Path) -> AgentManifest:
-    context = raw.get("context")
-    if not isinstance(context, dict):
-        raise ValueError(f"{source_path}: context 必须是对象")
-    _validate_context(context, source_path)
-    max_tokens = raw.get("max_tokens", 100_000)
-    if not isinstance(max_tokens, int) or max_tokens <= 0:
-        raise ValueError(f"{source_path}: max_tokens 必须是正整数")
-    prompt_file = raw.get("prompt_file", "")
-    if not isinstance(prompt_file, str):
-        raise ValueError(f"{source_path}: prompt_file 必须是字符串")
+def _build_agent_manifest(
+    raw: _AgentYaml,
+    body: str,
+    source_path: Path,
+) -> AgentManifest:
+    memory = raw.context.memory
+    rag = raw.context.rag
+    artifacts = raw.context.artifacts
     return AgentManifest(
-        agent_id=_required_string(raw, "id", source_path),
-        domain=_required_string(raw, "domain", source_path),
-        description=_required_string(raw, "description", source_path),
-        skills=tuple(_required_string_list(raw, "skills", source_path)),
-        prompt_file=prompt_file,
-        max_tokens=max_tokens,
-        context=dict(context),
+        agent_id=raw.id,
+        domain=raw.domain,
+        description=raw.description,
+        skills=tuple(raw.skills),
+        prompt_file=raw.prompt_file,
+        context=ContextPolicy(
+            memory=MemoryContextPolicy(
+                enabled=memory.enabled,
+                scope=memory.scope,
+                window_turns=memory.window_turns,
+                max_context_tokens=memory.max_context_tokens,
+            ),
+            rag=RagContextPolicy(
+                enabled=rag.enabled,
+                collections=tuple(rag.collections),
+                top_k=rag.top_k,
+                max_context_tokens=rag.max_context_tokens,
+            ),
+            artifacts=ArtifactContextPolicy(
+                readable=tuple(artifacts.readable),
+                writable=tuple(artifacts.writable),
+            ),
+        ),
+        execution=AgentExecutionPolicy(
+            default_strategy=raw.execution.default_strategy,
+            allowed_strategies=tuple(raw.execution.allowed_strategies),
+            allow_dynamic_selection=raw.execution.allow_dynamic_selection,
+            allow_side_effects=raw.execution.allow_side_effects,
+        ),
+        autonomy=raw.autonomy.to_runtime(),
+        routing_hints=tuple(raw.routing_hints),
+        instructions=body,
         source_path=source_path,
     )
 
 
-def _build_tool_manifest(raw: Any, package_id: str, source_path: Path) -> ToolManifest:
-    value = _require_object(raw, source_path, "tools 项")
-    timeout = value.get("timeout_seconds")
-    if timeout is not None and (not isinstance(timeout, int | float) or timeout < 0):
-        raise ValueError(f"{source_path}: timeout_seconds 必须是非负数字或 null")
-    entrypoint = _required_string(value, "entrypoint", source_path)
-    _validate_entrypoint_format(entrypoint, source_path)
-    factory_entrypoint = _optional_string(value, "factory_entrypoint", source_path)
-    if factory_entrypoint is not None:
-        _validate_entrypoint_format(factory_entrypoint, source_path)
+def _build_tool_manifest(
+    raw: _ToolYaml,
+    package_id: str,
+    source_path: Path,
+) -> ToolManifest:
+    if raw.entrypoint:
+        _validate_entrypoint_format(raw.entrypoint, source_path)
+    if raw.factory_entrypoint:
+        _validate_entrypoint_format(raw.factory_entrypoint, source_path)
     return ToolManifest(
-        tool_id=_required_string(value, "id", source_path),
+        tool_id=raw.id,
         package_id=package_id,
-        description=_required_string(value, "description", source_path),
-        entrypoint=entrypoint,
-        factory_entrypoint=factory_entrypoint,
-        supports_batch=_optional_bool(value, "supports_batch", source_path, default=False),
-        idempotent=_optional_bool(value, "idempotent", source_path, default=False),
-        timeout_seconds=float(timeout) if timeout is not None else None,
+        description=raw.description,
+        provider=raw.provider,
+        risk=raw.risk,
+        permissions=tuple(raw.permissions),
+        input_schema=dict(raw.input_schema),
+        entrypoint=raw.entrypoint,
+        factory_entrypoint=raw.factory_entrypoint,
+        mcp_server=raw.server,
+        mcp_tool=raw.tool,
+        supports_batch=raw.supports_batch,
+        idempotent=raw.idempotent,
+        timeout_seconds=raw.timeout_seconds,
         source_path=source_path,
     )
 
 
 def _build_capability_manifest(
-    raw: Any, package_id: str, source_path: Path
+    raw: _CapabilityYaml,
+    package_id: str,
+    source_path: Path,
 ) -> CapabilityManifest:
-    value = _require_object(raw, source_path, "capabilities 项")
-    execution_mode = _required_string(value, "execution_mode", source_path)
-    if execution_mode not in _EXECUTION_MODES:
-        raise ValueError(f"{source_path}: 不支持的 execution_mode {execution_mode!r}")
-    input_schema = value.get("input_schema")
-    output_schema = value.get("output_schema")
-    if not isinstance(input_schema, dict) or not isinstance(output_schema, dict):
-        raise ValueError(f"{source_path}: input_schema 和 output_schema 必须是对象")
-    batch_key = value.get("batch_key")
-    if batch_key is not None and (not isinstance(batch_key, str) or not batch_key):
-        raise ValueError(f"{source_path}: batch_key 必须是非空字符串或 null")
-    entrypoint = _required_string(value, "entrypoint", source_path)
-    _validate_entrypoint_format(entrypoint, source_path)
+    _validate_entrypoint_format(raw.entrypoint, source_path)
     return CapabilityManifest(
-        capability_id=_required_string(value, "id", source_path),
+        capability_id=raw.id,
         package_id=package_id,
-        domain=_required_string(value, "domain", source_path),
-        description=_required_string(value, "description", source_path),
-        entrypoint=entrypoint,
-        execution_mode=execution_mode,  # type: ignore[arg-type]
-        permissions=tuple(_required_string_list(value, "permissions", source_path)),
-        tools=tuple(_required_string_list(value, "tools", source_path)),
-        input_schema=dict(input_schema),
-        output_schema=dict(output_schema),
-        batch_key=batch_key,
-        keywords=tuple(_required_string_list(value, "keywords", source_path)),
+        domain=raw.domain,
+        description=raw.description,
+        entrypoint=raw.entrypoint,
+        execution=SkillExecutionPolicy(
+            reasoning=raw.execution.reasoning,
+            orchestration=raw.execution.orchestration,
+            tool_policy=raw.execution.tool_policy,
+            allow_dynamic_selection=raw.execution.allow_dynamic_selection,
+        ),
+        autonomy=raw.autonomy.to_runtime(),
+        permissions=tuple(raw.permissions),
+        tools=tuple(raw.tools),
+        input_schema=dict(raw.input_schema),
+        output_schema=dict(raw.output_schema),
+        batch_key=raw.batch_key,
+        keywords=tuple(raw.keywords),
         source_path=source_path,
     )
-
-
-def _validate_context(context: dict[str, Any], source_path: Path) -> None:
-    if context.get("memory_scope") != "agent_user":
-        raise ValueError(f"{source_path}: context.memory_scope 必须是 agent_user")
-    if context.get("session_key") != "tenant/agent/user/thread":
-        raise ValueError(f"{source_path}: context.session_key 必须是 tenant/agent/user/thread")
-    for field_name in _CONTEXT_LIST_FIELDS:
-        value = context.get(field_name)
-        is_string_list = isinstance(value, list) and all(
-            isinstance(item, str) and item for item in value
-        )
-        if not is_string_list:
-            raise ValueError(f"{source_path}: context.{field_name} 必须是非空字符串列表")
 
 
 def _validate_references(
@@ -330,19 +517,50 @@ def _validate_references(
     agents: dict[str, AgentManifest],
     capabilities: dict[str, CapabilityManifest],
     tools: dict[str, ToolManifest],
+    global_budget: AutonomyBudget,
 ) -> None:
     for agent in agents.values():
         unknown = sorted(set(agent.skills) - set(capabilities))
         if unknown:
             raise ValueError(f"{agent.source_path}: 引用了未知 capability: {', '.join(unknown)}")
+        _validate_budget_not_greater(
+            label="Agent 自主预算不能超过全局预算",
+            values=agent.autonomy,
+            ceiling=global_budget,
+            source_path=agent.source_path,
+        )
+        for capability_id in agent.skills:
+            _validate_skill_budget(agent, capabilities[capability_id])
     for capability in capabilities.values():
         unknown = sorted(set(capability.tools) - set(tools))
         if unknown:
-            raise ValueError(f"{capability.source_path}: 引用了未知工具: {', '.join(unknown)}")
+            raise ValueError(
+                f"{capability.source_path}: 引用了未知工具: {', '.join(unknown)}"
+            )
+
+
+def _validate_skill_budget(agent: AgentManifest, capability: CapabilityManifest) -> None:
+    for item in fields(capability.autonomy):
+        value = getattr(capability.autonomy, item.name)
+        if value is not None and value > getattr(agent.autonomy, item.name):
+            raise ValueError(
+                f"{capability.source_path}: Skill 自主预算不能超过 Agent: {item.name}"
+            )
+
+
+def _validate_budget_not_greater(
+    *,
+    label: str,
+    values: AutonomyBudget,
+    ceiling: AutonomyBudget,
+    source_path: Path,
+) -> None:
+    for item in fields(values):
+        if getattr(values, item.name) > getattr(ceiling, item.name):
+            raise ValueError(f"{source_path}: {label}: {item.name}")
 
 
 def _validate_entrypoint_format(entrypoint: str, source_path: Path) -> None:
-    """拒绝不在 Skill `scripts/` 包内的脚本入口。"""
     module_path, separator, attribute = entrypoint.partition(":")
     components = module_path.split(".")
     if (
@@ -363,49 +581,63 @@ def _compile_tool(
     tenant_config: dict[str, Any],
     tool_factory_cache: dict[tuple[Path, str], dict[str, Callable[..., Any]]],
 ) -> ToolDefinition:
-    """将一个工具声明编译为运行时工具定义。"""
-    if manifest.factory_entrypoint is None:
-        handler = _load_entrypoint(root, manifest.source_path.parent, manifest.entrypoint)
-    else:
-        cache_key = (manifest.source_path.parent, manifest.factory_entrypoint)
-        handlers = tool_factory_cache.get(cache_key)
-        if handlers is None:
-            factory = _load_entrypoint(
-                root,
-                manifest.source_path.parent,
-                manifest.factory_entrypoint,
-            )
-            built = factory(tenant_config)
-            if not isinstance(built, dict):
-                raise ValueError(
-                    f"{manifest.source_path}: 工具工厂必须返回工具 ID 到可调用对象的字典"
-                )
-            normalized_handlers: dict[str, Callable[..., Any]] = {}
-            for tool_id, candidate in built.items():
-                if not isinstance(tool_id, str) or not callable(candidate):
-                    raise ValueError(
-                        f"{manifest.source_path}: 工具工厂必须返回工具 ID 到可调用对象的字典"
-                    )
-                normalized_handlers[tool_id] = candidate
-            handlers = normalized_handlers
-            tool_factory_cache[cache_key] = handlers
-        factory_handler = handlers.get(manifest.tool_id)
-        if factory_handler is None:
-            raise ValueError(f"{manifest.source_path}: 工具工厂未返回 {manifest.tool_id}")
-        handler = factory_handler
+    handler: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+    if manifest.provider is ToolProvider.PYTHON:
+        if manifest.entrypoint is None:
+            raise ValueError(f"{manifest.source_path}: Python Tool 缺少 entrypoint")
+        handler = _resolve_python_tool_handler(
+            root,
+            manifest,
+            tenant_config=tenant_config,
+            tool_factory_cache=tool_factory_cache,
+        )
     return ToolDefinition(
         name=manifest.tool_id,
         domain=_tool_domain(manifest.tool_id),
         description=manifest.description,
         handler=handler,
+        provider=manifest.provider,
+        risk=manifest.risk,
+        permissions=list(manifest.permissions),
+        input_schema=dict(manifest.input_schema),
+        mcp_server=manifest.mcp_server,
+        mcp_tool=manifest.mcp_tool,
         supports_batch=manifest.supports_batch,
         idempotent=manifest.idempotent,
         timeout_seconds=manifest.timeout_seconds,
     )
 
 
+def _resolve_python_tool_handler(
+    root: Path,
+    manifest: ToolManifest,
+    *,
+    tenant_config: dict[str, Any],
+    tool_factory_cache: dict[tuple[Path, str], dict[str, Callable[..., Any]]],
+) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    if manifest.factory_entrypoint is None:
+        assert manifest.entrypoint is not None
+        return _load_entrypoint(root, manifest.source_path.parent, manifest.entrypoint)
+    cache_key = (manifest.source_path.parent, manifest.factory_entrypoint)
+    handlers = tool_factory_cache.get(cache_key)
+    if handlers is None:
+        factory = _load_entrypoint(
+            root, manifest.source_path.parent, manifest.factory_entrypoint
+        )
+        built = factory(tenant_config)
+        if not isinstance(built, dict) or any(
+            not isinstance(key, str) or not callable(value) for key, value in built.items()
+        ):
+            raise ValueError(f"{manifest.source_path}: 工具工厂必须返回工具 ID 到函数的字典")
+        handlers = dict(built)
+        tool_factory_cache[cache_key] = handlers
+    handler = handlers.get(manifest.tool_id)
+    if handler is None:
+        raise ValueError(f"{manifest.source_path}: 工具工厂未返回 {manifest.tool_id}")
+    return handler
+
+
 def _compile_capability(root: Path, manifest: CapabilityManifest) -> SkillDefinition:
-    """将一个 capability 声明编译为运行时 Skill 定义。"""
     handler = _load_entrypoint(root, manifest.source_path.parent, manifest.entrypoint)
     return SkillDefinition(
         name=manifest.capability_id,
@@ -414,7 +646,8 @@ def _compile_capability(root: Path, manifest: CapabilityManifest) -> SkillDefini
         input_schema=dict(manifest.input_schema),
         output_schema=dict(manifest.output_schema),
         permissions=list(manifest.permissions),
-        execution_mode=manifest.execution_mode,
+        execution=manifest.execution,
+        autonomy=manifest.autonomy,
         tools=list(manifest.tools),
         handler=handler,
         batch_key=manifest.batch_key,
@@ -423,10 +656,13 @@ def _compile_capability(root: Path, manifest: CapabilityManifest) -> SkillDefini
 
 
 def _load_entrypoint(
-    root: Path, package_root: Path, entrypoint: str
+    root: Path,
+    package_root: Path,
+    entrypoint: str,
 ) -> Callable[..., Any]:
-    """按受限模块名加载 Skill 脚本函数，支持脚本包内的相对导入。"""
-    del root  # 保留根目录参数，调用处可明确表达加载范围。
+    """在隔离命名空间中加载 Skill 脚本函数。"""
+
+    del root
     module_path, _, attribute = entrypoint.partition(":")
     scripts_dir = (package_root / "scripts").resolve()
     source_path = (package_root / (module_path.replace(".", "/") + ".py")).resolve()
@@ -435,15 +671,16 @@ def _load_entrypoint(
     init_path = scripts_dir / "__init__.py"
     if not init_path.is_file():
         raise ValueError(f"{package_root}: scripts 目录必须包含 __init__.py")
-
     package_name = f"agentkit_skill_{hashlib.sha256(str(package_root).encode()).hexdigest()[:16]}"
     _ensure_script_package(
         package_name=package_name,
         package_root=package_root,
         scripts_dir=scripts_dir,
     )
-    module_name = f"{package_name}.{module_path}"
-    module = _load_source_module(module_name=module_name, source_path=source_path)
+    module = _load_source_module(
+        module_name=f"{package_name}.{module_path}",
+        source_path=source_path,
+    )
     handler = getattr(module, attribute, None)
     if not callable(handler):
         raise ValueError(f"{source_path}: 入口函数 {attribute!r} 不可调用")
@@ -451,13 +688,11 @@ def _load_entrypoint(
 
 
 def _ensure_script_package(*, package_name: str, package_root: Path, scripts_dir: Path) -> None:
-    """为一个 Skill 构造独立模块命名空间，避免不同包的脚本冲突。"""
     if package_name not in sys.modules:
         package = ModuleType(package_name)
         package.__path__ = [str(package_root)]
         package.__package__ = package_name
         sys.modules[package_name] = package
-
     scripts_name = f"{package_name}.scripts"
     if scripts_name in sys.modules:
         return
@@ -475,7 +710,6 @@ def _ensure_script_package(*, package_name: str, package_root: Path, scripts_dir
 
 
 def _load_source_module(*, module_name: str, source_path: Path) -> ModuleType:
-    """加载一个未安装的 Skill 脚本模块。"""
     existing = sys.modules.get(module_name)
     if isinstance(existing, ModuleType):
         return existing
@@ -492,14 +726,15 @@ def _load_source_module(*, module_name: str, source_path: Path) -> ModuleType:
     return module
 
 
-def _unique_in_order(values: Any) -> list[str]:
-    """去重并保持声明顺序，避免迁移改变既有工具白名单顺序。"""
-    return list(dict.fromkeys(values))
-
-
-def _tool_domain(tool_id: str) -> str:
-    """工具没有单独声明 domain 时，使用其首段作为稳定归属。"""
-    return tool_id.split(".", 1)[0]
+def _validate_model(
+    model: type[_ModelT],
+    raw: Any,
+    source_path: Path,
+) -> _ModelT:
+    try:
+        return model.model_validate(raw)
+    except ValidationError as exc:
+        raise ValueError(f"{source_path}: {exc}") from exc
 
 
 def _load_yaml_object(source_path: Path) -> dict[str, Any]:
@@ -509,47 +744,12 @@ def _load_yaml_object(source_path: Path) -> dict[str, Any]:
     return value
 
 
-def _required_string(raw: dict[str, Any], key: str, source_path: Path) -> str:
-    value = raw.get(key)
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{source_path}: {key} 必须是非空字符串")
-    return value.strip()
+def _unique_in_order(values: Any) -> list[str]:
+    return list(dict.fromkeys(values))
 
 
-def _required_list(raw: dict[str, Any], key: str, source_path: Path) -> list[Any]:
-    value = raw.get(key)
-    if not isinstance(value, list):
-        raise ValueError(f"{source_path}: {key} 必须是列表")
-    return value
-
-
-def _required_string_list(raw: dict[str, Any], key: str, source_path: Path) -> list[str]:
-    values = _required_list(raw, key, source_path)
-    if any(not isinstance(value, str) or not value.strip() for value in values):
-        raise ValueError(f"{source_path}: {key} 必须是非空字符串列表")
-    return [value.strip() for value in values]
-
-
-def _optional_bool(raw: dict[str, Any], key: str, source_path: Path, *, default: bool) -> bool:
-    value = raw.get(key, default)
-    if not isinstance(value, bool):
-        raise ValueError(f"{source_path}: {key} 必须是布尔值")
-    return value
-
-
-def _optional_string(raw: dict[str, Any], key: str, source_path: Path) -> str | None:
-    value = raw.get(key)
-    if value is None:
-        return None
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{source_path}: {key} 必须是非空字符串或 null")
-    return value.strip()
-
-
-def _require_object(value: Any, source_path: Path, label: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise ValueError(f"{source_path}: {label} 必须是对象")
-    return value
+def _tool_domain(tool_id: str) -> str:
+    return tool_id.split(".", 1)[0]
 
 
 __all__ = [

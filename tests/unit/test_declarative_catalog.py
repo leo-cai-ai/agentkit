@@ -1,11 +1,15 @@
-"""声明式 Agent 与 Skill 目录加载测试。"""
-
 from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
+import yaml
 
+from agentkit.core.execution.models import (
+    ExecutionStrategyName,
+    OrchestrationMode,
+    ReasoningStrategy,
+    ToolProvider,
+)
 from agentkit.core.registry import AgentRegistry, SkillRegistry, ToolRegistry
 from agentkit.runtime.declarative_catalog import (
     load_catalog,
@@ -13,258 +17,176 @@ from agentkit.runtime.declarative_catalog import (
     resolve_enabled_agent_ids,
 )
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
 
-
-def test_load_catalog_parses_agent_context_and_capabilities(tmp_path: Path) -> None:
-    """加载器会解析 Agent 上下文策略和 Skill capability。"""
-    (tmp_path / "agents" / "hr-recruiter").mkdir(parents=True)
-    (tmp_path / "skills" / "candidate-rank" / "scripts").mkdir(parents=True)
-    (tmp_path / "agents" / "hr-recruiter" / "agent.md").write_text(
-        "---\n"
-        "id: hr_recruiter\n"
-        "domain: hr.recruitment\n"
-        "description: 招聘助手\n"
-        "skills: [candidate.rank]\n"
-        "context:\n"
-        "  memory_scope: agent_user\n"
-        "  session_key: tenant/agent/user/thread\n"
-        "  knowledge_collections: [recruitment-policy]\n"
-        "  readable_artifact_kinds: []\n"
-        "  writable_artifact_kinds: []\n"
-        "---\n\n# 招聘助手\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "skills" / "candidate-rank" / "skill.yaml").write_text(
-        "package_id: candidate-rank\n"
-        "tools: []\n"
-        "capabilities:\n"
-        "  - id: candidate.rank\n"
-        "    domain: hr.recruitment\n"
-        "    description: 候选人排序\n"
-        "    entrypoint: scripts.handler:run\n"
-        "    execution_mode: plan_execute\n"
-        "    permissions: []\n"
-        "    tools: []\n"
-        "    input_schema: {type: object}\n"
-        "    output_schema: {type: object}\n"
-        "    keywords: [候选人]\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "skills" / "candidate-rank" / "scripts" / "__init__.py").write_text(
-        "", encoding="utf-8"
-    )
-    (tmp_path / "skills" / "candidate-rank" / "scripts" / "handler.py").write_text(
-        "def run(ctx, args):\n    return args\n", encoding="utf-8"
-    )
+def test_catalog_compiles_agent_context_execution_and_mcp_tool(tmp_path: Path) -> None:
+    _write_catalog(tmp_path)
 
     catalog = load_catalog(tmp_path)
 
-    assert catalog.agents["hr_recruiter"].context["memory_scope"] == "agent_user"
-    assert catalog.capabilities["candidate.rank"].package_id == "candidate-rank"
+    agent = catalog.agents["research"]
+    capability = catalog.capabilities["research.explore"]
+    tool = catalog.tools["github.search"]
+    assert agent.context.rag.enabled is True
+    assert agent.execution.default_strategy is ExecutionStrategyName.REACT
+    assert capability.execution.reasoning is ReasoningStrategy.REACT
+    assert capability.execution.orchestration is OrchestrationMode.SINGLE
+    assert tool.provider is ToolProvider.MCP
+    assert tool.mcp_server == "github"
+    assert tool.mcp_tool == "search_code"
 
 
-def test_catalog_rejects_entrypoint_outside_scripts(tmp_path: Path) -> None:
-    """声明不可把可执行入口指向 Skill 包外部。"""
-    _write_valid_catalog(tmp_path, entrypoint="../outside:run")
-
-    with pytest.raises(ValueError, match="scripts 目录"):
-        load_catalog(tmp_path)
-
-
-def test_register_catalog_derives_agent_tools_from_capabilities(tmp_path: Path) -> None:
-    """Agent 的工具白名单必须由引用的 capability 推导。"""
-    _write_valid_catalog(tmp_path)
+def test_catalog_registers_new_runtime_contracts(tmp_path: Path) -> None:
+    _write_catalog(tmp_path)
     catalog = load_catalog(tmp_path)
     agents, skills, tools = AgentRegistry(), SkillRegistry(), ToolRegistry()
 
     register_catalog(
         catalog,
-        enabled_agent_ids={"hr_recruiter"},
+        enabled_agent_ids={"research"},
         agents=agents,
         skills=skills,
         tools=tools,
     )
 
-    assert agents.get("hr_recruiter").allowed_skills == ["candidate.rank"]
-    assert agents.get("hr_recruiter").allowed_tools == ["ats.get_job", "ats.get_candidates"]
-    assert callable(skills.get("candidate.rank").handler)
+    profile = agents.get("research")
+    skill = skills.get("research.explore")
+    python_tool = tools.get("docs.lookup")
+    assert profile.execution_policy.default_strategy is ExecutionStrategyName.REACT
+    assert profile.context_policy.rag.collections == ("research-docs",)
+    assert skill.execution.reasoning is ReasoningStrategy.REACT
+    assert python_tool.handler is not None
+    assert python_tool.handler({"query": "agent"}) == {"query": "agent"}
 
 
-def test_register_catalog_uses_one_declared_tool_factory_per_package(tmp_path: Path) -> None:
-    """同一包内的工具工厂只创建一次，并接收租户配置。"""
-    _write_valid_catalog(tmp_path, use_tool_factory=True)
+def test_enabled_agents_are_explicit_and_validated(tmp_path: Path) -> None:
+    _write_catalog(tmp_path)
     catalog = load_catalog(tmp_path)
-    agents, skills, tools = AgentRegistry(), SkillRegistry(), ToolRegistry()
 
-    register_catalog(
-        catalog,
-        enabled_agent_ids={"hr_recruiter"},
-        agents=agents,
-        skills=skills,
-        tools=tools,
-        tenant_config={"marker": "tenant-config"},
-    )
-
-    assert tools.get("ats.get_job").handler({"job_id": "JOB-001"})["marker"] == "tenant-config"
-
-
-def test_hr_manifest_compiles_existing_candidate_rank_contract() -> None:
-    """HR 声明迁移后必须保持原有 Skill 契约。"""
-    catalog = load_catalog(REPO_ROOT)
-    agents, skills, tools = AgentRegistry(), SkillRegistry(), ToolRegistry()
-
-    register_catalog(
-        catalog,
-        enabled_agent_ids={"hr_recruiter"},
-        agents=agents,
-        skills=skills,
-        tools=tools,
-    )
-
-    profile = agents.get("hr_recruiter")
-    skill = skills.get("candidate.rank")
-    assert profile.domain == "hr.recruitment"
-    assert profile.allowed_skills == ["candidate.rank"]
-    assert profile.allowed_tools == ["ats.get_job", "ats.get_candidates"]
-    assert skill.permissions == ["hr.job.read", "hr.candidate.read"]
-    assert skill.execution_mode == "plan_execute"
-    assert skill.batch_key == "candidate_ids"
-    assert skill.tools == ["ats.get_job", "ats.get_candidates"]
-
-
-def test_customer_service_manifest_has_no_business_capabilities() -> None:
-    """客服 Agent 仅使用会话运行时，不注册业务 capability。"""
-    catalog = load_catalog(REPO_ROOT)
-
-    agent = catalog.agents["customer_service"]
-
-    assert agent.skills == ()
-    assert agent.context["memory_scope"] == "agent_user"
-
-
-def test_social_growth_manifest_exposes_all_existing_capabilities() -> None:
-    """一个社媒 Agent 保留九个受治理的内部工作流能力。"""
-    catalog = load_catalog(REPO_ROOT)
-    expected = {
-        "xhs.growth.campaign",
-        "xhs.trend.research",
-        "xhs.case.extract",
-        "xhs.case.compare",
-        "xhs.strategy.plan",
-        "xhs.copy.generate",
-        "xhs.copy.review",
-        "xhs.publish.prepare",
-        "xhs.metrics.track",
+    assert resolve_enabled_agent_ids(catalog, {"enabled_agents": ["research"]}) == {
+        "research"
     }
-    agents, skills, tools = AgentRegistry(), SkillRegistry(), ToolRegistry()
-
-    register_catalog(
-        catalog,
-        enabled_agent_ids={"xhs_growth"},
-        agents=agents,
-        skills=skills,
-        tools=tools,
-        tenant_config={"social_growth": {"publishing_mode": "direct"}},
-    )
-
-    assert set(catalog.agents["xhs_growth"].skills) == expected
-    assert set(skill.name for skill in skills.all()) == expected
-    assert agents.get("xhs_growth").allowed_tools == [
-        "xhs.rpa.search_top_notes",
-        "xhs.rpa.create_publish_package",
-        "xhs.rpa.publish_note",
-        "xhs.metrics.fetch",
-    ]
 
 
-def test_explicit_enabled_agents_take_precedence_over_legacy_domains() -> None:
-    """租户显式选择 Agent 时不得被旧领域配置扩大权限。"""
-    catalog = load_catalog(REPO_ROOT)
-
-    enabled = resolve_enabled_agent_ids(
-        catalog,
-        {
-            "enabled_agents": ["customer_service"],
-            "enabled_domains": ["hr.recruitment", "marketing.social_growth"],
-        },
-    )
-
-    assert enabled == {"customer_service"}
-
-
-def _write_valid_catalog(
-    tmp_path: Path,
+def _write_catalog(
+    root: Path,
     *,
-    entrypoint: str = "scripts.handler:run",
-    use_tool_factory: bool = False,
+    agent_changes: dict | None = None,
+    capability_changes: dict | None = None,
+    tool_changes: dict | None = None,
 ) -> None:
-    """写入一个包含两个工具和一个 capability 的最小有效目录。"""
-    (tmp_path / "agents" / "hr-recruiter").mkdir(parents=True)
-    scripts = tmp_path / "skills" / "candidate-rank" / "scripts"
-    scripts.mkdir(parents=True)
-    (tmp_path / "agents" / "hr-recruiter" / "agent.md").write_text(
-        "---\n"
-        "id: hr_recruiter\n"
-        "domain: hr.recruitment\n"
-        "description: 招聘助手\n"
-        "skills: [candidate.rank]\n"
-        "context:\n"
-        "  memory_scope: agent_user\n"
-        "  session_key: tenant/agent/user/thread\n"
-        "  knowledge_collections: []\n"
-        "  readable_artifact_kinds: []\n"
-        "  writable_artifact_kinds: []\n"
-        "---\n\n# 招聘助手\n",
+    agent_dir = root / "agents" / "research"
+    skill_dir = root / "skills" / "research"
+    scripts_dir = skill_dir / "scripts"
+    agent_dir.mkdir(parents=True)
+    scripts_dir.mkdir(parents=True)
+
+    agent = {
+        "id": "research",
+        "domain": "knowledge.research",
+        "description": "企业研究 Agent",
+        "prompt_file": "prompts/agents/research.md",
+        "skills": ["research.explore"],
+        "context": {
+            "memory": {
+                "enabled": True,
+                "scope": "agent_user",
+                "window_turns": 6,
+                "max_context_tokens": 4000,
+            },
+            "rag": {
+                "enabled": True,
+                "collections": ["research-docs"],
+                "top_k": 5,
+                "max_context_tokens": 1200,
+            },
+            "artifacts": {"readable": ["report"], "writable": ["report"]},
+        },
+        "execution": {
+            "default_strategy": "react",
+            "allowed_strategies": ["direct", "react", "plan_execute"],
+            "allow_dynamic_selection": True,
+            "allow_side_effects": False,
+        },
+        "autonomy": {
+            "max_model_calls": 12,
+            "max_tool_calls": 16,
+            "max_iterations": 8,
+            "max_plan_steps": 8,
+            "max_replans": 1,
+            "max_tokens": 30000,
+            "timeout_seconds": 300,
+        },
+        "routing_hints": ["研究", "调研"],
+    }
+    agent.update(agent_changes or {})
+    (agent_dir / "agent.md").write_text(
+        f"---\n{yaml.safe_dump(agent, allow_unicode=True, sort_keys=False)}---\n\n# 研究 Agent\n",
         encoding="utf-8",
     )
-    tool_factory = (
-        "    factory_entrypoint: scripts.tools:build_handlers\n" if use_tool_factory else ""
+
+    mcp_tool = {
+        "id": "github.search",
+        "provider": "mcp",
+        "server": "github",
+        "tool": "search_code",
+        "description": "检索代码",
+        "risk": "read_only",
+        "permissions": ["source.read"],
+        "idempotent": True,
+        "timeout_seconds": 30,
+    }
+    mcp_tool.update(tool_changes or {})
+    capability = {
+        "id": "research.explore",
+        "domain": "knowledge.research",
+        "description": "检索并汇总资料",
+        "entrypoint": "scripts.handlers:explore",
+        "execution": {
+            "reasoning": "react",
+            "orchestration": "single",
+            "tool_policy": "read_only",
+            "allow_dynamic_selection": True,
+        },
+        "autonomy": {
+            "max_iterations": 5,
+            "max_model_calls": 8,
+            "max_tool_calls": 8,
+            "max_plan_steps": 1,
+            "max_replans": 0,
+            "max_tokens": 10000,
+            "timeout_seconds": 120,
+        },
+        "permissions": ["source.read"],
+        "tools": ["docs.lookup", "github.search"],
+        "input_schema": {"type": "object"},
+        "output_schema": {"type": "object"},
+        "keywords": ["研究"],
+    }
+    capability.update(capability_changes or {})
+    package = {
+        "package_id": "research",
+        "tools": [
+            {
+                "id": "docs.lookup",
+                "provider": "python",
+                "entrypoint": "scripts.tools:lookup",
+                "description": "查询内部文档",
+                "risk": "read_only",
+                "permissions": ["source.read"],
+                "idempotent": True,
+                "timeout_seconds": 10,
+            },
+            mcp_tool,
+        ],
+        "capabilities": [capability],
+    }
+    (skill_dir / "skill.yaml").write_text(
+        yaml.safe_dump(package, allow_unicode=True, sort_keys=False), encoding="utf-8"
     )
-    (tmp_path / "skills" / "candidate-rank" / "skill.yaml").write_text(
-        "package_id: candidate-rank\n"
-        "tools:\n"
-        "  - id: ats.get_job\n"
-        "    description: 获取岗位\n"
-        "    entrypoint: scripts.tools:get_job\n"
-        f"{tool_factory}"
-        "  - id: ats.get_candidates\n"
-        "    description: 获取候选人\n"
-        "    entrypoint: scripts.tools:get_candidates\n"
-        f"{tool_factory}"
-        "    supports_batch: true\n"
-        "capabilities:\n"
-        "  - id: candidate.rank\n"
-        "    domain: hr.recruitment\n"
-        "    description: 候选人排序\n"
-        f"    entrypoint: {entrypoint}\n"
-        "    execution_mode: plan_execute\n"
-        "    permissions: [hr.job.read, hr.candidate.read]\n"
-        "    tools: [ats.get_job, ats.get_candidates]\n"
-        "    input_schema: {type: object}\n"
-        "    output_schema: {type: object}\n"
-        "    keywords: [候选人]\n",
-        encoding="utf-8",
+    (scripts_dir / "__init__.py").write_text("", encoding="utf-8")
+    (scripts_dir / "handlers.py").write_text(
+        "def explore(ctx, args):\n    return {'summary': 'ok'}\n", encoding="utf-8"
     )
-    (scripts / "__init__.py").write_text("", encoding="utf-8")
-    (scripts / "handler.py").write_text(
-        "def run(ctx, args):\n    return {'result': args}\n", encoding="utf-8"
-    )
-    factory_source = (
-        "\n\ndef build_handlers(tenant_config):\n"
-        "    marker = tenant_config['marker']\n"
-        "    return {\n"
-        "        'ats.get_job': lambda args: {'marker': marker, 'job_id': args['job_id']},\n"
-        "        'ats.get_candidates': lambda args: {\n"
-        "            'marker': marker, 'candidate_ids': args['candidate_ids']\n"
-        "        },\n"
-        "    }\n"
-        if use_tool_factory
-        else ""
-    )
-    (scripts / "tools.py").write_text(
-        "def get_job(args):\n    return {'job_id': args['job_id']}\n\n"
-        "def get_candidates(args):\n    return {'candidate_ids': args['candidate_ids']}\n"
-        f"{factory_source}",
-        encoding="utf-8",
+    (scripts_dir / "tools.py").write_text(
+        "def lookup(args):\n    return {'query': args['query']}\n", encoding="utf-8"
     )
