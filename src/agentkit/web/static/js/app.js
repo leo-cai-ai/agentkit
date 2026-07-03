@@ -16,15 +16,148 @@ let currentConversationId = null;
 let conversationCache = [];
 let chatBusy = false;
 
-// Disable both the Send and "Use Demo Prompt" buttons while a turn is running so
-// a previous chat/action turn can't be re-triggered before it finishes.
+// Progressive tab enhancement: without JavaScript the anchors still navigate
+// to fully visible sections; once initialized, the same markup follows the
+// ARIA tabs pattern with roving focus and URL-backed state.
+function bindTabs() {
+  document.querySelectorAll("[data-tabs]").forEach((root) => {
+    if (root.dataset.tabsInitialized === "true") return;
+
+    const tabList = root.querySelector("[data-tab-list]");
+    const tabs = tabList ? Array.from(tabList.querySelectorAll("[data-tab]")) : [];
+    const panels = Array.from(root.querySelectorAll("[data-tab-panel]"));
+    const entries = tabs.map((tab) => {
+      const href = tab.getAttribute("href") || "";
+      const panel = href.startsWith("#") ? document.getElementById(href.slice(1)) : null;
+      if (!panel || !root.contains(panel) || !panel.matches("[data-tab-panel]")) return null;
+      return { tab, panel };
+    });
+
+    const uniquePanels = new Set(entries.filter(Boolean).map((entry) => entry.panel));
+    if (
+      !tabList ||
+      !entries.length ||
+      entries.some((entry) => !entry) ||
+      entries.length !== panels.length ||
+      uniquePanels.size !== panels.length
+    ) {
+      return;
+    }
+
+    const validEntries = entries;
+    const entryFromHash = () => {
+      if (!window.location.hash) return null;
+      let targetId = "";
+      try {
+        targetId = decodeURIComponent(window.location.hash.slice(1));
+      } catch {
+        return null;
+      }
+      const target = document.getElementById(targetId);
+      const panel = target?.matches("[data-tab-panel]")
+        ? target
+        : target?.closest("[data-tab-panel]");
+      if (!panel || !root.contains(panel)) return null;
+      const entry = validEntries.find((candidate) => candidate.panel === panel);
+      return entry ? { entry, target } : null;
+    };
+
+    const activate = (entry, { focus = false, updateHash = false } = {}) => {
+      validEntries.forEach((candidate) => {
+        const selected = candidate === entry;
+        candidate.tab.setAttribute("aria-selected", String(selected));
+        candidate.tab.setAttribute("tabindex", selected ? "0" : "-1");
+        candidate.panel.hidden = !selected;
+      });
+      root.dataset.activeTab = entry.panel.id;
+      if (updateHash) {
+        const url = new URL(window.location.href);
+        url.hash = entry.panel.id;
+        window.history.replaceState(null, "", url.toString());
+      }
+      if (focus) {
+        entry.tab.focus();
+        entry.tab.scrollIntoView({ block: "nearest", inline: "nearest" });
+      }
+    };
+
+    const activateHashState = (state) => {
+      activate(state.entry);
+      if (state.target && state.target !== state.entry.panel) {
+        window.requestAnimationFrame(() => {
+          state.target.scrollIntoView({ block: "start", inline: "nearest" });
+        });
+      }
+    };
+
+    tabList.setAttribute("role", "tablist");
+    tabList.setAttribute("aria-orientation", "horizontal");
+    validEntries.forEach(({ tab, panel }) => {
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-controls", panel.id);
+      panel.setAttribute("role", "tabpanel");
+      panel.setAttribute("aria-labelledby", tab.id);
+      panel.setAttribute("tabindex", "0");
+    });
+
+    root.dataset.tabsInitialized = "true";
+    root.dataset.tabsEnhanced = "true";
+    const hashState = entryFromHash();
+    const defaultEntry =
+      validEntries.find(({ panel }) => panel.id === root.dataset.tabsDefault) || validEntries[0];
+    if (hashState) activateHashState(hashState);
+    else activate(defaultEntry);
+
+    validEntries.forEach((entry) => {
+      entry.tab.addEventListener("click", (event) => {
+        if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        event.preventDefault();
+        activate(entry, { updateHash: true });
+      });
+    });
+
+    tabList.addEventListener("keydown", (event) => {
+      const currentTab = event.target.closest("[data-tab]");
+      const currentIndex = validEntries.findIndex(({ tab }) => tab === currentTab);
+      if (currentIndex < 0) return;
+
+      let nextIndex = -1;
+      if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % validEntries.length;
+      if (event.key === "ArrowLeft") {
+        nextIndex = (currentIndex - 1 + validEntries.length) % validEntries.length;
+      }
+      if (event.key === "Home") nextIndex = 0;
+      if (event.key === "End") nextIndex = validEntries.length - 1;
+      if (event.key === "Enter" || event.key === " ") nextIndex = currentIndex;
+      if (nextIndex < 0) return;
+
+      event.preventDefault();
+      activate(validEntries[nextIndex], { focus: true, updateHash: true });
+    });
+
+    window.addEventListener("hashchange", () => {
+      const nextState = entryFromHash();
+      if (nextState) activateHashState(nextState);
+    });
+  });
+}
+
+function syncChatComposerState() {
+  const form = document.getElementById("chat-form");
+  if (!form) return;
+  const input = form.querySelector("[data-chat-input]");
+  const submit = form.querySelector('button[type="submit"]');
+  const demo = form.querySelector("[data-chat-demo]");
+  if (submit) submit.disabled = chatBusy || !input?.value.trim();
+  if (demo) demo.disabled = chatBusy;
+  form.setAttribute("aria-busy", String(chatBusy));
+}
+
+// Disable both actions while a turn is running so a previous turn cannot be
+// re-triggered before it finishes. The textarea remains editable as a draft.
 function setChatBusy(busy) {
   chatBusy = busy;
-  document
-    .querySelectorAll('#chat-form button[type="submit"], #chat-form [data-chat-demo]')
-    .forEach((button) => {
-      button.disabled = busy;
-    });
+  syncChatComposerState();
 }
 
 function escapeHtml(value) {
@@ -388,8 +521,9 @@ function setConversationTrigger(conv) {
 function renderConversationMenu() {
   const menu = document.querySelector("[data-conversation-menu]");
   if (!menu) return;
+  const newConversationActive = !currentConversationId;
   const items = [
-    `<li class="conversation-item" role="option" data-conversation-id="" data-active="${!currentConversationId}">
+    `<li class="conversation-item" role="option" tabindex="${newConversationActive ? "0" : "-1"}" aria-selected="${newConversationActive}" data-conversation-id="" data-active="${newConversationActive}">
        <span class="conversation-item-title">New conversation</span>
        <span class="conversation-item-meta">Start a fresh thread</span>
      </li>`,
@@ -397,7 +531,7 @@ function renderConversationMenu() {
   for (const conv of conversationCache) {
     const active = conv.id === currentConversationId;
     items.push(
-      `<li class="conversation-item" role="option" data-conversation-id="${escapeHtml(conv.id)}" data-active="${active}">
+      `<li class="conversation-item" role="option" tabindex="${active ? "0" : "-1"}" aria-selected="${active}" data-conversation-id="${escapeHtml(conv.id)}" data-active="${active}">
          <span class="conversation-item-title">${escapeHtml(conversationTitle(conv))}</span>
          <span class="conversation-item-meta">${escapeHtml(conversationMeta(conv))}</span>
        </li>`
@@ -406,16 +540,17 @@ function renderConversationMenu() {
   menu.innerHTML = items.join("");
 }
 
-function closeConversationMenu() {
+function closeConversationMenu(restoreFocus = false) {
   const picker = document.querySelector("[data-conversation-picker]");
   const menu = document.querySelector("[data-conversation-menu]");
   const trigger = document.querySelector("[data-conversation-trigger]");
   picker?.classList.remove("open");
   if (menu) menu.hidden = true;
   trigger?.setAttribute("aria-expanded", "false");
+  if (restoreFocus) trigger?.focus();
 }
 
-function openConversationMenu() {
+function openConversationMenu(focusPosition = "active") {
   const picker = document.querySelector("[data-conversation-picker]");
   const menu = document.querySelector("[data-conversation-menu]");
   const trigger = document.querySelector("[data-conversation-trigger]");
@@ -424,6 +559,11 @@ function openConversationMenu() {
   picker?.classList.add("open");
   menu.hidden = false;
   trigger?.setAttribute("aria-expanded", "true");
+  const options = Array.from(menu.querySelectorAll('[role="option"]'));
+  const target = focusPosition === "last"
+    ? options.at(-1)
+    : options.find((option) => option.getAttribute("aria-selected") === "true") || options[0];
+  target?.focus();
 }
 
 function syncConversationTrigger() {
@@ -495,14 +635,8 @@ function setExecutionState(label, activeIndex = -1, done = false) {
 }
 
 function setAgentStatus(agentName, label) {
-  document.querySelectorAll("[data-agent-status]").forEach((item) => {
-    const isSelected = item.dataset.agentStatus === agentName;
-    item.classList.toggle("active", isSelected);
-    const status = item.querySelector("em");
-    if (status) {
-      status.textContent = isSelected ? label : "online";
-    }
-  });
+  const card = getAgentCard(agentName);
+  if (card) card.dataset.state = label;
 }
 
 function applyAgentMode() {
@@ -512,12 +646,13 @@ function applyAgentMode() {
 
 function bindAgentSelector() {
   const radios = Array.from(document.querySelectorAll('input[name="agent"]'));
+  const cards = Array.from(document.querySelectorAll("[data-agent-card]"));
   const update = async (isUserChange) => {
     if (!document.querySelector('input[name="agent"]:checked') && radios[0]) {
       radios[0].checked = true;
     }
     const selected = getSelectedAgentName();
-    document.querySelectorAll("[data-agent-card]").forEach((card) => {
+    cards.forEach((card) => {
       card.classList.toggle("active", card.dataset.agentCard === selected);
     });
     setAgentStatus(selected, "selected");
@@ -535,15 +670,25 @@ function bindAgentSelector() {
     }
   };
   radios.forEach((radio) => radio.addEventListener("change", () => update(true)));
+  cards.forEach((card) => {
+    const revealTooltip = () => delete card.dataset.tooltipHidden;
+    card.addEventListener("pointerenter", revealTooltip);
+    card.addEventListener("focusin", revealTooltip);
+    card.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      card.dataset.tooltipHidden = "true";
+      event.stopPropagation();
+    });
+  });
   update(false);
 }
 
-function tableHtml(rows) {
+function tableHtml(rows, label = "Data") {
   if (!rows || rows.length === 0) {
-    return '<div class="empty-state">No records to display.</div>';
+    return '<div class="empty-state ak-empty-state">No records to display.</div>';
   }
   const columns = Object.keys(rows[0]);
-  const header = columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("");
+  const header = columns.map((column) => `<th scope="col">${escapeHtml(column)}</th>`).join("");
   const body = rows
     .map((row) => {
       const cells = columns
@@ -556,13 +701,13 @@ function tableHtml(rows) {
       return `<tr>${cells}</tr>`;
     })
     .join("");
-  return `<div class="table-wrap"><table class="data-table"><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table></div>`;
+  return `<div class="table-wrap ak-table-wrap"><table class="data-table ak-data-table" aria-label="${escapeHtml(label)}"><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 function renderBusinessOutput(final) {
   const rankedCandidates = final.ranked_candidates || [];
   if (rankedCandidates.length) {
-    return tableHtml(rankedCandidates);
+    return tableHtml(rankedCandidates, "Ranked candidates");
   }
 
   const blocks = [];
@@ -580,13 +725,13 @@ function renderBusinessOutput(final) {
     `);
   }
   if (final.agent_pipeline?.length) {
-    blocks.push(`<h3 class="result-subtitle">Agent Pipeline</h3>${tableHtml(final.agent_pipeline)}`);
+    blocks.push(`<h3 class="result-subtitle">Agent Pipeline</h3>${tableHtml(final.agent_pipeline, "Agent pipeline")}`);
   }
   if (final.top_cases?.length) {
-    blocks.push(`<h3 class="result-subtitle">Top Cases</h3>${tableHtml(final.top_cases)}`);
+    blocks.push(`<h3 class="result-subtitle">Top Cases</h3>${tableHtml(final.top_cases, "Top cases")}`);
   }
   if (final.comparison?.length) {
-    blocks.push(`<h3 class="result-subtitle">Pattern Comparison</h3>${tableHtml(final.comparison)}`);
+    blocks.push(`<h3 class="result-subtitle">Pattern Comparison</h3>${tableHtml(final.comparison, "Pattern comparison")}`);
   }
   if (final.article) {
     const outline = (final.article.outline || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
@@ -599,10 +744,10 @@ function renderBusinessOutput(final) {
     `);
   }
   if (final.publish) {
-    blocks.push(`<h3 class="result-subtitle">Publish Package</h3>${tableHtml([final.publish])}`);
+    blocks.push(`<h3 class="result-subtitle">Publish Package</h3>${tableHtml([final.publish], "Publish package")}`);
   }
 
-  return blocks.length ? blocks.join("") : '<div class="empty-state">No structured business output to display.</div>';
+  return blocks.length ? blocks.join("") : '<div class="empty-state ak-empty-state">No structured business output to display.</div>';
 }
 
 function summarizePayload(payload) {
@@ -734,32 +879,32 @@ function renderResult(payload, requestPayload = null, options = {}) {
   region.hidden = false;
   region.innerHTML = `
     ${hidePrimaryPanel ? "" : `
-      <article class="panel result-card">
-        <div class="panel-head">
-          <h2>${primaryTitle}</h2>
+      <article class="panel ak-panel result-card ak-result-card" aria-labelledby="result-primary-title">
+        <div class="panel-head ak-panel-header">
+          <h2 id="result-primary-title">${primaryTitle}</h2>
           <span>${escapeHtml(primarySubtitle)}</span>
         </div>
         ${primaryBody}
       </article>
     `}
-    <section class="result-grid">
-      <article class="panel">
-        <div class="panel-head"><h2>Execution Plan</h2><span>LangGraph route</span></div>
-        ${tableHtml(planRows(response.plan))}
+    <section class="result-grid ak-result-grid">
+      <article class="panel ak-panel ak-panel--table" aria-labelledby="execution-plan-title">
+        <div class="panel-head ak-panel-header"><h2 id="execution-plan-title">Execution Plan</h2><span>LangGraph route</span></div>
+        ${tableHtml(planRows(response.plan), "Execution plan")}
       </article>
-      <article class="panel">
-        <div class="panel-head"><h2>Audit Timeline</h2><span>${(response.audit_events || []).length} events</span></div>
-        ${tableHtml(auditRows(response.audit_events))}
+      <article class="panel ak-panel ak-panel--table" aria-labelledby="audit-timeline-title">
+        <div class="panel-head ak-panel-header"><h2 id="audit-timeline-title">Audit Timeline</h2><span>${(response.audit_events || []).length} events</span></div>
+        ${tableHtml(auditRows(response.audit_events), "Audit timeline")}
       </article>
-      <article class="panel">
+      <article class="panel ak-panel ak-panel--flush" aria-labelledby="raw-plan-title">
         <div class="json-panel">
-          <div class="json-title">Raw Plan</div>
+          <h2 id="raw-plan-title" class="json-title">Raw Plan</h2>
           <pre class="json-pre">${rawPlan}</pre>
         </div>
       </article>
-      <article class="panel">
+      <article class="panel ak-panel ak-panel--flush" aria-labelledby="raw-audit-title">
         <div class="json-panel">
-          <div class="json-title">Raw Audit</div>
+          <h2 id="raw-audit-title" class="json-title">Raw Audit</h2>
           <pre class="json-pre">${rawAudit}</pre>
         </div>
       </article>
@@ -932,7 +1077,7 @@ function buildApprovalChatPayload(action) {
   };
 }
 
-async function runUnifiedChatTurn(message, selectedAgent, submit) {
+async function runUnifiedChatTurn(message, selectedAgent) {
   const isNewConversation = !currentConversationId;
   const requestPayload = collectChatPayload(message);
   const bubble = addLiveAssistantMessage(getSelectedAgentLabel());
@@ -996,27 +1141,39 @@ async function runUnifiedChatTurn(message, selectedAgent, submit) {
     }
     setExecutionState("Failed");
     setAgentStatus(selectedAgent, "failed");
-  } finally {
-    submit.disabled = false;
   }
 }
 
 function bindChatForm() {
   const chatForm = document.getElementById("chat-form");
   if (!chatForm) return;
-  const input = chatForm.querySelector('input[name="message"]');
+  const input = chatForm.querySelector("[data-chat-input]");
   const submit = chatForm.querySelector('button[type="submit"]');
+  if (!input || !submit) return;
+  let isComposing = false;
+  const resizeInput = () => {
+    input.style.height = "auto";
+    const maxHeight = Number.parseFloat(getComputedStyle(input).maxHeight);
+    const nextHeight = Number.isFinite(maxHeight)
+      ? Math.min(input.scrollHeight, maxHeight)
+      : input.scrollHeight;
+    input.style.height = `${nextHeight}px`;
+    input.style.overflowY = Number.isFinite(maxHeight) && input.scrollHeight > maxHeight
+      ? "auto"
+      : "hidden";
+  };
   const runChat = async (message) => {
     if (chatBusy) return;
     if (!message.trim()) return;
     addChatMessage("user", message);
     input.value = "";
+    resizeInput();
     setChatBusy(true);
     const selectedAgent = getSelectedAgentName();
     setAgentStatus(selectedAgent, "running");
     setExecutionState("Processing", 0);
     try {
-      await runUnifiedChatTurn(message, selectedAgent, submit);
+      await runUnifiedChatTurn(message, selectedAgent);
     } finally {
       setChatBusy(false);
     }
@@ -1025,7 +1182,26 @@ function bindChatForm() {
     event.preventDefault();
     runChat(input.value);
   });
+  input.addEventListener("input", () => {
+    resizeInput();
+    syncChatComposerState();
+  });
+  input.addEventListener("compositionstart", () => {
+    isComposing = true;
+  });
+  input.addEventListener("compositionend", () => {
+    isComposing = false;
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.shiftKey) return;
+    if (event.isComposing || isComposing || event.keyCode === 229) return;
+    event.preventDefault();
+    if (!chatBusy && input.value.trim()) chatForm.requestSubmit(submit);
+  });
   document.querySelector("[data-chat-demo]")?.addEventListener("click", () => runChat(getSelectedAgentDemoPrompt()));
+  window.addEventListener("resize", resizeInput, { passive: true });
+  resizeInput();
+  syncChatComposerState();
 }
 
 function bindConversationBar() {
@@ -1045,11 +1221,17 @@ function bindConversationBar() {
     }
   });
 
+  trigger?.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    openConversationMenu(event.key === "ArrowUp" ? "last" : "active");
+  });
+
   menu?.addEventListener("click", async (event) => {
     const item = event.target.closest("[data-conversation-id]");
     if (!item) return;
     const id = item.dataset.conversationId || null;
-    closeConversationMenu();
+    closeConversationMenu(true);
     currentConversationId = id;
     syncConversationTrigger();
     if (id) {
@@ -1059,13 +1241,45 @@ function bindConversationBar() {
     }
   });
 
+  menu?.addEventListener("keydown", (event) => {
+    const options = Array.from(menu.querySelectorAll('[role="option"]'));
+    const current = event.target.closest('[role="option"]');
+    const currentIndex = options.indexOf(current);
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      current?.click();
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeConversationMenu(true);
+      return;
+    }
+    let nextIndex = -1;
+    if (event.key === "ArrowDown") nextIndex = (currentIndex + 1) % options.length;
+    if (event.key === "ArrowUp") nextIndex = (currentIndex - 1 + options.length) % options.length;
+    if (event.key === "Home") nextIndex = 0;
+    if (event.key === "End") nextIndex = options.length - 1;
+    if (nextIndex < 0) return;
+    event.preventDefault();
+    options.forEach((option, index) => option.setAttribute("tabindex", index === nextIndex ? "0" : "-1"));
+    options[nextIndex]?.focus();
+  });
+
+  menu?.addEventListener("focusout", () => {
+    window.setTimeout(() => {
+      const picker = document.querySelector("[data-conversation-picker]");
+      if (!picker?.contains(document.activeElement)) closeConversationMenu();
+    }, 0);
+  });
+
   document.addEventListener("click", (event) => {
     if (!event.target.closest("[data-conversation-picker]")) {
       closeConversationMenu();
     }
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") closeConversationMenu();
+    if (event.key === "Escape" && !menu?.hidden) closeConversationMenu(true);
   });
 }
 
@@ -1196,4 +1410,5 @@ document.addEventListener("DOMContentLoaded", () => {
   bindChatForm();
   bindConversationBar();
   bindApprovalActions();
+  bindTabs();
 });

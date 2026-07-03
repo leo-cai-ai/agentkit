@@ -1,51 +1,145 @@
 {% extends "base.html" %}
-{% from "_components.html" import metric_grid, data_table, status_pill %}
+{% from "_components.html" import metric_grid, status_pill %}
+
+{% block page_description %}Review request history and execution audit events.{% endblock %}
 
 {% block content %}
-  {{ metric_grid(metrics) }}
+  {{ metric_grid(metrics, 'Operations key metrics') }}
 
-  <section class="dashboard-grid operations-grid">
-    <article class="panel wide">
-      <div class="panel-head">
-        <h2>Recent Business Requests</h2>
+  <section class="dashboard-grid operations-grid ak-operations-grid" aria-label="Operations details">
+    <article class="panel ak-panel ak-panel--table ak-operations-list" aria-labelledby="recent-requests-title">
+      <div class="panel-head ak-panel-header">
+        <h2 id="recent-requests-title">Recent Business Requests</h2>
         <span>{{ runs | length }} visible</span>
       </div>
       {% if runs %}
-        <div class="table-wrap">
-          <table class="data-table">
+        <div class="table-wrap ak-table-wrap" role="region" aria-label="Scrollable recent business requests" tabindex="0">
+          <table class="data-table ak-data-table ak-operations-runs-table" aria-label="Recent business requests">
+            <colgroup>
+              <col class="ak-run-col-status">
+              <col class="ak-run-col-request">
+              <col class="ak-run-col-user">
+              <col class="ak-run-col-time">
+            </colgroup>
             <thead>
               <tr>
-                <th>Status</th>
-                <th>User</th>
-                <th>Request</th>
-                <th>Started</th>
-                <th>Finished</th>
+                <th scope="col">Status</th>
+                <th scope="col">Request</th>
+                <th scope="col">User</th>
+                <th scope="col">Started</th>
               </tr>
             </thead>
             <tbody>
               {% for run in runs %}
                 <tr class="{{ 'selected-row' if run.run_id == selected_run_id else '' }}">
-                  <td><a href="{{ url_for('operations', run_id=run.run_id) }}">{{ status_pill(run.status) }}</a></td>
-                  <td>{{ run.user_id }}</td>
-                  <td>{{ run.text }}</td>
-                  <td>{{ run.started_at | format_ts }}</td>
-                  <td>{{ run.finished_at | format_ts }}</td>
+                  <td class="ak-run-status-cell">
+                    {{ status_pill(run.status) }}
+                  </td>
+                  <td class="ak-run-request-cell">
+                    <a
+                      class="ak-run-request-link"
+                      href="{{ url_for('operations', run_id=run.run_id) }}#run-detail"
+                      aria-label="View run details: {{ run.text }}; {{ run.user_id }}; {{ run.started_at | format_ts }}"
+                      title="{{ run.text }}"
+                      {% if run.run_id == selected_run_id %}aria-current="location"{% endif %}
+                    >{{ run.text }}</a>
+                  </td>
+                  <td class="ak-run-user-cell">
+                    <span title="{{ run.user_id }}">{{ run.user_id }}</span>
+                  </td>
+                  <td class="ak-run-time-cell">
+                    <time datetime="{{ run.started_at | datetime_ts }}">{{ run.started_at | format_ts }}</time>
+                  </td>
                 </tr>
               {% endfor %}
             </tbody>
           </table>
         </div>
       {% else %}
-        <div class="empty-state">No runs yet.</div>
+        <div class="empty-state ak-empty-state">No runs yet.</div>
       {% endif %}
     </article>
 
-    <article class="panel">
-      <div class="panel-head">
-        <h2>Run Timeline</h2>
+    <article class="panel ak-panel ak-panel--table ak-operations-timeline" id="run-detail" aria-labelledby="run-timeline-title">
+      <div class="panel-head ak-panel-header">
+        <h2 id="run-timeline-title">Run Timeline</h2>
         <span>{{ selected_run_id[:8] if selected_run_id else 'No run' }}</span>
       </div>
-      {{ data_table(event_rows) }}
+      <a class="ak-operations-back-link" href="#recent-requests-title">Back to recent requests</a>
+
+      {% if selected_run %}
+        <section class="ak-run-summary" aria-label="Selected run summary">
+          <div class="ak-run-summary-heading">
+            <h3>Selected request</h3>
+            {{ status_pill(selected_run.status) }}
+          </div>
+          <p>{{ selected_run.text }}</p>
+          <dl class="ak-run-facts">
+            <div>
+              <dt>User</dt>
+              <dd>{{ selected_run.user_id }}</dd>
+            </div>
+            <div>
+              <dt>Started</dt>
+              <dd class="ak-run-fact-time">
+                <time datetime="{{ selected_run.started_at | datetime_ts }}">{{ selected_run.started_at | format_ts }}</time>
+              </dd>
+            </div>
+            <div>
+              <dt>Finished</dt>
+              <dd class="ak-run-fact-time">
+                {% if selected_run.finished_at %}
+                  <time datetime="{{ selected_run.finished_at | datetime_ts }}">{{ selected_run.finished_at | format_ts }}</time>
+                {% else %}
+                  <span>—</span>
+                {% endif %}
+              </dd>
+            </div>
+            <div class="ak-run-fact-wide">
+              <dt>Run ID</dt>
+              <dd><code title="{{ selected_run.run_id }}">{{ selected_run.run_id }}</code></dd>
+            </div>
+          </dl>
+        </section>
+      {% endif %}
+
+      {% if event_rows %}
+        <ol class="ak-event-timeline" aria-label="Run timeline events">
+          {% for event in event_rows %}
+            <li class="ak-event-item">
+              <div class="ak-event-heading">
+                <span class="ak-event-name" title="{{ event.type }}">
+                  {{ event.type | replace('_', ' ') | title }}
+                </span>
+                <time class="ak-event-time" datetime="{{ event.timestamp | datetime_ts }}">{{ event.time }}</time>
+              </div>
+              {% if event.payload %}
+                <details class="ak-json-details">
+                  <summary aria-label="View payload for {{ event.type | replace('_', ' ') }} at {{ event.time }}">
+                    <span>Payload</span>
+                    <span>
+                      {% if event.payload is mapping %}
+                        {{ event.payload | length }} fields
+                      {% elif event.payload is sequence and event.payload is not string %}
+                        {{ event.payload | length }} items
+                      {% else %}
+                        JSON value
+                      {% endif %}
+                    </span>
+                  </summary>
+                  <pre class="ak-json-viewer" tabindex="0"><code>{{ event.payload | tojson(indent=2) }}</code></pre>
+                </details>
+              {% else %}
+                <span class="ak-event-empty">No payload</span>
+              {% endif %}
+            </li>
+          {% endfor %}
+        </ol>
+      {% elif selected_run %}
+        <div class="empty-state ak-empty-state">No audit events recorded for this run.</div>
+      {% else %}
+        <div class="empty-state ak-empty-state">Select a run to inspect its audit timeline.</div>
+      {% endif %}
     </article>
   </section>
 {% endblock %}
