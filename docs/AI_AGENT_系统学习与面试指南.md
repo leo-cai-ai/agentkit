@@ -50,6 +50,7 @@ Tool Executor（权限、预算、重试、审计）
 | `src/agentkit/core/memory/` | 对话与长期记忆 | 上下文控制与个性化 |
 | `src/agentkit/connectors/` | 浏览器、外部系统连接器 | 外部副作用的可靠性 |
 | `agents/` | 三个业务 Agent 的 `agent.md` | Skill 白名单、Memory、知识与 Artifact 边界 |
+| `contexts/` | 11 个生产 LLM 节点的 Context Pack | System/User 分层、输入白名单、Token、Schema 与 Hash |
 | `skills/` | 可移植业务能力定义 | Skill 与 Agent 的区别 |
 | `src/agentkit/eval/` | 离线评测 | 如何证明系统效果 |
 | `tests/` | 行为与回归验证 | 如何写可维护的 Agent 测试 |
@@ -64,9 +65,22 @@ Tool Executor（权限、预算、重试、审计）
 | `xhs_growth` | 小红书研究、策略、文案、审批与发布 | 品牌与活动知识、社媒工作流 Artifact |
 | `customer_service` | 带短期和长期记忆的客服对话 | 客服 FAQ、当前用户和当前 Agent 的会话记忆 |
 
-`router` 和 `general` 是运行时内部平台角色：前者负责路由，后者负责通用兜底。它们没有独立 `agent.md`，不要把它们与三个对外业务 Agent 混在一起计算。
+Intent 理解、能力路由和通用回答是统一 LangGraph 的内部节点，不是 Agent。它们没有独立 `agent.md`，不要把它们与三个对外业务 Agent 混在一起计算。
 
-### 2.3 推荐源码阅读顺序
+### 2.3 Context Pack 应该怎样学习
+
+先区分三类内容：`agent.md` 正文定义 Agent 的长期身份和边界，`SKILL.md` 定义可跨平台复用的业务说明，
+`contexts/` 定义某个生产 LLM 节点如何装配前两者与运行时数据。Context Pack 自己不保存会话、Memory、RAG 原文或
+Tool Observation。
+
+阅读一个 Pack 时依次检查：输入 Source 是否最小化；Agent/Skill 指令是否真的需要注入；动态数据是否只进入 User 层；
+Token 上限和裁剪策略是否确定；JSON 输出是否有严格 Schema；审计是否只记录名称、Hash 和 Token。然后从
+`ContextRegistry → ContextAssembler → ContextInvocationService` 跟踪启动校验、渲染、模型调用、Schema 校验和审计。
+
+面试时可以把这套设计概括为：Prompt 不再是散落在代码里的字符串，而是有版本 Hash、输入白名单、预算、输出契约、
+租户 Override 和 Golden Render 的部署资产；等待审批的任务还会校验 Context Manifest Hash，防止用新规则恢复旧状态。
+
+### 2.4 推荐源码阅读顺序
 
 不要从最复杂的浏览器连接器开始读。按下面顺序阅读，始终问自己“输入是什么、输出是什么、状态在哪里变化”。
 
@@ -77,6 +91,7 @@ README.md
   → runtime/bootstrap.py
   → runtime/declarative_catalog.py
   → agents/<agent-id>/agent.md
+  → contexts/ 与 core/context/
   → core/langgraph_agent.py
   → core/tool_executor.py
   → core/approvals.py 与 core/audit.py

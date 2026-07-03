@@ -12,16 +12,19 @@
 
 当前只有 3 个运行时 Agent：`customer_service`、`hr_recruiter`、`xhs_growth`。Intent 理解和能力解析是图节点，不是额外 Agent。
 
-## 2. 四层模型
+## 2. 五层模型
 
 | 层 | 职责 | 不负责 |
 |---|---|---|
 | Agent | 定义业务身份、可用 Skill、上下文、策略和预算 | 重复实现业务脚本 |
 | Skill/Capability | 定义可复用能力、Schema、编排和 Tool 边界 | 越过 Agent 白名单 |
+| Context Pack | 定义 LLM 节点的 System/User 分层、输入白名单、Token 与输出 Schema | 保存运行时数据或授予权限 |
 | Tool | 封装企业 API、RPA、数据库或 MCP | 自行绕过权限与审计 |
 | Runtime | 统一路由、策略、预算、审批、持久化和审计 | 包含特定业务逻辑 |
 
-Agent 声明位于 `agents/<id>/agent.md`；Skill 契约位于 `skills/<package>/skill.yaml`；脚本位于 `skills/<package>/scripts/`。
+Agent 声明位于 `agents/<id>/agent.md`；Skill 契约位于 `skills/<package>/skill.yaml`；脚本位于
+`skills/<package>/scripts/`；LLM 节点上下文契约位于 `contexts/`。`agent.md` 正文和 `SKILL.md` 正文分别是
+Agent 指令与 Skill 业务指令的唯一来源。
 
 ## 3. 统一主图
 
@@ -95,6 +98,27 @@ tenant_id
 4. 当前运行可读的 Artifact。
 
 `ConversationPersistenceService` 只在成功或受控终止后写入消息。`ExtractingMemoryWriter` 从对话中提取稳定事实，Memory 失败不中断主业务。
+
+### 6.1 Context Pack 装配与调用
+
+```mermaid
+flowchart LR
+    A["agent.md / SKILL.md"] --> C[ContextAssembler]
+    P["Context Pack: 模板、Source、预算、Schema"] --> C
+    D["Runtime Data: Request / Memory / RAG / Observation"] --> C
+    C --> I[ContextInvocationService]
+    I --> L[LLM Provider]
+    I --> S[Schema 校验]
+    I --> U[Audit / Token / Hash]
+```
+
+装配顺序固定为：不可覆盖安全 Fragment → 节点 System → 显式允许的 Agent/Skill 指令。动态数据只进入
+`UNTRUSTED_DATA_BEGIN/END` 包裹的 User Message，未在 `context.yaml` 声明的值会被忽略。预算取 Model Context
+Window、Agent、Skill、Run 剩余预算与 Pack 上限的最小值，再按优先级做确定性裁剪。
+
+Registry 启动时校验路径、Source、Serializer、Truncator、模板变量、JSON Schema 与租户 Override，并把 11 个 Pack 的
+Hash 写入 Runtime Manifest。等待审批的 Checkpoint 同时保存 Context Manifest Hash；恢复时 Hash 不一致会拒绝执行并要求
+重新发起任务。治理页面只展示 ID、Version、Hash、Override Hash 和预算，不展示 Prompt 或运行时内容。
 
 ## 7. Tool 治理
 
