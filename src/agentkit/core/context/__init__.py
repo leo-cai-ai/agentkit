@@ -9,6 +9,7 @@ from .errors import (
     ContextRenderError,
     ContextTooLargeError,
 )
+from .invocation import ContextDebugSampler, ContextInvocationService
 from .models import (
     ContextDefinition,
     ContextDefinitionModel,
@@ -24,10 +25,12 @@ __all__ = [
     "ContextAssembler",
     "ContextDefinition",
     "ContextDefinitionModel",
+    "ContextDebugSampler",
     "ContextError",
     "ContextHashMismatchError",
     "ContextInputMissingError",
     "ContextInputModel",
+    "ContextInvocationService",
     "ContextOutputInvalidError",
     "ContextRenderError",
     "ContextRenderRequest",
