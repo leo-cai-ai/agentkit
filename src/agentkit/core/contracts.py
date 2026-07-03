@@ -138,9 +138,14 @@ class ToolDefinition:
 @dataclass
 class SkillContext:
     tenant_id: str
+    tenant_selector: str
+    run_id: str
+    agent: AgentProfile
+    skill: SkillDefinition
     tenant_config: dict[str, Any]
     tools: dict[str, ToolDefinition]
     request: TaskRequest
+    context_invoker: Any
     # Optional hardened invoker (timeout/retry/idempotency/audit/tracing). When
     # absent (e.g. unit tests building a context directly), tool calls fall back
     # to invoking the handler in-process with no extra governance.

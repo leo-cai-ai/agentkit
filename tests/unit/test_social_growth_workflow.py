@@ -234,6 +234,10 @@ def test_xhs_growth_campaign_runs_isolated_workflow(monkeypatch):
     artifacts = InMemoryArtifactStore()
     ctx = SkillContext(
         tenant_id="AI-ABC",
+        tenant_selector="company_alpha",
+        run_id="r1",
+        agent=object(),  # type: ignore[arg-type]
+        skill=object(),  # type: ignore[arg-type]
         tenant_config={
             "social_growth": {
                 "default_topic": "enterprise AI agents",
@@ -268,6 +272,7 @@ def test_xhs_growth_campaign_runs_isolated_workflow(monkeypatch):
             roles=["growth_manager"],
             text="Research top 3 Xiaohongshu cases and prepare copy for 30 days 1w followers.",
         ),
+        context_invoker=object(),
         artifacts=artifacts,
     )
 

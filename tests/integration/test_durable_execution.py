@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from agentkit.core.artifacts import InMemoryArtifactStore
 from agentkit.core.audit import SQLiteAuditLog
+from agentkit.core.context.errors import ContextHashMismatchError
 from agentkit.core.contracts import TaskRequest
 from agentkit.core.execution.direct import DirectStrategy
 from agentkit.core.execution.models import AutonomyBudget
@@ -16,7 +19,7 @@ from agentkit.core.router import IntentRouter
 from tests.integration.test_unified_agent_graph import _agent, _intent, _skill
 
 
-def _durable_gateway(tmp_path, calls: list[str]) -> AgentGateway:
+def _durable_gateway(tmp_path, calls: list[str], *, context_invoker=None) -> AgentGateway:
     agents, skills, tools = AgentRegistry(), SkillRegistry(), ToolRegistry()
     agents.register(_agent("customer_service", ["refund.apply"]))
     skills.register(
@@ -29,11 +32,13 @@ def _durable_gateway(tmp_path, calls: list[str]) -> AgentGateway:
     )
     return AgentGateway(
         tenant_id="t1",
+        tenant_selector="company_alpha",
         tenant_config={},
         agents=agents,
         skills=skills,
         tools=tools,
         audit=SQLiteAuditLog(tmp_path / "audit.sqlite"),
+        context_invoker=context_invoker or SimpleNamespace(manifest_hash="sha256:test"),
         checkpointer=build_checkpointer(
             mode="sqlite", sqlite_path=tmp_path / "checkpoints.sqlite"
         ),
@@ -75,3 +80,27 @@ def test_sqlite_checkpoint_resumes_across_runtime_restart(tmp_path) -> None:
 
     with pytest.raises(RuntimeError, match="未等待审批"):
         resumed_gateway.resume(waiting.thread_id, approved_skills=["refund.apply"])
+
+
+def test_resume_rejects_changed_context_manifest(tmp_path) -> None:
+    calls: list[str] = []
+    context_invoker = SimpleNamespace(manifest_hash="sha256:original")
+    gateway = _durable_gateway(tmp_path, calls, context_invoker=context_invoker)
+    waiting = gateway.handle(
+        TaskRequest(
+            user_id="u1",
+            roles=[],
+            text="退款",
+            context={
+                "agent": "customer_service",
+                "skill": "refund.apply",
+                "skill_args": {"marker": "once"},
+            },
+        )
+    )
+    context_invoker.manifest_hash = "sha256:changed"
+
+    with pytest.raises(ContextHashMismatchError):
+        gateway.resume(waiting.thread_id, approved_skills=["refund.apply"])
+
+    assert calls == []

@@ -12,6 +12,12 @@ from typing import Any
 from agentkit.config import get_settings
 from agentkit.core.artifacts import ArtifactRecord, build_artifact_store
 from agentkit.core.audit import PostgresAuditLog, SQLiteAuditLog
+from agentkit.core.context import (
+    ContextAssembler,
+    ContextDebugSampler,
+    ContextInvocationService,
+    ContextRegistry,
+)
 from agentkit.core.execution.batch import BatchStrategy
 from agentkit.core.execution.direct import DirectStrategy
 from agentkit.core.execution.llm_models import StructuredPlanModel, StructuredReactModel
@@ -31,7 +37,6 @@ from agentkit.core.memory.retrieval import MemoryRetriever
 from agentkit.core.memory.store import build_conversation_store
 from agentkit.core.memory.vector_store import build_vector_store
 from agentkit.core.migrations import run_storage_migrations
-from agentkit.core.prompts import load_prompt_files
 from agentkit.core.rag.service import build_knowledge_service
 from agentkit.core.registry import AgentRegistry, SkillRegistry, ToolRegistry
 from agentkit.core.skill_store import SkillFileStore, attach_skill_packages
@@ -70,6 +75,8 @@ class AgentKitRuntime:
     tenant_id: str
     strategy_names: tuple[str, ...]
     conversations: Any
+    contexts: ContextRegistry
+    context_invoker: ContextInvocationService
     manifest: dict[str, Any] | None = None
     # 迁移期间保留属性形状，但不再存在第二套 Chat Runtime。
     chat_service: None = None
@@ -108,17 +115,13 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _runtime_manifest(*, tenant_id: str, tenant_config: dict[str, Any]) -> dict[str, Any]:
+def _runtime_manifest(
+    *,
+    tenant_id: str,
+    tenant_config: dict[str, Any],
+    contexts: ContextRegistry,
+) -> dict[str, Any]:
     tenant_path = TENANTS_DIR / f"{tenant_id}.json"
-    prompts: dict[str, Any] = {}
-    prompt_files = tenant_config.get("prompt_files", {})
-    if isinstance(prompt_files, dict):
-        for name, relative in sorted(prompt_files.items()):
-            prompt_path = (AGENTKIT_ROOT / str(relative)).resolve()
-            prompts[str(name)] = {
-                "path": str(Path(str(relative)).as_posix()),
-                "sha256": _sha256_file(prompt_path) if prompt_path.is_file() else "",
-            }
     return {
         "agentkit_root": str(AGENTKIT_ROOT),
         "tenant_id": tenant_config.get("tenant_id", tenant_id),
@@ -128,7 +131,10 @@ def _runtime_manifest(*, tenant_id: str, tenant_config: dict[str, Any]) -> dict[
             "sha256": _sha256_file(tenant_path) if tenant_path.is_file() else "",
         },
         "enabled_agents": list(tenant_config.get("enabled_agents", [])),
-        "prompt_files": prompts,
+        "contexts": {
+            "manifest_hash": contexts.manifest_hash,
+            "packs": contexts.manifest(),
+        },
     }
 
 
@@ -144,16 +150,6 @@ def build_runtime(
         db_path = DATA_DIR / f"{resolved_tenant_id}.sqlite"
     tenant_config = load_tenant_config(resolved_tenant_id)
     tenant_key = str(tenant_config.get("tenant_id") or resolved_tenant_id)
-    manifest = _runtime_manifest(
-        tenant_id=resolved_tenant_id,
-        tenant_config=tenant_config,
-    )
-    tenant_config["prompts"] = load_prompt_files(
-        base_dir=AGENTKIT_ROOT,
-        prompt_files=tenant_config.get("prompt_files", {}),
-    )
-    tenant_config["runtime_manifest"] = manifest
-
     settings = get_settings()
     storage_backend = str(getattr(settings, "storage_backend", "sqlite")).lower()
     run_storage_migrations(settings, sqlite_path=db_path)
@@ -164,6 +160,31 @@ def build_runtime(
         audit = SQLiteAuditLog(db_path)
     else:
         raise ValueError(f"不支持的 storage_backend: {storage_backend!r}")
+
+    context_registry = ContextRegistry(
+        root=AGENTKIT_ROOT / "contexts",
+        tenant_selector=resolved_tenant_id,
+        overrides=dict(tenant_config.get("context_overrides") or {}),
+        global_token_limit=settings.llm_context_window_tokens,
+    )
+    debug_sampler = (
+        ContextDebugSampler()
+        if settings.runtime_environment == "development"
+        and settings.context_debug_rendered_enabled
+        else None
+    )
+    context_invoker = ContextInvocationService(
+        assembler=ContextAssembler(context_registry),
+        audit=audit,
+        model_label=settings.openai_model or settings.llm_provider,
+        debug_sampler=debug_sampler,
+    )
+    manifest = _runtime_manifest(
+        tenant_id=resolved_tenant_id,
+        tenant_config=tenant_config,
+        contexts=context_registry,
+    )
+    tenant_config["runtime_manifest"] = manifest
 
     agents = AgentRegistry()
     skills = SkillRegistry()
@@ -251,11 +272,13 @@ def build_runtime(
 
     gateway = AgentGateway(
         tenant_id=tenant_key,
+        tenant_selector=resolved_tenant_id,
         tenant_config=tenant_config,
         agents=agents,
         skills=skills,
         tools=tools,
         audit=audit,
+        context_invoker=context_invoker,
         checkpointer=checkpointer,
         selector=StrategySelector(skills=skills, global_budget=global_budget),
         strategies=strategies,
@@ -274,6 +297,8 @@ def build_runtime(
         tenant_id=resolved_tenant_id,
         strategy_names=strategy_names,
         conversations=conversation_store,
+        contexts=context_registry,
+        context_invoker=context_invoker,
         manifest=manifest,
     )
 

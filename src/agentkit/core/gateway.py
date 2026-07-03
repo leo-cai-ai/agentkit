@@ -36,11 +36,13 @@ class AgentGateway:
         self,
         *,
         tenant_id: str,
+        tenant_selector: str,
         tenant_config: dict[str, Any],
         agents: AgentRegistry,
         skills: SkillRegistry,
         tools: ToolRegistry,
         audit: InMemoryAuditLog | SQLiteAuditLog | PostgresAuditLog,
+        context_invoker: Any,
         checkpointer: Any = None,
         router: IntentRouter | None = None,
         selector: StrategySelector | None = None,
@@ -53,11 +55,13 @@ class AgentGateway:
         idempotency_store: IdempotencyStore | None = None,
     ) -> None:
         self._tenant_id = tenant_id
+        self._tenant_selector = tenant_selector
         self._tenant_config = tenant_config
         self._agents = agents
         self._skills = skills
         self._tools = tools
         self._audit = audit
+        self._context_invoker = context_invoker
         self._conversation_persistence = conversation_persistence
         checkpointer = checkpointer or build_checkpointer(mode="memory")
         router = router or IntentRouter(agents=agents, skills=skills)
@@ -73,11 +77,13 @@ class AgentGateway:
             intent_resolver = decomposer.decompose
         self._agent_graph = UnifiedAgentGraph(
             tenant_id=tenant_id,
+            tenant_selector=tenant_selector,
             tenant_config=tenant_config,
             agents=agents,
             skills=skills,
             tools=tools,
             audit=audit,
+            context_invoker=context_invoker,
             router=router,
             selector=selector,
             strategies=strategies,
@@ -157,6 +163,10 @@ class AgentGateway:
     @property
     def audit(self) -> InMemoryAuditLog | SQLiteAuditLog | PostgresAuditLog:
         return self._audit
+
+    @property
+    def context_invoker(self) -> Any:
+        return self._context_invoker
 
 
 def build_checkpointer(

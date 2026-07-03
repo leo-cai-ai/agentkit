@@ -93,9 +93,14 @@ def _resolution(*skills: str) -> CapabilityResolution:
     )
 
 
-def _context(*skills: SkillDefinition, batch_size: int = 2) -> ExecutionContext:
+def _context(
+    *skills: SkillDefinition,
+    batch_size: int = 2,
+    context_invoker: object | None = None,
+) -> ExecutionContext:
     return ExecutionContext(
         tenant_id="t1",
+        tenant_selector="company_alpha",
         run_id="r1",
         agent=_agent(),
         request=TaskRequest(user_id="u1", roles=[], text="执行"),
@@ -103,9 +108,35 @@ def _context(*skills: SkillDefinition, batch_size: int = 2) -> ExecutionContext:
         tools={},
         tenant_config={},
         artifacts=InMemoryArtifactStore(),
+        context_invoker=context_invoker or object(),
         batch_size=batch_size,
         max_concurrency=4,
     )
+
+
+def test_execution_context_propagates_context_invoker_to_skill() -> None:
+    skill = _skill("demo.one", lambda ctx, args: {})
+    marker = object()
+    context = ExecutionContext(
+        tenant_id="t1",
+        tenant_selector="company_alpha",
+        run_id="r1",
+        agent=_agent(),
+        request=TaskRequest(user_id="u1", roles=[], text="执行"),
+        skills={skill.name: skill},
+        tools={},
+        tenant_config={},
+        artifacts=InMemoryArtifactStore(),
+        context_invoker=marker,
+    )
+
+    scoped = context.skill_context(skill)
+
+    assert scoped.tenant_selector == "company_alpha"
+    assert scoped.run_id == "r1"
+    assert scoped.agent is context.agent
+    assert scoped.skill is skill
+    assert scoped.context_invoker is marker
 
 
 def test_direct_executes_one_skill() -> None:

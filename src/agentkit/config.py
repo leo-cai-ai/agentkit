@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     # return a valid JSON object"). Set this high (e.g. 4096) for reasoning
     # models (DeepSeek-R1, Qwen-thinking, etc.) so the answer can finish.
     llm_max_tokens: int | None = Field(default=None, gt=0)
+    llm_context_window_tokens: int = Field(default=128_000, gt=0)
+    runtime_environment: Literal["development", "test", "production"] = "production"
+    context_debug_rendered_enabled: bool = False
     llm_requests_per_second: float = Field(default=0.9, gt=0)
     llm_rate_limiter_enabled: bool = True
     # Rate-limiter backend. 'process' is LangChain's in-memory token bucket

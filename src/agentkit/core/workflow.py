@@ -54,9 +54,14 @@ class WorkflowRunner:
         }
         scoped_ctx = SkillContext(
             tenant_id=self._parent.tenant_id,
+            tenant_selector=self._parent.tenant_selector,
+            run_id=self._parent.run_id,
+            agent=self._parent.agent,
+            skill=self._parent.skill,
             tenant_config=self._parent.tenant_config,
             tools=scoped_tools,
             request=self._parent.request,
+            context_invoker=self._parent.context_invoker,
             invoker=self._parent.invoker,
             artifacts=self._parent.artifacts,
         )

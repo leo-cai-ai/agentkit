@@ -19,6 +19,7 @@ from agentkit.runtime.conversation_persistence import ConversationPersistenceSer
 
 from .artifacts import ArtifactStore, InMemoryArtifactStore
 from .audit import InMemoryAuditLog, PostgresAuditLog, SQLiteAuditLog
+from .context.errors import ContextHashMismatchError
 from .contracts import AgentProfile, IntentFrame, TaskRequest, TaskResponse
 from .execution.models import (
     CapabilityResolution,
@@ -45,6 +46,7 @@ class UnifiedAgentState(TypedDict, total=False):
     request: TaskRequest
     thread_id: str
     run_id: str
+    context_manifest_hash: str
     agent: AgentProfile
     conversation: AgentConversationContext | None
     intent: IntentFrame
@@ -70,11 +72,13 @@ class UnifiedAgentGraph:
         self,
         *,
         tenant_id: str,
+        tenant_selector: str,
         tenant_config: dict[str, Any],
         agents: AgentRegistry,
         skills: SkillRegistry,
         tools: ToolRegistry,
         audit: _Audit,
+        context_invoker: Any,
         router: IntentRouter,
         selector: StrategySelector,
         strategies: StrategyRegistry,
@@ -87,11 +91,13 @@ class UnifiedAgentGraph:
         idempotency_store: IdempotencyStore | None = None,
     ) -> None:
         self._tenant_id = tenant_id
+        self._tenant_selector = tenant_selector
         self._tenant_config = tenant_config
         self._agents = agents
         self._skills = skills
         self._tools = tools
         self._audit = audit
+        self._context_invoker = context_invoker
         self._router = router
         self._selector = selector
         self._strategies = strategies
@@ -132,6 +138,20 @@ class UnifiedAgentGraph:
             raise KeyError(f"未知或已过期 thread_id: {thread_id}")
         if not snapshot.next:
             raise RuntimeError(f"thread_id 当前未等待审批: {thread_id}")
+        original_context_hash = str(snapshot.values.get("context_manifest_hash") or "")
+        if original_context_hash != self._context_invoker.manifest_hash:
+            run_id = str(snapshot.values.get("run_id") or "")
+            self._audit.record(
+                run_id,
+                "context_hash_mismatch",
+                {
+                    "expected": original_context_hash,
+                    "actual": self._context_invoker.manifest_hash,
+                },
+            )
+            raise ContextHashMismatchError(
+                "审批恢复时 Context Manifest 已改变，请重新发起任务"
+            )
         approved = {str(item) for item in approved_skills}
         rejected = {str(item) for item in rejected_skills}
         if not approved and not rejected:
@@ -205,7 +225,10 @@ class UnifiedAgentGraph:
             user_id=request.user_id,
             text=request.text,
         )
-        return {"run_id": run_id}
+        return {
+            "run_id": run_id,
+            "context_manifest_hash": self._context_invoker.manifest_hash,
+        }
 
     def _load_agent(self, state: UnifiedAgentState) -> dict[str, Any]:
         request = state["request"]
@@ -380,6 +403,7 @@ class UnifiedAgentGraph:
         )
         execution_context = ExecutionContext(
             tenant_id=self._tenant_id,
+            tenant_selector=self._tenant_selector,
             run_id=run_id,
             agent=state["agent"],
             request=request,
@@ -387,6 +411,7 @@ class UnifiedAgentGraph:
             tools={tool.name: tool for tool in self._tools.all()},
             tenant_config=self._tenant_config,
             artifacts=artifacts,
+            context_invoker=self._context_invoker,
             budget=selection.budget,
             invoker=invoker,
         )

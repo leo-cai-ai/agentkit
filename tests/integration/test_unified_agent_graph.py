@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -127,11 +129,13 @@ def _build_gateway(tmp_path):
     audit = InMemoryAuditLog()
     return AgentGateway(
         tenant_id="t1",
+        tenant_selector="company_alpha",
         tenant_config={},
         agents=agents,
         skills=skills,
         tools=tools,
         audit=audit,
+        context_invoker=SimpleNamespace(manifest_hash="sha256:test"),
         checkpointer=MemorySaver(),
         router=IntentRouter(agents=agents, skills=skills),
         selector=StrategySelector(
@@ -201,11 +205,13 @@ def test_side_effect_resume_keeps_run_and_does_not_repeat_planning(tmp_path) -> 
     audit = InMemoryAuditLog()
     gateway = AgentGateway(
         tenant_id="t1",
+        tenant_selector="company_alpha",
         tenant_config={},
         agents=agents,
         skills=skills,
         tools=tools,
         audit=audit,
+        context_invoker=SimpleNamespace(manifest_hash="sha256:test"),
         checkpointer=MemorySaver(),
         router=IntentRouter(agents=agents, skills=skills),
         selector=StrategySelector(

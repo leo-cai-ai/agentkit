@@ -42,6 +42,10 @@ def test_workflow_runner_scopes_tools_and_writes_artifact():
 
     parent = SkillContext(
         tenant_id="t",
+        tenant_selector="company_alpha",
+        run_id="r1",
+        agent=object(),  # type: ignore[arg-type]
+        skill=object(),  # type: ignore[arg-type]
         tenant_config={},
         tools={
             "allowed.tool": ToolDefinition(
@@ -58,6 +62,7 @@ def test_workflow_runner_scopes_tools_and_writes_artifact():
             ),
         },
         request=TaskRequest(user_id="u", roles=[], text="run"),
+        context_invoker=object(),
         artifacts=InMemoryArtifactStore(),
     )
 

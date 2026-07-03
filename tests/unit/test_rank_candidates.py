@@ -1,18 +1,41 @@
 from pathlib import Path
 
-from agentkit.core.contracts import SkillContext, SkillDefinition, TaskRequest, ToolDefinition
+from agentkit.core.contracts import (
+    AgentProfile,
+    SkillContext,
+    SkillDefinition,
+    TaskRequest,
+    ToolDefinition,
+)
 from agentkit.core.registry import AgentRegistry, SkillRegistry, ToolRegistry
 from agentkit.runtime.declarative_catalog import load_catalog, register_catalog
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _ctx(tools: dict[str, ToolDefinition]) -> SkillContext:
+def _ctx(
+    tools: dict[str, ToolDefinition],
+    *,
+    agent: AgentProfile,
+    skill: SkillDefinition,
+) -> SkillContext:
     request = TaskRequest(user_id="u", roles=["recruiter"], text="rank")
-    return SkillContext(tenant_id="t", tenant_config={}, tools=tools, request=request)
+    return SkillContext(
+        tenant_id="t",
+        tenant_selector="company_alpha",
+        run_id="r1",
+        agent=agent,
+        skill=skill,
+        tenant_config={},
+        tools=tools,
+        request=request,
+        context_invoker=object(),
+    )
 
 
-def _candidate_rank_components() -> tuple[ToolDefinition, ToolDefinition, SkillDefinition]:
+def _candidate_rank_components() -> tuple[
+    AgentProfile, ToolDefinition, ToolDefinition, SkillDefinition
+]:
     catalog = load_catalog(REPO_ROOT)
     agents, skills, tools = AgentRegistry(), SkillRegistry(), ToolRegistry()
     register_catalog(
@@ -22,11 +45,16 @@ def _candidate_rank_components() -> tuple[ToolDefinition, ToolDefinition, SkillD
         skills=skills,
         tools=tools,
     )
-    return tools.get("ats.get_job"), tools.get("ats.get_candidates"), skills.get("candidate.rank")
+    return (
+        agents.get("hr_recruiter"),
+        tools.get("ats.get_job"),
+        tools.get("ats.get_candidates"),
+        skills.get("candidate.rank"),
+    )
 
 
 def test_rank_orders_by_score_and_skips_llm_on_shard():
-    get_job, get_candidates, skill = _candidate_rank_components()
+    agent, get_job, get_candidates, skill = _candidate_rank_components()
     args = {
         "job_id": "JOB-001",
         "candidate_ids": ["C-100", "C-101", "C-102", "C-104"],
@@ -34,7 +62,11 @@ def test_rank_orders_by_score_and_skips_llm_on_shard():
         "_batch_shard": True,
     }
     result = skill.handler(
-        _ctx({"ats.get_job": get_job, "ats.get_candidates": get_candidates}),
+        _ctx(
+            {"ats.get_job": get_job, "ats.get_candidates": get_candidates},
+            agent=agent,
+            skill=skill,
+        ),
         args,
     )
 

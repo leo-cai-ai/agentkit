@@ -23,6 +23,7 @@ AnswerHandler = Callable[["ExecutionContext", StrategyRequest], dict[str, Any]]
 @dataclass(frozen=True)
 class ExecutionContext:
     tenant_id: str
+    tenant_selector: str
     run_id: str
     agent: AgentProfile
     request: TaskRequest
@@ -30,6 +31,7 @@ class ExecutionContext:
     tools: Mapping[str, ToolDefinition]
     tenant_config: dict[str, Any]
     artifacts: ArtifactStore
+    context_invoker: Any
     budget: AutonomyBudget | None = None
     invoker: Any = None
     answer_handler: AnswerHandler | None = None
@@ -52,9 +54,14 @@ class ExecutionContext:
         scoped_tools = {name: self.tools[name] for name in skill.tools if name in self.tools}
         return SkillContext(
             tenant_id=self.tenant_id,
+            tenant_selector=self.tenant_selector,
+            run_id=self.run_id,
+            agent=self.agent,
+            skill=skill,
             tenant_config=self.tenant_config,
             tools=scoped_tools,
             request=self.request,
+            context_invoker=self.context_invoker,
             invoker=self.invoker,
             artifacts=self.artifacts,
         )
