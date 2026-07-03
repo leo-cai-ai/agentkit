@@ -34,12 +34,17 @@ from agentkit.core.execution.workflow import WorkflowStrategy
 from agentkit.core.gateway import AgentGateway
 from agentkit.core.memory.store import ConversationStore
 from agentkit.core.registry import AgentRegistry, SkillRegistry, ToolRegistry
-from agentkit.core.router import IntentRouter
 from agentkit.runtime.conversation_context import ConversationContextService
 from agentkit.runtime.conversation_persistence import ConversationPersistenceService
 
 
-def _intent(request: TaskRequest) -> IntentFrame:
+def _intent(
+    request: TaskRequest,
+    *,
+    agent: AgentProfile,
+    run_id: str,
+) -> IntentFrame:
+    del agent, run_id
     return IntentFrame(
         raw_text=request.text,
         language="zh-CN",
@@ -137,7 +142,6 @@ def _build_gateway(tmp_path):
         audit=audit,
         context_invoker=SimpleNamespace(manifest_hash="sha256:test"),
         checkpointer=MemorySaver(),
-        router=IntentRouter(agents=agents, skills=skills),
         selector=StrategySelector(
             skills=skills,
             global_budget=AutonomyBudget(20, 20, 10, 10, 2, 50000, 600),
@@ -213,7 +217,6 @@ def test_side_effect_resume_keeps_run_and_does_not_repeat_planning(tmp_path) -> 
         audit=audit,
         context_invoker=SimpleNamespace(manifest_hash="sha256:test"),
         checkpointer=MemorySaver(),
-        router=IntentRouter(agents=agents, skills=skills),
         selector=StrategySelector(
             skills=skills,
             global_budget=AutonomyBudget(20, 20, 10, 10, 2, 50000, 600),

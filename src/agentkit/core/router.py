@@ -2,28 +2,16 @@
 
 from __future__ import annotations
 
-import json
-from collections.abc import Callable
 from typing import Any, Literal
 
+from .context.models import ContextRenderRequest
 from .contracts import AgentProfile, IntentFrame, SkillDefinition, TaskRequest
 from .execution.models import CapabilityResolution, ComplexityAssessment, ToolPolicy
-from .llm_client import require_chat_json
-from .prompt_library import PromptLibrary
 from .registry import AgentRegistry, SkillRegistry
-
-DEFAULT_ROUTE_SYSTEM = (
-    "你是企业 Agent 的能力解析节点。只返回 JSON，字段为 primary_skill、"
-    "candidate_skills、reason、confidence、has_dependencies。只能从候选能力中选择，"
-    "不能回答用户，也不能创造 Skill。"
-)
 
 
 class CapabilityResolutionError(ValueError):
     """请求尝试越过 Agent 的 Capability 边界。"""
-
-
-Suggestion = Callable[[str, str], dict[str, Any]]
 
 
 class IntentRouter:
@@ -34,19 +22,22 @@ class IntentRouter:
         *,
         agents: AgentRegistry,
         skills: SkillRegistry,
-        prompt_library: PromptLibrary | None = None,
-        suggestion: Suggestion | None = None,
+        context_invoker: Any,
+        tenant_id: str,
+        tenant_selector: str,
     ) -> None:
         self._agents = agents
         self._skills = skills
-        self._prompts = prompt_library or PromptLibrary()
-        self._suggestion = suggestion or require_chat_json
+        self._context_invoker = context_invoker
+        self._tenant_id = tenant_id
+        self._tenant_selector = tenant_selector
 
     def resolve(
         self,
         request: TaskRequest,
         *,
         intent: IntentFrame,
+        run_id: str,
     ) -> CapabilityResolution:
         agent = self._request_agent(request)
         if intent.intent_type in {"platform_question", "approval_decision", "chit_chat", "unknown"}:
@@ -107,7 +98,12 @@ class IntentRouter:
                     confidence="high" if best_score >= 2 else "medium",
                 )
 
-        return self._resolve_with_suggestion(request=request, intent=intent, agent=agent)
+        return self._resolve_with_suggestion(
+            request=request,
+            intent=intent,
+            agent=agent,
+            run_id=run_id,
+        )
 
     def candidate_skills(self, request: TaskRequest) -> list[dict[str, Any]]:
         agent = self._request_agent(request)
@@ -119,23 +115,27 @@ class IntentRouter:
         request: TaskRequest,
         intent: IntentFrame,
         agent: AgentProfile,
+        run_id: str,
     ) -> CapabilityResolution:
         candidates = [self._skill_payload(self._skills.get(name)) for name in agent.allowed_skills]
-        data = self._suggestion(
-            self._llm_system_prompt(),
-            json.dumps(
-                {
-                    "message": request.text,
-                    "intent": {
-                        "goal": intent.goal,
-                        "entities": intent.entities,
-                        "confidence": intent.confidence,
-                    },
-                    "candidate_skills": candidates,
+        data = self._context_invoker.invoke_json(
+            ContextRenderRequest(
+                context_id="runtime.capability-route",
+                tenant_id=self._tenant_id,
+                tenant_selector=self._tenant_selector,
+                run_id=run_id,
+                agent=agent,
+                skill=None,
+                values={
+                    "request.message": request.text,
+                    "request.goal": intent.goal,
+                    "routing.candidate_skills": candidates,
                 },
-                ensure_ascii=False,
-            ),
-        )
+                global_token_limit=min(agent.max_tokens, agent.autonomy_budget.max_tokens),
+            )
+        ).value
+        if not isinstance(data, dict):
+            raise CapabilityResolutionError("能力路由 Context 必须返回对象")
         raw_candidates = data.get("candidate_skills") or []
         if not isinstance(raw_candidates, list):
             raise CapabilityResolutionError("LLM candidate_skills 必须是列表")
@@ -241,12 +241,11 @@ class IntentRouter:
 
     def _skill_payload(self, skill: SkillDefinition) -> dict[str, Any]:
         return {
-            "name": skill.name,
+            "id": skill.name,
             "description": skill.description,
+            "input_schema": skill.input_schema,
             "reasoning": skill.execution.reasoning.value,
-            "orchestration": skill.execution.orchestration.value,
-            "tool_policy": skill.execution.tool_policy.value,
-            "keywords": skill.keywords,
+            "tools": list(skill.tools),
         }
 
     def _answer_resolution(self, intent: IntentFrame) -> CapabilityResolution:
@@ -258,10 +257,6 @@ class IntentRouter:
             confidence=intent.confidence,
             complexity=ComplexityAssessment(confidence=intent.confidence),
         )
-
-    def _llm_system_prompt(self) -> str:
-        return self._prompts.system("route", DEFAULT_ROUTE_SYSTEM, persona="router")
-
 
 def _confidence(value: Any) -> Literal["high", "medium", "low"]:
     normalized = str(value or "medium")

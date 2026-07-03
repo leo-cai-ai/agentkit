@@ -1,10 +1,13 @@
 from agentkit.core.contracts import TaskRequest
 from agentkit.core.intent import (
+    IntentDecomposer,
     detect_language,
     extract_entities,
     looks_like_business_task,
     normalize_text,
 )
+from tests.context_support import SpyContextInvoker
+from tests.unit.test_capability_resolution import _agent
 
 
 def test_detect_language_zh_vs_en():
@@ -30,3 +33,49 @@ def test_extract_entities_from_text_when_context_empty():
 def test_looks_like_business_task_detects_action_term():
     assert looks_like_business_task(text="please rank them", entities={}) is True
     assert looks_like_business_task(text="hello there", entities={}) is False
+
+
+def test_intent_decomposer_only_passes_declared_context_sources() -> None:
+    invoker = SpyContextInvoker(
+        {
+            "language": "zh-CN",
+            "intent_type": "business_task",
+            "goal": "查询订单",
+            "target": {"kind": "business_skill", "name": "order.lookup"},
+            "entities": {},
+            "confidence": "high",
+            "clarification": "",
+            "signals": [],
+        }
+    )
+    decomposer = IntentDecomposer(
+        context_invoker=invoker,
+        tenant_id="AI-ABC",
+        tenant_selector="company_alpha",
+    )
+    request = TaskRequest(
+        user_id="u1",
+        roles=[],
+        text="查询我的订单",
+        context={
+            "agent_context": {
+                "summary": "用户正在跟进订单",
+                "knowledge": [{"secret": "不应进入意图上下文"}],
+            },
+            "tool_credentials": "绝不能注入",
+        },
+    )
+
+    result = decomposer.decompose(request, agent=_agent(), run_id="r1")
+
+    assert result.target == {"kind": "business_skill", "name": "order.lookup"}
+    rendered_request = invoker.requests[0]
+    assert rendered_request.context_id == "runtime.intent"
+    assert rendered_request.values.keys() == {
+        "request.message",
+        "conversation.summary",
+        "request.intent_baseline",
+    }
+    assert rendered_request.values["conversation.summary"] == "用户正在跟进订单"
+    assert "knowledge" not in str(rendered_request.values)
+    assert "tool_credentials" not in str(rendered_request.values)

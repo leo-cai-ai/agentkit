@@ -39,7 +39,16 @@ from .tool_backends import PythonToolBackend, ToolBackendRegistry
 from .tool_executor import ToolExecutor
 
 AuditLog = InMemoryAuditLog | SQLiteAuditLog | PostgresAuditLog
-IntentResolver = Callable[[TaskRequest], IntentFrame]
+
+
+class IntentResolver(Protocol):
+    def __call__(
+        self,
+        request: TaskRequest,
+        *,
+        agent: AgentProfile,
+        run_id: str,
+    ) -> IntentFrame: ...
 
 
 class UnifiedAgentState(TypedDict, total=False):
@@ -279,7 +288,11 @@ class UnifiedAgentGraph:
     def _understand_request(self, state: UnifiedAgentState) -> dict[str, Any]:
         if "result" in state:
             return {}
-        intent = self._intent_resolver(state["request"])
+        intent = self._intent_resolver(
+            state["request"],
+            agent=state["agent"],
+            run_id=state["run_id"],
+        )
         self._audit.record(
             state["run_id"], "intent_understood", {"intent_type": intent.intent_type}
         )
@@ -289,7 +302,11 @@ class UnifiedAgentGraph:
         if "result" in state:
             return {}
         try:
-            resolution = self._router.resolve(state["request"], intent=state["intent"])
+            resolution = self._router.resolve(
+                state["request"],
+                intent=state["intent"],
+                run_id=state["run_id"],
+            )
         except CapabilityResolutionError as exc:
             return {
                 "result": StrategyResult(

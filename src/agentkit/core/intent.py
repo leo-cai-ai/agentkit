@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
 
+from .context.models import ContextRenderRequest
 from .contracts import IntentFrame, TaskRequest
-from .llm_client import LLMRequiredError, require_chat_json
-from .prompt_library import PromptLibrary
+from .llm_client import LLMRequiredError
 
 ALLOWED_INTENT_TYPES = {
     "business_task",
@@ -21,50 +20,53 @@ ALLOWED_TARGET_KINDS = {"business_skill", "platform_handler", "none"}
 ALLOWED_CONFIDENCE = {"high", "medium", "low"}
 PLATFORM_HANDLERS = {"time", "identity", "capability", "default"}
 
-DEFAULT_INTENT_SYSTEM = (
-    "You are an intent decomposition module for a governed enterprise agent runtime. "
-    "Return only valid JSON. Do not answer the user and do not execute tools. "
-    "Return intent_type, goal, target, entities, confidence, clarification and signals. "
-    "intent_type must be business_task, platform_question, approval_decision, chit_chat "
-    "or unknown. target.kind must be business_skill, platform_handler or none. "
-    "A business_skill name is only a proposal; the runtime will enforce the Agent whitelist. "
-    "Return confidence as high, medium or low."
-)
-
-
 class IntentDecomposer:
     """使用确定性实体提取辅助一次结构化 LLM 判断。"""
 
     def __init__(
         self,
         *,
-        tenant_config: dict[str, Any],
-        prompt_library: PromptLibrary | None = None,
+        context_invoker: Any,
+        tenant_id: str,
+        tenant_selector: str,
     ) -> None:
-        del tenant_config
-        self._prompts = prompt_library or PromptLibrary()
+        self._context_invoker = context_invoker
+        self._tenant_id = tenant_id
+        self._tenant_selector = tenant_selector
 
-    def decompose(self, request: TaskRequest) -> IntentFrame:
+    def decompose(
+        self,
+        request: TaskRequest,
+        *,
+        agent: Any,
+        run_id: str,
+    ) -> IntentFrame:
         baseline = self._baseline(request)
-        data = require_chat_json(
-            self._llm_system_prompt(),
-            json.dumps(
-                {
-                    "message": request.text,
-                    "request_context": request.context,
-                    "deterministic_entities": baseline.entities,
-                    "deterministic_classification": {
+        agent_context = request.context.get("agent_context")
+        summary = agent_context.get("summary", "") if isinstance(agent_context, dict) else ""
+        data = self._context_invoker.invoke_json(
+            ContextRenderRequest(
+                context_id="runtime.intent",
+                tenant_id=self._tenant_id,
+                tenant_selector=self._tenant_selector,
+                run_id=run_id,
+                agent=agent,
+                skill=None,
+                values={
+                    "request.message": request.text,
+                    "conversation.summary": str(summary or ""),
+                    "request.intent_baseline": {
                         "intent_type": baseline.intent_type,
                         "goal": baseline.goal,
                         "target": baseline.target,
+                        "entities": baseline.entities,
                         "confidence": baseline.confidence,
                         "signals": baseline.signals,
                     },
                 },
-                ensure_ascii=False,
-                default=str,
-            ),
-        )
+                global_token_limit=min(agent.max_tokens, agent.autonomy_budget.max_tokens),
+            )
+        ).value
         if not isinstance(data, dict):
             raise LLMRequiredError("Intent LLM 必须返回对象")
         intent_type = str(data.get("intent_type") or baseline.intent_type)
@@ -94,9 +96,6 @@ class IntentDecomposer:
             clarification=str(data.get("clarification") or ""),
             signals=dedupe_signals(signals),
         )
-
-    def _llm_system_prompt(self) -> str:
-        return self._prompts.system("intent", DEFAULT_INTENT_SYSTEM)
 
     def _baseline(self, request: TaskRequest) -> IntentFrame:
         text = normalize_text(request.text)

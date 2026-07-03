@@ -24,6 +24,7 @@ from agentkit.core.execution.models import (
 )
 from agentkit.core.registry import AgentRegistry, SkillRegistry
 from agentkit.core.router import CapabilityResolutionError, IntentRouter
+from tests.context_support import SpyContextInvoker
 
 
 def _agent() -> AgentProfile:
@@ -81,7 +82,7 @@ def _skill(
     )
 
 
-def _router() -> IntentRouter:
+def _router(context_invoker=None) -> IntentRouter:
     agents = AgentRegistry()
     agents.register(_agent())
     skills = SkillRegistry()
@@ -101,7 +102,13 @@ def _router() -> IntentRouter:
             keywords=("退款",),
         )
     )
-    return IntentRouter(agents=agents, skills=skills)
+    return IntentRouter(
+        agents=agents,
+        skills=skills,
+        context_invoker=context_invoker or SpyContextInvoker(),
+        tenant_id="AI-ABC",
+        tenant_selector="company_alpha",
+    )
 
 
 def _intent(intent_type="business_task") -> IntentFrame:
@@ -126,6 +133,7 @@ def test_router_resolves_keyword_to_agent_bound_skill() -> None:
             context={"agent": "customer_service"},
         ),
         intent=_intent(),
+        run_id="r1",
     )
 
     assert result.response_mode == "skill"
@@ -147,6 +155,7 @@ def test_router_allows_multiple_explicit_bound_skills() -> None:
             },
         ),
         intent=_intent(),
+        run_id="r1",
     )
 
     assert result.response_mode == "multi_skill"
@@ -165,6 +174,7 @@ def test_router_rejects_skill_outside_agent_boundary() -> None:
                 context={"agent": "customer_service", "skill": "admin.delete"},
             ),
             intent=_intent(),
+            run_id="r1",
         )
 
 
@@ -177,7 +187,38 @@ def test_non_business_intent_resolves_to_answer() -> None:
             context={"agent": "customer_service"},
         ),
         intent=_intent("chit_chat"),
+        run_id="r1",
     )
 
     assert result.response_mode == "answer"
     assert result.candidate_skills == ()
+
+
+def test_router_llm_receives_minimal_candidate_contracts() -> None:
+    invoker = SpyContextInvoker(
+        {
+            "primary_skill": "order.lookup",
+            "candidate_skills": ["order.lookup"],
+            "reason": "最符合查询目标",
+            "confidence": "high",
+            "has_dependencies": False,
+        }
+    )
+
+    result = _router(invoker).resolve(
+        TaskRequest(
+            user_id="u1",
+            roles=[],
+            text="帮我处理一下这个问题",
+            context={"agent": "customer_service"},
+        ),
+        intent=_intent(),
+        run_id="r-route",
+    )
+
+    assert result.primary_skill == "order.lookup"
+    request = invoker.requests[0]
+    assert request.context_id == "runtime.capability-route"
+    candidates = request.values["routing.candidate_skills"]
+    assert candidates
+    assert set(candidates[0]) == {"id", "description", "input_schema", "reasoning", "tools"}

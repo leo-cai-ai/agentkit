@@ -15,7 +15,6 @@ from agentkit.core.execution.selector import StrategySelector
 from agentkit.core.execution.workflow import WorkflowStrategy
 from agentkit.core.gateway import AgentGateway, build_checkpointer
 from agentkit.core.registry import AgentRegistry, SkillRegistry, ToolRegistry
-from agentkit.core.router import IntentRouter
 from tests.integration.test_unified_agent_graph import _agent, _intent, _skill
 
 
@@ -42,7 +41,6 @@ def _durable_gateway(tmp_path, calls: list[str], *, context_invoker=None) -> Age
         checkpointer=build_checkpointer(
             mode="sqlite", sqlite_path=tmp_path / "checkpoints.sqlite"
         ),
-        router=IntentRouter(agents=agents, skills=skills),
         selector=StrategySelector(
             skills=skills,
             global_budget=AutonomyBudget(20, 20, 10, 10, 2, 50000, 600),

@@ -64,7 +64,13 @@ class AgentGateway:
         self._context_invoker = context_invoker
         self._conversation_persistence = conversation_persistence
         checkpointer = checkpointer or build_checkpointer(mode="memory")
-        router = router or IntentRouter(agents=agents, skills=skills)
+        router = router or IntentRouter(
+            agents=agents,
+            skills=skills,
+            context_invoker=context_invoker,
+            tenant_id=tenant_id,
+            tenant_selector=tenant_selector,
+        )
         selector = selector or StrategySelector(
             skills=skills,
             global_budget=AutonomyBudget(64, 128, 32, 32, 4, 200_000, 3600),
@@ -73,7 +79,11 @@ class AgentGateway:
             [DirectStrategy(), WorkflowStrategy(), BatchStrategy(), ParallelStrategy()]
         )
         if intent_resolver is None:
-            decomposer = IntentDecomposer(tenant_config=tenant_config)
+            decomposer = IntentDecomposer(
+                context_invoker=context_invoker,
+                tenant_id=tenant_id,
+                tenant_selector=tenant_selector,
+            )
             intent_resolver = decomposer.decompose
         self._agent_graph = UnifiedAgentGraph(
             tenant_id=tenant_id,
