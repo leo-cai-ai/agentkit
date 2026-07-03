@@ -16,6 +16,7 @@ from .models import (
     LLMInvocationResult,
     RenderedContext,
 )
+from .registry import ContextRegistry
 from .sources import ContextSourceRegistry
 
 __all__ = [
@@ -28,6 +29,7 @@ __all__ = [
     "ContextOutputInvalidError",
     "ContextRenderError",
     "ContextRenderRequest",
+    "ContextRegistry",
     "ContextSourceRegistry",
     "ContextTooLargeError",
     "LLMInvocationResult",
