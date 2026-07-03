@@ -1,6 +1,13 @@
 import pytest
 
 from agentkit.core.contracts import SkillDefinition
+from agentkit.core.execution.models import (
+    AutonomyLimits,
+    OrchestrationMode,
+    ReasoningStrategy,
+    SkillExecutionPolicy,
+    ToolPolicy,
+)
 from agentkit.core.schema_validation import (
     SkillInputError,
     validate_skill_input,
@@ -16,7 +23,12 @@ def _skill(*, input_schema=None, output_schema=None) -> SkillDefinition:
         input_schema=input_schema or {},
         output_schema=output_schema or {},
         permissions=[],
-        execution_mode="plan_execute",
+        execution=SkillExecutionPolicy(
+            reasoning=ReasoningStrategy.PLAN_EXECUTE,
+            orchestration=OrchestrationMode.SINGLE,
+            tool_policy=ToolPolicy.READ_ONLY,
+        ),
+        autonomy=AutonomyLimits(),
         tools=[],
         handler=lambda ctx, args: {},
     )

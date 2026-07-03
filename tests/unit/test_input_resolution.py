@@ -9,6 +9,13 @@ from agentkit.core.contracts import (
     SkillDefinition,
     TaskRequest,
 )
+from agentkit.core.execution.models import (
+    AutonomyLimits,
+    OrchestrationMode,
+    ReasoningStrategy,
+    SkillExecutionPolicy,
+    ToolPolicy,
+)
 from agentkit.core.input_resolution import SkillInputResolver
 from agentkit.core.registry import SkillRegistry
 
@@ -38,7 +45,12 @@ def _skill() -> SkillDefinition:
         },
         output_schema={},
         permissions=[],
-        execution_mode="workflow",
+        execution=SkillExecutionPolicy(
+            reasoning=ReasoningStrategy.DIRECT,
+            orchestration=OrchestrationMode.WORKFLOW,
+            tool_policy=ToolPolicy.GOVERNED,
+        ),
+        autonomy=AutonomyLimits(),
         tools=[],
         handler=lambda ctx, args: {},
     )

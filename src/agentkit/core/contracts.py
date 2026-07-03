@@ -6,7 +6,14 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
-ExecutionMode = Literal["react", "plan_execute", "batch", "workflow", "no_tool"]
+from .execution.models import (
+    AgentExecutionPolicy,
+    AutonomyBudget,
+    AutonomyLimits,
+    ExecutionStrategyName,
+    SkillExecutionPolicy,
+)
+
 IntentType = Literal[
     "business_task",
     "platform_question",
@@ -46,7 +53,8 @@ class AgentProfile:
     domain: str
     description: str
     allowed_skills: list[str]
-    allowed_tools: list[str]
+    execution_policy: AgentExecutionPolicy
+    autonomy_budget: AutonomyBudget
     model: str = "default"
     max_tokens: int = 100_000
     prompt_file: str = ""
@@ -62,7 +70,8 @@ class SkillDefinition:
     input_schema: dict[str, Any]
     output_schema: dict[str, Any]
     permissions: list[str]
-    execution_mode: ExecutionMode
+    execution: SkillExecutionPolicy
+    autonomy: AutonomyLimits
     tools: list[str]
     handler: Callable[[SkillContext, dict[str, Any]], dict[str, Any]]
     batch_key: str | None = None
@@ -137,7 +146,7 @@ class RouteDecision:
 class PlanStep:
     step_id: int
     skill_name: str
-    mode: ExecutionMode
+    mode: ExecutionStrategyName
     args: dict[str, Any]
     depends_on: list[int] = field(default_factory=list)
 
