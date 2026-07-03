@@ -55,6 +55,7 @@ class MemoryContextPolicy:
     scope: Literal["agent_user"]
     window_turns: int
     max_context_tokens: int
+    retrieval_k: int = 4
 
 
 @dataclass(frozen=True)

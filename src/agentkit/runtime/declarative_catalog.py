@@ -59,6 +59,7 @@ class _MemoryYaml(_StrictModel):
     scope: Literal["agent_user"] = "agent_user"
     window_turns: int = Field(default=6, gt=0)
     max_context_tokens: int = Field(default=4000, gt=0)
+    retrieval_k: int = Field(default=4, gt=0)
 
 
 class _RagYaml(_StrictModel):
@@ -430,6 +431,7 @@ def _build_agent_manifest(
                 scope=memory.scope,
                 window_turns=memory.window_turns,
                 max_context_tokens=memory.max_context_tokens,
+                retrieval_k=memory.retrieval_k,
             ),
             rag=RagContextPolicy(
                 enabled=rag.enabled,
