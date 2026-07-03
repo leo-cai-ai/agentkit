@@ -104,7 +104,7 @@ class ContextRegistry:
         user_path = _resolve_within(source_dir, model.templates.user, label="User 模板")
         system_template = _read_required_text(system_path)
         user_template = _read_required_text(user_path)
-        self._validate_template_variables(model, system_template, system_path)
+        self._validate_system_template(system_template, system_path)
         self._validate_template_variables(model, user_template, user_path)
 
         fragment_names = tuple(dict.fromkeys((*MANDATORY_FRAGMENTS, *model.fragments)))
@@ -197,6 +197,13 @@ class ContextRegistry:
         if unknown:
             raise ValueError(f"{path}: 未声明模板变量: {', '.join(unknown)}")
 
+    def _validate_system_template(self, template: str, path: Path) -> None:
+        referenced = sorted(set(_TEMPLATE_VARIABLE.findall(template)))
+        if referenced:
+            raise ValueError(
+                f"{path}: System 模板不能引用动态变量: {', '.join(referenced)}"
+            )
+
     def _apply_override(
         self,
         definition: ContextDefinition,
@@ -233,7 +240,7 @@ class ContextRegistry:
         user_path = candidate / "user.md"
         if system_path.is_file():
             system_template = _read_required_text(system_path)
-            self._validate_template_variables(definition.model, system_template, system_path)
+            self._validate_system_template(system_template, system_path)
         if user_path.is_file():
             user_template = _read_required_text(user_path)
             self._validate_template_variables(definition.model, user_template, user_path)
