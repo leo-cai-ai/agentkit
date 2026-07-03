@@ -1,27 +1,36 @@
+import sys
+from pathlib import Path
+
 import pytest
 
 from agentkit.core.artifacts import InMemoryArtifactStore
 from agentkit.core.contracts import SkillContext, TaskRequest, ToolDefinition
-from agentkit.domain_packs.social_growth.pack import (
-    _maybe_llm_article,
-    _parse_generated_article,
-    assess_research_quality,
-    compare_cases,
-    extract_topic,
-    review_copy,
-    run_growth_campaign,
-    topic_source_for,
+from agentkit.runtime.declarative_catalog import (
+    load_capability_handler,
+    load_catalog,
+    load_tool_factory,
 )
-from agentkit.domain_packs.social_growth.providers import (
-    MockXhsMetricsProvider,
-    MockXhsProvider,
-    default_provider_bundle,
-)
-from agentkit.domain_packs.social_growth.tools import (
-    create_publish_package_tool,
-    fetch_metrics_tool,
-    search_top_notes_tool,
-)
+
+_CATALOG = load_catalog(Path(__file__).resolve().parents[2])
+run_growth_campaign = load_capability_handler(_CATALOG, "xhs.growth.campaign")
+_HANDLERS = sys.modules[run_growth_campaign.__module__]
+_FACTORY = load_tool_factory(_CATALOG, "xhs.rpa.search_top_notes")
+_TOOLS = sys.modules[_FACTORY.__module__]
+_PROVIDERS = sys.modules[_FACTORY.__module__.rsplit(".", 1)[0] + ".providers"]
+
+_maybe_llm_article = _HANDLERS._maybe_llm_article
+_parse_generated_article = _HANDLERS._parse_generated_article
+assess_research_quality = _HANDLERS.assess_research_quality
+compare_cases = _HANDLERS.compare_cases
+extract_topic = _HANDLERS.extract_topic
+review_copy = _HANDLERS.review_copy
+topic_source_for = _HANDLERS.topic_source_for
+MockXhsMetricsProvider = _PROVIDERS.MockXhsMetricsProvider
+MockXhsProvider = _PROVIDERS.MockXhsProvider
+default_provider_bundle = _PROVIDERS.default_provider_bundle
+create_publish_package_tool = _TOOLS.create_publish_package_tool
+fetch_metrics_tool = _TOOLS.fetch_metrics_tool
+search_top_notes_tool = _TOOLS.search_top_notes_tool
 
 
 class _LimitProvider:
@@ -46,12 +55,11 @@ def test_xhs_search_tool_validates_and_caps_limit():
 
 
 def test_xhs_provider_bundle_accepts_tenant_playwright_override(monkeypatch, tmp_path):
-    import agentkit.domain_packs.social_growth.providers as providers_module
     from agentkit.config import Settings
     from agentkit.connectors.xhs_playwright import PlaywrightXhsResearchProvider
 
     settings = Settings(_env_file=None, xhs_research_provider="mock")
-    monkeypatch.setattr(providers_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(_PROVIDERS, "get_settings", lambda: settings)
 
     bundle = default_provider_bundle(
         provider_config={
@@ -68,14 +76,13 @@ def test_xhs_provider_bundle_accepts_tenant_playwright_override(monkeypatch, tmp
 
 
 def test_xhs_provider_bundle_builds_playwright_publisher(monkeypatch, tmp_path):
-    import agentkit.domain_packs.social_growth.providers as providers_module
     from agentkit.config import Settings
     from agentkit.connectors.xhs_publisher_playwright import (
         PlaywrightXhsPublishingProvider,
     )
 
     settings = Settings(_env_file=None, xhs_publishing_provider="mock")
-    monkeypatch.setattr(providers_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(_PROVIDERS, "get_settings", lambda: settings)
 
     bundle = default_provider_bundle(
         provider_config={

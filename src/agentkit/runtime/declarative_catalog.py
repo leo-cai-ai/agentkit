@@ -141,7 +141,7 @@ class _AgentYaml(_StrictModel):
     context: _ContextYaml
     execution: _AgentExecutionYaml
     autonomy: _AgentAutonomyYaml
-    routing_hints: list[str] = Field(default_factory=list)
+    routing_keywords: list[str] = Field(default_factory=list)
 
 
 class _ToolYaml(_StrictModel):
@@ -203,7 +203,7 @@ class AgentManifest:
     context: ContextPolicy
     execution: AgentExecutionPolicy
     autonomy: AutonomyBudget
-    routing_hints: tuple[str, ...]
+    routing_keywords: tuple[str, ...]
     instructions: str
     source_path: Path
 
@@ -331,7 +331,7 @@ def register_catalog(
                 context_policy=manifest.context,
                 prompt_file=manifest.prompt_file,
                 max_tokens=manifest.autonomy.max_tokens,
-                routing_hints=manifest.routing_hints,
+                routing_keywords=manifest.routing_keywords,
             )
         )
 
@@ -451,7 +451,7 @@ def _build_agent_manifest(
             allow_side_effects=raw.execution.allow_side_effects,
         ),
         autonomy=raw.autonomy.to_runtime(),
-        routing_hints=tuple(raw.routing_hints),
+        routing_keywords=tuple(raw.routing_keywords),
         instructions=body,
         source_path=source_path,
     )
@@ -704,6 +704,22 @@ def load_tool_factory(
         catalog.root,
         manifest.source_path.parent,
         manifest.factory_entrypoint,
+    )
+
+
+def load_capability_handler(
+    catalog: DeclarativeCatalog,
+    capability_id: str,
+) -> Callable[..., Any]:
+    """加载指定 Capability 的声明式 Handler，用于 CLI 和隔离测试。"""
+    try:
+        manifest = catalog.capabilities[capability_id]
+    except KeyError as exc:
+        raise ValueError(f"未知 Capability: {capability_id}") from exc
+    return _load_entrypoint(
+        catalog.root,
+        manifest.source_path.parent,
+        manifest.entrypoint,
     )
 
 

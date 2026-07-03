@@ -23,7 +23,7 @@ autonomy:
   max_replans: 1
   max_tokens: 30000
   timeout_seconds: 300
-routing_hints: [招聘, 候选人, 简历, 排序]
+routing_keywords: [招聘, 候选人, 简历, 排序]
 ---
 
 # 招聘 Agent

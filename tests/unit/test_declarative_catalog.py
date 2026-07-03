@@ -116,7 +116,7 @@ def _write_catalog(
             "max_tokens": 30000,
             "timeout_seconds": 300,
         },
-        "routing_hints": ["研究", "调研"],
+        "routing_keywords": ["研究", "调研"],
     }
     agent.update(agent_changes or {})
     (agent_dir / "agent.md").write_text(

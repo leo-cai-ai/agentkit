@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -20,7 +21,13 @@ from agentkit.connectors.xhs_publisher_playwright import (
     XhsPublishLedger,
     XhsPublishOutcomeUnknown,
 )
-from agentkit.domain_packs.social_growth.providers import MockXhsProvider
+from agentkit.runtime.declarative_catalog import load_catalog, load_tool_factory
+
+_CATALOG = load_catalog(Path(__file__).resolve().parents[2])
+_FACTORY = load_tool_factory(_CATALOG, "xhs.rpa.search_top_notes")
+MockXhsProvider = sys.modules[
+    _FACTORY.__module__.rsplit(".", 1)[0] + ".providers"
+].MockXhsProvider
 
 
 def test_publication_contract_is_stable_and_deduplicates_tags() -> None:

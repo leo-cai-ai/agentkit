@@ -392,6 +392,9 @@ def _resume_payload(payload: dict[str, Any]) -> tuple[str, list[str], list[str]]
     rejected = _as_list(payload.get("rejected_skills"))
     if not approved and not rejected:
         raise ValueError("必须提供 approved_skills 或 rejected_skills")
+    overlap = sorted(set(approved) & set(rejected))
+    if overlap:
+        raise ValueError("同一 Skill 不能同时批准和拒绝: " + ", ".join(overlap))
     return thread_id, approved, rejected
 
 
@@ -430,12 +433,12 @@ def _web_response(response: TaskResponse) -> dict[str, Any]:
         "strategy": response.strategy,
         "conversation_id": response.conversation_id,
         "run_id": response.run_id,
-        "assistant_text": _assistant_text(response),
+        "assistant_text": format_response_text(response),
         "response": body,
     }
 
 
-def _assistant_text(response: TaskResponse) -> str:
+def format_response_text(response: TaskResponse) -> str:
     output = response.output
     for key in ("answer", "message", "summary", "campaign_summary"):
         if output.get(key):

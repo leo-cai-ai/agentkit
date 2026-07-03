@@ -1,1 +1,0 @@
-"""HR recruitment domain pack."""

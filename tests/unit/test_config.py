@@ -62,7 +62,6 @@ def test_defaults(monkeypatch):
     assert s.ai_client_id is None
     assert s.llm_requests_per_second == 0.9
     assert s.llm_rate_limiter_enabled is True
-    assert s.deterministic_fastpath is False
     assert s.tool_max_workers == 32
     assert s.web_token_business_roles == ""
     assert s.auth_proxy_business_roles_header == "X-Forwarded-Business-Roles"

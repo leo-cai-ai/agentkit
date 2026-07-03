@@ -36,7 +36,7 @@ autonomy:
   max_replans: 1
   max_tokens: 30000
   timeout_seconds: 300
-routing_hints: [客服, 售后, 订单, 物流, 退款]
+routing_keywords: [客服, 售后, 订单, 物流, 退款]
 ---
 
 # 客服 Agent

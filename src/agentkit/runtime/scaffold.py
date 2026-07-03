@@ -56,7 +56,7 @@ autonomy:
   max_replans: 1
   max_tokens: 20000
   timeout_seconds: 180
-routing_hints: []
+routing_keywords: []
 ---
 
 # {agent_id}

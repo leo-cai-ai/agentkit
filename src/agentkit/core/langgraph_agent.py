@@ -414,7 +414,19 @@ class UnifiedAgentGraph:
         if result is None or result.status != "deferred_action":
             return {}
         action = result.output.get("deferred_action", {})
-        tool_name = str(action.get("tool_name") or "")
+        raw_calls = action.get("tool_calls") if isinstance(action, dict) else None
+        if isinstance(raw_calls, list) and raw_calls:
+            calls = [item for item in raw_calls if isinstance(item, dict)]
+        else:
+            calls = [
+                {
+                    "tool_name": action.get("tool_name"),
+                    "args": action.get("arguments", {}),
+                    "result_key": "action_result",
+                }
+            ]
+        tool_names = {str(item.get("tool_name") or "") for item in calls}
+        tool_names.discard("")
         skill_name = state["resolution"].primary_skill or ""
         request = state["request"]
         approved = set(request.context.get("approved_skills", []))
@@ -422,21 +434,28 @@ class UnifiedAgentGraph:
         if skill_name in rejected:
             return {"result": StrategyResult(status="rejected", output={})}
         if skill_name not in approved:
-            return {"approval_required": [skill_name]}
-        tool = self._tools.get(tool_name)
+            raise NodeInterrupt("等待人工审批延迟副作用")
         invoker = ToolExecutor(
             tenant_id=self._tenant_id,
             audit=self._audit,
             run_id=state["run_id"],
             backends=self._tool_backends,
             permissions=_granted_permissions(self._tenant_config, request.roles),
-            allowed_tools={tool_name},
+            allowed_tools=tool_names,
             tool_policy=ToolPolicy.SIDE_EFFECT,
-            approved_side_effects={tool_name},
+            approved_side_effects=tool_names,
             idempotency_store=self._idempotency_store,
         )
-        output = invoker.call(tool, dict(action.get("arguments") or {}))
-        return {"result": StrategyResult(status="completed", output=output)}
+        completed_output = dict(result.output)
+        completed_output.pop("deferred_action", None)
+        for item in calls:
+            tool_name = str(item.get("tool_name") or "")
+            output = invoker.call(
+                self._tools.get(tool_name),
+                dict(item.get("args") or item.get("arguments") or {}),
+            )
+            completed_output[str(item.get("result_key") or tool_name)] = output
+        return {"result": StrategyResult(status="completed", output=completed_output)}
 
     def _review_output(self, state: UnifiedAgentState) -> dict[str, Any]:
         result = state.get("result")
@@ -451,7 +470,12 @@ class UnifiedAgentGraph:
             return {}
         result = state.get("result")
         conversation_id = str(state["request"].context.get("conversation_id") or "")
-        if result is None or not conversation_id or result.status == "waiting_for_approval":
+        if (
+            result is None
+            or "agent" not in state
+            or not conversation_id
+            or result.status == "waiting_for_approval"
+        ):
             return {}
         self._conversation_persistence.record_turn(
             tenant_id=self._tenant_id,
@@ -487,16 +511,29 @@ class UnifiedAgentGraph:
                     "run_paused",
                     {"status": "waiting_for_approval", "thread_id": thread_id},
                 )
+            pending_result = cast(StrategyResult | None, values.get("result"))
+            approval = {"skills": values.get("approval_required", [])}
+            if pending_result is not None and pending_result.status == "deferred_action":
+                action = pending_result.output.get("deferred_action", {})
+                if isinstance(action, dict) and isinstance(action.get("preview"), dict):
+                    preview = action["preview"]
+                else:
+                    arguments = action.get("arguments", {}) if isinstance(action, dict) else {}
+                    preview = arguments.get("package", {}) if isinstance(arguments, dict) else {}
+                approval.update({"phase": "post_execution", "preview": preview})
             result = StrategyResult(
                 status="waiting_for_approval",
-                output={"approval": {"skills": values.get("approval_required", [])}},
+                output={"approval": approval},
             )
         else:
             result = cast(StrategyResult, values.get("result"))
+        approval_governance = result.output.get("approval", {}) if snapshot.next else {
+            "skills": values.get("approval_required", [])
+        }
         governance = {
             "strategy": selection.strategy.value if selection else "",
             "allowed_skills": list(agent.allowed_skills) if agent else [],
-            "approval": {"skills": values.get("approval_required", [])},
+            "approval": approval_governance,
         }
         return TaskResponse(
             status=result.status,

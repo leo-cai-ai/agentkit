@@ -32,7 +32,7 @@ autonomy:
   max_replans: 1
   max_tokens: 50000
   timeout_seconds: 900
-routing_hints: [小红书, 涨粉, 笔记, 选题, 发布]
+routing_keywords: [小红书, 涨粉, 笔记, 选题, 发布]
 ---
 
 # 小红书增长 Agent

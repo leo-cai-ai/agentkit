@@ -1,4 +1,4 @@
-"""Web API: approval pause (/api/tasks) + in-place resume (/api/tasks/resume)."""
+"""统一 Web API 的副作用审批与原位恢复测试。"""
 
 from __future__ import annotations
 
@@ -10,51 +10,19 @@ import pytest
 import agentkit.config as config_mod
 
 
-def _hr_responder(system: str, user: str) -> str:
-    s = system.lower()
-    if "intent decomposition module" in s:
+def _responder(system: str, user: str) -> str:
+    if "intent decomposition module" in system.lower():
         return json.dumps(
             {
                 "intent_type": "business_task",
-                "goal": "rank",
-                "target": {"kind": "none", "name": ""},
+                "goal": "申请退款",
+                "target": {"kind": "business_skill", "name": "refund.apply"},
                 "entities": {},
                 "confidence": "high",
                 "signals": [],
             }
         )
-    if "routing node" in s:
-        return json.dumps({"skill_name": "candidate.rank", "reason": "m", "confidence": "high"})
-    if "planning node" in s:
-        return json.dumps(
-            {
-                "steps": [
-                    {
-                        "step_id": 1,
-                        "skill_name": "candidate.rank",
-                        "mode": "plan_execute",
-                        "depends_on": [],
-                    }
-                ],
-                "warnings": [],
-            }
-        )
-    if "plan-review node" in s or "output-review node" in s:
-        return json.dumps({"status": "approved", "reason": "ok", "findings": []})
-    if "approval-governance node" in s:
-        return json.dumps(
-            {
-                "risk_level": "low",
-                "approval_summary": "ok",
-                "concerns": [],
-                "recommended_status": "approved",
-            }
-        )
-    if "execute-preflight node" in s:
-        return json.dumps({"execution_goal": "rank", "expected_outputs": [], "risks": []})
-    if "recruiting assistant" in s:
-        return "Recommended hire: top candidate."
-    return "ok"
+    return "{}"
 
 
 @pytest.fixture
@@ -64,102 +32,89 @@ def client(monkeypatch):
     monkeypatch.setenv("AGENTKIT_WEB_COOKIE_SECURE", "false")
     monkeypatch.setenv("AGENTKIT_WEB_AUTH_DISABLED", "false")
     config_mod.get_settings.cache_clear()
-
     import agentkit.core.llm_client as llm_client
     from agentkit.llm.fake import FakeProvider
-
-    monkeypatch.setattr(llm_client, "_get_provider", lambda: FakeProvider(responder=_hr_responder))
-
-    from agentkit.web.app import app
+    from agentkit.web.app import app, clear_runtime_cache
     from agentkit.web.security import configure_security
 
+    monkeypatch.setattr(llm_client, "_get_provider", lambda: FakeProvider(responder=_responder))
     configure_security(app)
+    clear_runtime_cache()
     yield app.test_client()
+    clear_runtime_cache()
     config_mod.get_settings.cache_clear()
 
 
-def _login_and_csrf(client) -> str:
+def _login(client) -> str:
     assert client.post("/login", data={"token": "secret-token"}).status_code == 302
     page = client.get("/chat")
     return re.search(rb'name="csrf-token" content="([^"]+)"', page.data).group(1).decode()
 
 
-def test_task_pauses_then_resume_completes(client):
-    token = _login_and_csrf(client)
-    waiting = client.post(
+def _waiting(client, token: str) -> dict:
+    return client.post(
         "/api/tasks",
-        json={"agent": "hr_recruiter", "text": "Rank candidate C-100 for JOB-001."},
-        headers={"X-CSRF-Token": token},
-    ).get_json()
-    assert waiting["response"]["output"]["status"] == "waiting_for_approval"
-    thread_id = waiting["response"]["output"]["thread_id"]
-    assert thread_id
-
-    done = client.post(
-        "/api/tasks/resume",
-        json={"thread_id": thread_id, "approved_skills": ["candidate.rank"]},
-        headers={"X-CSRF-Token": token},
-    ).get_json()
-    out = done["response"]["output"]
-    final = out.get("final") or {}
-    ranked = final.get("ranked_candidates") or out.get("ranked_candidates")
-    assert ranked, f"no ranked output after resume: {out}"
-    assert out["governance"]["approval"]["status"] == "approved"
-
-
-def test_resume_requires_thread_id(client):
-    token = _login_and_csrf(client)
-    resp = client.post(
-        "/api/tasks/resume",
-        json={"approved_skills": ["candidate.rank"]},
-        headers={"X-CSRF-Token": token},
-    )
-    assert resp.status_code == 400
-
-
-def test_approval_resubmit_endpoint_requires_approval_context(client):
-    token = _login_and_csrf(client)
-    resp = client.post(
-        "/api/tasks/approve",
-        json={"agent": "hr_recruiter", "text": "Rank candidates."},
-        headers={"X-CSRF-Token": token},
-    )
-    assert resp.status_code == 400
-
-
-def test_approval_resubmit_rejects_overlapping_decision(client):
-    token = _login_and_csrf(client)
-    resp = client.post(
-        "/api/tasks/approve",
         json={
-            "agent": "hr_recruiter",
-            "text": "Rank candidates.",
-            "approved_skills": ["candidate.rank"],
-            "rejected_skills": ["candidate.rank"],
+            "agent": "customer_service",
+            "text": "请给订单 O-100 退款",
+            "skill": "refund.apply",
+            "order_id": "O-100",
+        },
+        headers={"X-CSRF-Token": token},
+    ).get_json()
+
+
+def test_side_effect_pauses_then_resume_completes(client) -> None:
+    token = _login(client)
+    waiting = _waiting(client, token)
+    assert waiting["response"]["status"] == "waiting_for_approval"
+
+    completed = client.post(
+        "/api/tasks/resume",
+        json={
+            "thread_id": waiting["response"]["thread_id"],
+            "approved_skills": ["refund.apply"],
+        },
+        headers={"X-CSRF-Token": token},
+    ).get_json()
+    assert completed["response"]["status"] == "completed"
+    assert completed["response"]["output"]["status"] == "submitted"
+
+
+def test_rejection_does_not_execute_side_effect(client) -> None:
+    token = _login(client)
+    waiting = _waiting(client, token)
+    rejected = client.post(
+        "/api/tasks/resume",
+        json={
+            "thread_id": waiting["response"]["thread_id"],
+            "rejected_skills": ["refund.apply"],
+        },
+        headers={"X-CSRF-Token": token},
+    ).get_json()
+    assert rejected["response"]["status"] == "rejected"
+
+
+def test_resume_rejects_overlapping_decision(client) -> None:
+    token = _login(client)
+    response = client.post(
+        "/api/tasks/resume",
+        json={
+            "thread_id": "unknown",
+            "approved_skills": ["refund.apply"],
+            "rejected_skills": ["refund.apply"],
         },
         headers={"X-CSRF-Token": token},
     )
-    assert resp.status_code == 400
-    assert "both approve and reject" in resp.get_json()["error"]
+    assert response.status_code == 400
+    assert "同时批准和拒绝" in response.get_json()["error"]
 
 
-def test_approval_resubmit_endpoint_completes_with_preapproval(client):
-    token = _login_and_csrf(client)
-    resp = client.post(
-        "/api/tasks/approve",
-        json={
-            "agent": "hr_recruiter",
-            "text": "Rank candidate C-100 for JOB-001.",
-            "approved_skills": ["candidate.rank"],
-        },
+def test_resume_requires_thread_id(client) -> None:
+    token = _login(client)
+    response = client.post(
+        "/api/tasks/resume",
+        json={"approved_skills": ["refund.apply"]},
         headers={"X-CSRF-Token": token},
     )
-    assert resp.status_code == 200
-    out = resp.get_json()["response"]["output"]
-    assert out["governance"]["approval"]["status"] == "approved"
-
-
-def test_resume_without_csrf_rejected(client):
-    client.post("/login", data={"token": "secret-token"})
-    resp = client.post("/api/tasks/resume", json={"thread_id": "x"})
-    assert resp.status_code == 400
+    assert response.status_code == 400

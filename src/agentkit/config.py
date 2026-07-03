@@ -87,22 +87,6 @@ class Settings(BaseSettings):
     tracing_service_name: str = "agentkit"
     tracing_console_export: bool = False
 
-    # Deterministic fast-path: when the rule-based router resolves a skill with
-    # *high* confidence, skip the advisory governance LLM calls
-    # (intent/route/plan/plan_review/approval-assessment) and use the
-    # deterministic results instead. Requests the router can't resolve
-    # confidently still run the full LLM pipeline. Off by default so governance
-    # visibility is unchanged unless explicitly opted in.
-    deterministic_fastpath: bool = False
-
-    # Combined intent+route: when the request must go through the LLM (fast-path
-    # did not engage), resolve the IntentFrame and the routed skill in a single
-    # LLM round trip instead of two. The route node then only validates the
-    # suggestion deterministically. Off by default. Complements the fast-path:
-    # fast-path handles rule-resolvable requests (0 LLM), this halves the round
-    # trips for the rest (intent+route: 2 -> 1).
-    combined_intent_route: bool = False
-
     # Human-approval checkpointing. "memory" pauses the graph at the approval
     # gate and resumes in-place (no full re-run); "sqlite"/"postgres" persist
     # checkpoints so a paused task survives restarts and is resumable across

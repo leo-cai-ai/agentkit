@@ -92,7 +92,7 @@ class AgentProfile:
     model: str = "default"
     max_tokens: int = 100_000
     prompt_file: str = ""
-    routing_hints: tuple[str, ...] = ()
+    routing_keywords: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
