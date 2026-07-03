@@ -46,7 +46,8 @@ services:
       - "8501:8501"
     volumes:
       - ./tenants:/app/tenants:ro
-      - ./prompts:/app/prompts:ro
+      - ./agents:/app/agents:ro
+      - ./contexts:/app/contexts:ro
       - ./skills:/app/skills:ro
       - agentkit_data:/app/data
     security_opt:

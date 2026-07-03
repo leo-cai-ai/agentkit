@@ -64,7 +64,8 @@ services:
     volumes:
       # Business config is editable on the host and mounted read-only.
       - ./tenants:/app/tenants:ro
-      - ./prompts:/app/prompts:ro
+      - ./agents:/app/agents:ro
+      - ./contexts:/app/contexts:ro
       - ./skills:/app/skills:ro
       # Runtime filesystem scratch/data. Durable audit, conversation, checkpoint,
       # and semantic memory data live in PostgreSQL when AGENTKIT_STORAGE_BACKEND
