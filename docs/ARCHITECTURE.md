@@ -23,8 +23,12 @@
 | Runtime | 统一路由、策略、预算、审批、持久化和审计 | 包含特定业务逻辑 |
 
 Agent 声明位于 `agents/<id>/agent.md`；Skill 契约位于 `skills/<package>/skill.yaml`；脚本位于
-`skills/<package>/scripts/`；LLM 节点上下文契约位于 `contexts/`。`agent.md` 正文和 `SKILL.md` 正文分别是
+`skills/<package>/scripts/`；框架公共 LLM 节点位于 `contexts/runtime/`，业务 LLM 节点位于
+`contexts/business/`。`agent.md` 正文和 `SKILL.md` 正文分别是
 Agent 指令与 Skill 业务指令的唯一来源。
+
+根目录 `skills/` 是完整业务能力与跨平台复用单元；`contexts/business/` 只是单次业务 LLM 调用的
+输入、预算、模板和输出契约。每个业务 Context Pack 必须声明 `owner_skill`，Registry 启动时严格校验归属。
 
 ## 3. 统一主图
 
