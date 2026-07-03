@@ -58,7 +58,7 @@
 
 ```mermaid
 flowchart TD
-  UI["统一 Chat UI"] --> CHAT["MultiAgentChatService"]
+  UI["统一 Chat UI"] --> CHAT["MultiAgentCoordinator"]
   CHAT --> MENTION{"当前消息包含 @agent?"}
   MENTION -- 是 --> VALIDATE["别名解析与权限校验"]
   MENTION -- 否 --> ROUTER["General Agent 结构化路由"]
@@ -74,7 +74,7 @@ flowchart TD
 
 ### 组件职责
 
-- `MultiAgentChatService`：聊天入口协调器；创建 General 会话、解析提及、调用 General 路由/回答、委派业务 Agent、持久化最终对话并组装追踪信息。
+- `MultiAgentCoordinator`：聊天入口协调器；创建 General 会话、解析提及、调用 General 路由/回答、委派业务 Agent、持久化最终对话并组装追踪信息。
 - `AgentMentionParser`：仅解析当前消息，返回规范 Agent ID 和移除提及后的任务文本。
 - `AgentDirectory`：从 Registry、租户启用列表和别名配置生成受权限约束的能力卡。
 - `GeneralDecision`：严格的结构化路由结果，禁止模型直接指定未注册工具。

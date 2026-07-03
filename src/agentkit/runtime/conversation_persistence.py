@@ -31,6 +31,7 @@ class ConversationWriter(Protocol):
         content: str,
         token_estimate: int = 0,
         run_id: str | None = None,
+        agent_id: str | None = None,
     ) -> int: ...
 
     def all_messages(self, conversation_id: str) -> list[dict[str, Any]]: ...
@@ -156,6 +157,7 @@ class ConversationPersistenceService:
         assistant_message: str,
         run_id: str,
         window_turns: int,
+        assistant_agent_id: str | None = None,
     ) -> None:
         conversation = self._store.get_conversation(conversation_id)
         if conversation is None:
@@ -182,6 +184,7 @@ class ConversationPersistenceService:
             content=assistant_text,
             token_estimate=self._tokenizer.estimate(assistant_text),
             run_id=run_id,
+            agent_id=assistant_agent_id or agent_id,
         )
         if self._memory is not None:
             self._memory.record(

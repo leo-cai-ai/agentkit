@@ -45,3 +45,10 @@ def test_registry_rejects_unknown_serializer_and_truncator() -> None:
         registry.require_serializer("yaml")
     with pytest.raises(ValueError, match="Truncator"):
         registry.require_truncator("random")
+
+
+def test_multi_agent_routing_sources_are_registered() -> None:
+    registry = ContextSourceRegistry.default()
+
+    registry.require_source("routing.candidate_agents")
+    registry.require_source("routing.decision")

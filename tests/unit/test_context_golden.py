@@ -12,6 +12,16 @@ from agentkit.core.context.registry import ContextRegistry
 
 GOLDEN_ROOT = Path("tests/golden/contexts")
 CASES = {
+    "runtime.agent-route": {
+        "request.message": "FAKE-REQUEST",
+        "conversation.summary": "FAKE-SUMMARY",
+        "conversation.recent_messages": [
+            {"role": "user", "content": "FAKE-HISTORY"}
+        ],
+        "routing.candidate_agents": [
+            {"id": "FAKE-AGENT", "description": "FAKE-CAPABILITY"}
+        ],
+    },
     "runtime.intent": {
         "request.message": "FAKE-REQUEST",
         "conversation.summary": "FAKE-SUMMARY",
@@ -21,6 +31,17 @@ CASES = {
         "request.message": "FAKE-REQUEST",
         "request.goal": "FAKE-GOAL",
         "routing.candidate_skills": [{"id": "FAKE-SKILL"}],
+    },
+    "runtime.general-answer": {
+        "request.message": "FAKE-REQUEST",
+        "conversation.summary": "FAKE-SUMMARY",
+        "conversation.recent_messages": [
+            {"role": "user", "content": "FAKE-HISTORY"}
+        ],
+        "routing.candidate_agents": [
+            {"id": "FAKE-AGENT", "description": "FAKE-CAPABILITY"}
+        ],
+        "routing.decision": {"action": "answer", "reason": "FAKE-REASON"},
     },
     "runtime.react-action": {
         "request.goal": "FAKE-GOAL",

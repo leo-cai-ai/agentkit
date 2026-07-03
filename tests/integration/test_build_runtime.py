@@ -10,7 +10,12 @@ def test_build_runtime_registers_expected_components(tmp_path):
     agent_names = {a.name for a in runtime.gateway.agents.all()}
 
     assert "candidate.rank" in skill_names
-    assert agent_names == {"customer_service", "hr_recruiter", "xhs_growth"}
+    assert agent_names == {
+        "general_agent",
+        "customer_service",
+        "hr_recruiter",
+        "xhs_growth",
+    }
     assert runtime.tenant_config["tenant_id"]
     assert runtime.manifest
     assert runtime.manifest["tenant_config"]["sha256"]

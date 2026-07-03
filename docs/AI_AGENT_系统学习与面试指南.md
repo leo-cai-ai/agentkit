@@ -40,6 +40,7 @@ Tool Executor（权限、预算、重试、审计）
 | 目录或文件 | 主要职责 | 学习重点 |
 |---|---|---|
 | `src/agentkit/core/contracts.py` | 请求、响应、计划等数据契约 | 为什么企业系统先定义契约 |
+| `src/agentkit/core/multi_agent.py` | General Agent、单轮提及和父子委派 | 协调 Agent 与业务 Agent 的上下文和权限边界 |
 | `src/agentkit/runtime/bootstrap.py` | 组装运行时依赖 | 配置、租户、依赖注入 |
 | `src/agentkit/runtime/declarative_catalog.py` | 加载并校验 Agent、Skill、Tool 声明 | 声明如何编译为运行时对象 |
 | `src/agentkit/core/langgraph_agent.py` | Agent 图执行 | 状态、节点、边、恢复 |
@@ -49,7 +50,7 @@ Tool Executor（权限、预算、重试、审计）
 | `src/agentkit/core/rag/` | 文档入库、检索、评测 | 企业知识库问答 |
 | `src/agentkit/core/memory/` | 对话与长期记忆 | 上下文控制与个性化 |
 | `src/agentkit/connectors/` | 浏览器、外部系统连接器 | 外部副作用的可靠性 |
-| `agents/` | 三个业务 Agent 的 `agent.md` | Skill 白名单、Memory、知识与 Artifact 边界 |
+| `agents/` | 一个协调 Agent 与三个业务 Agent 的 `agent.md` | Skill 白名单、Memory、知识与 Artifact 边界 |
 | `contexts/runtime/` | 框架公共 LLM 节点的 Context Pack | System/User 分层、输入白名单、Token、Schema 与 Hash |
 | `contexts/business/` | Skill 内部的业务 LLM 节点契约 | `owner_skill` 归属、节点规则与业务能力包的边界 |
 | `skills/` | 可移植业务能力定义 | Skill 与 Agent 的区别 |
@@ -66,7 +67,9 @@ Tool Executor（权限、预算、重试、审计）
 | `xhs_growth` | 小红书研究、策略、文案、审批与发布 | 品牌与活动知识、社媒工作流 Artifact |
 | `customer_service` | 带短期和长期记忆的客服对话 | 客服 FAQ、当前用户和当前 Agent 的会话记忆 |
 
-Intent 理解、能力路由和通用回答是统一 LangGraph 的内部节点，不是 Agent。它们没有独立 `agent.md`，不要把它们与三个对外业务 Agent 混在一起计算。
+`general_agent` 是有独立 `agent.md` 的对外协调 Agent；Intent 理解、能力路由仍是内部节点，不是 Agent。General Agent 拥有统一会话但没有业务工具，业务 Agent 作为可追溯子运行执行当前一轮任务。
+
+学习多 Agent 链路时重点跟踪：`/api/chat → MultiAgentCoordinator → AgentMentionParser / runtime.agent-route → AgentGateway.handle_delegated → UnifiedAgentGraph`。`@招聘` 是确定性当前轮路由；下一条无提及消息不会继承招聘 Agent，而是重新经过 General Agent。
 
 ### 2.3 Context Pack 应该怎样学习
 

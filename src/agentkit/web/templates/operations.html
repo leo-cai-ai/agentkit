@@ -80,6 +80,10 @@
               <dd>{{ selected_run.user_id }}</dd>
             </div>
             <div>
+              <dt>Agent</dt>
+              <dd>{{ selected_run.agent_id or '未记录' }}</dd>
+            </div>
+            <div>
               <dt>Started</dt>
               <dd class="ak-run-fact-time">
                 <time datetime="{{ selected_run.started_at | datetime_ts }}">{{ selected_run.started_at | format_ts }}</time>
@@ -99,7 +103,26 @@
               <dt>Run ID</dt>
               <dd><code title="{{ selected_run.run_id }}">{{ selected_run.run_id }}</code></dd>
             </div>
+            {% if selected_run.parent_run_id %}
+              <div class="ak-run-fact-wide">
+                <dt>Parent Run</dt>
+                <dd><a href="{{ url_for('operations', run_id=selected_run.parent_run_id) }}#run-detail"><code>{{ selected_run.parent_run_id }}</code></a></dd>
+              </div>
+            {% endif %}
           </dl>
+          {% if child_runs %}
+            <div class="ak-run-children">
+              <h3>业务子运行</h3>
+              <ul>
+                {% for child in child_runs %}
+                  <li>
+                    <a href="{{ url_for('operations', run_id=child.run_id) }}#run-detail">{{ child.agent_id or 'Agent' }}</a>
+                    {{ status_pill(child.status) }}
+                  </li>
+                {% endfor %}
+              </ul>
+            </div>
+          {% endif %}
         </section>
       {% endif %}
 

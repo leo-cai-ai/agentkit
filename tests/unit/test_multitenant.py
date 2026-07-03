@@ -10,7 +10,12 @@ from agentkit.runtime import bootstrap
 def test_load_tenant_config_by_id() -> None:
     config = bootstrap.load_tenant_config("company_alpha")
     assert config["tenant_id"]
-    assert config["enabled_agents"] == ["hr_recruiter", "xhs_growth", "customer_service"]
+    assert config["enabled_agents"] == [
+        "general_agent",
+        "hr_recruiter",
+        "xhs_growth",
+        "customer_service",
+    ]
 
 
 def test_load_missing_tenant_lists_available() -> None:

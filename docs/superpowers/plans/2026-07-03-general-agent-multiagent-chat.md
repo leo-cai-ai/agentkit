@@ -4,7 +4,7 @@
 
 **目标：** 提供统一 General Agent 聊天入口、单消息 `@agent` 路由、可恢复父子运行追踪和动态 Agent-Skill-Tool 关系图，同时保留现有治理能力。
 
-**架构：** `MultiAgentChatService` 位于 Web 聊天与现有 `AgentGateway` 之间。General Agent 持有会话；业务 Agent 以无独立会话的子运行执行。Registry 是 Agent Network 的唯一拓扑来源。
+**架构：** `MultiAgentCoordinator` 位于 Web 聊天与现有 `AgentGateway` 之间。General Agent 持有会话；业务 Agent 以无独立会话的子运行执行。Registry 是 Agent Network 的唯一拓扑来源。
 
 **技术栈：** Python 3.12、Pydantic、LangGraph、SQLite/PostgreSQL、Flask、原生 JavaScript/SVG/CSS、pytest。
 
@@ -84,7 +84,7 @@
 - [ ] 先编写失败测试：子运行使用 General 对话快照和目标 Agent 自己的 RAG/记忆，但不创建第二个会话。
 - [ ] 先编写失败测试：子运行失败、等待审批和恢复均正确更新父运行，最终回复只持久化一次。
 - [ ] 为 Gateway 增加受控的委派执行入口；为 LangGraph 运行写入父子追踪元数据。
-- [ ] 实现 `MultiAgentChatService.handle/resume`，Runtime 启动时完成注入。
+- [ ] 实现 `MultiAgentCoordinator.handle/resume`，Runtime 启动时完成注入。
 - [ ] 返回安全的路由摘要、父子运行和现有治理事件，不返回隐藏思维链。
 
 ## 任务 5：切换聊天 API 和历史接口

@@ -43,6 +43,30 @@ def test_persistence_writes_only_explicit_scope(tmp_path) -> None:
     assert memory.calls[0]["agent_id"] == "customer_service"
 
 
+def test_general_conversation_records_the_actual_reply_agent(tmp_path) -> None:
+    store = ConversationStore(tmp_path / "memory.sqlite")
+    service = ConversationPersistenceService(store=store)
+    conversation_id = service.create_conversation(
+        tenant_id="t1", agent_id="general_agent", user_id="u1"
+    )
+
+    service.record_turn(
+        tenant_id="t1",
+        agent_id="general_agent",
+        assistant_agent_id="hr_recruiter",
+        user_id="u1",
+        conversation_id=conversation_id,
+        user_message="@招聘 分析候选人",
+        assistant_message="候选人符合要求",
+        run_id="parent-run",
+        window_turns=6,
+    )
+
+    messages = store.all_messages(conversation_id)
+    assert messages[0]["agent_id"] is None
+    assert messages[1]["agent_id"] == "hr_recruiter"
+
+
 def test_persistence_rejects_cross_user_write(tmp_path) -> None:
     store = ConversationStore(tmp_path / "memory.sqlite")
     service = ConversationPersistenceService(store=store)

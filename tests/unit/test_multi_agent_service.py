@@ -1,0 +1,267 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+from agentkit.core.audit import InMemoryAuditLog
+from agentkit.core.contracts import TaskRequest, TaskResponse
+from agentkit.core.multi_agent import AgentDirectory, MultiAgentCoordinator
+from agentkit.core.registry import AgentRegistry
+from agentkit.runtime.conversation_context import AgentConversationContext
+from tests.unit.test_multi_agent import _profile
+
+
+class FakePersistence:
+    def __init__(self) -> None:
+        self.created: list[dict] = []
+        self.turns: list[dict] = []
+
+    def create_conversation(self, **kwargs) -> str:
+        self.created.append(kwargs)
+        return "conversation-1"
+
+    def record_turn(self, **kwargs) -> None:
+        self.turns.append(kwargs)
+
+
+class FakeContextService:
+    def __init__(self) -> None:
+        self.delegations: list[dict] = []
+
+    def build(self, **kwargs) -> AgentConversationContext:
+        return AgentConversationContext(
+            conversation_id=kwargs["conversation_id"],
+            summary="用户正在讨论招聘",
+            recent_messages=({"role": "user", "content": "前一轮消息"},),
+            memories=("用户偏好中文",),
+            knowledge=(),
+        )
+
+    def build_for_delegation(self, **kwargs) -> AgentConversationContext:
+        self.delegations.append(kwargs)
+        return AgentConversationContext(
+            conversation_id=kwargs["conversation_id"],
+            summary="用户正在讨论招聘",
+            recent_messages=({"role": "user", "content": "前一轮消息"},),
+            memories=("招聘 Agent 的长期记忆",),
+            knowledge=("招聘制度",),
+        )
+
+
+class FakeInvoker:
+    manifest_hash = "sha256:test"
+
+    def __init__(self, decision: dict | None = None) -> None:
+        self.decision = decision or {
+            "action": "answer",
+            "target_agent": None,
+            "task": "",
+            "reason": "普通交流",
+            "confidence": "high",
+        }
+        self.json_calls = []
+        self.streaming_calls = []
+
+    def invoke_json(self, request):
+        self.json_calls.append(request)
+        return SimpleNamespace(value=dict(self.decision))
+
+    def invoke_streaming(self, request):
+        self.streaming_calls.append(request)
+        return SimpleNamespace(value="我是 General Agent，可以协调业务助手。")
+
+
+class FakeGateway:
+    def __init__(self, audit: InMemoryAuditLog) -> None:
+        self.audit = audit
+        self.requests: list[TaskRequest] = []
+
+    def handle_delegated(self, request: TaskRequest) -> TaskResponse:
+        self.requests.append(request)
+        child_run = self.audit.start_run(
+            tenant_id="tenant-a",
+            user_id=request.user_id,
+            text=request.text,
+            agent_id=str(request.context["agent"]),
+            parent_run_id=str(request.context["parent_run_id"]),
+            conversation_id=str(request.context["trace_conversation_id"]),
+        )
+        self.audit.record(child_run, "run_finished", {"status": "completed"})
+        return TaskResponse(
+            status="completed",
+            output={"message": "招聘分析已完成"},
+            run_id=child_run,
+            thread_id="child-thread",
+            agent=str(request.context["agent"]),
+            strategy="direct",
+            conversation_id="",
+            governance={"strategy": "direct"},
+            audit_events=self.audit.events_for(child_run),
+        )
+
+    def resume(self, thread_id: str, **kwargs) -> TaskResponse:
+        child = self.audit.run_for_thread(
+            thread_id, tenant_id="tenant-a", user_id="u1"
+        )
+        self.audit.record(child["run_id"], "run_resumed", {"thread_id": thread_id})
+        self.audit.record(child["run_id"], "run_finished", {"status": "completed"})
+        return TaskResponse(
+            status="completed",
+            output={"message": "审批后已执行"},
+            run_id=child["run_id"],
+            thread_id=thread_id,
+            agent=child["agent_id"],
+            strategy="workflow",
+            conversation_id="",
+            governance={"strategy": "workflow"},
+            audit_events=self.audit.events_for(child["run_id"]),
+        )
+
+
+def _service(decision: dict | None = None):
+    agents = AgentRegistry()
+    agents.register(_profile("general_agent", "通用协调", []))
+    agents.register(_profile("hr_recruiter", "招聘筛选", ["candidate.rank"]))
+    agents.register(_profile("customer_service", "订单与售后", ["order.lookup"]))
+    directory = AgentDirectory(
+        agents=agents,
+        config={
+            "general_agent": {"label": "General Agent", "aliases": ["通用"]},
+            "hr_recruiter": {"label": "招聘 Agent", "aliases": ["招聘"]},
+            "customer_service": {"label": "客服 Agent", "aliases": ["客服"]},
+        },
+    )
+    audit = InMemoryAuditLog()
+    persistence = FakePersistence()
+    contexts = FakeContextService()
+    invoker = FakeInvoker(decision)
+    gateway = FakeGateway(audit)
+    service = MultiAgentCoordinator(
+        tenant_id="tenant-a",
+        tenant_selector="company_alpha",
+        directory=directory,
+        gateway=gateway,
+        audit=audit,
+        context_invoker=invoker,
+        conversation_context=contexts,
+        conversation_persistence=persistence,
+    )
+    return service, gateway, audit, invoker, contexts, persistence
+
+
+def test_general_agent_owns_conversation_and_answers_normal_message() -> None:
+    service, gateway, audit, invoker, contexts, persistence = _service()
+
+    response = service.handle(
+        TaskRequest(user_id="u1", roles=["employee"], text="你好", context={})
+    )
+
+    assert response.status == "completed"
+    assert response.agent == "general_agent"
+    assert response.conversation_id == "conversation-1"
+    assert response.output["message"].startswith("我是 General Agent")
+    assert gateway.requests == []
+    assert len(invoker.json_calls) == 1
+    assert len(invoker.streaming_calls) == 1
+    assert persistence.created[0]["agent_id"] == "general_agent"
+    assert persistence.turns[0]["assistant_agent_id"] == "general_agent"
+    assert audit.get_run(response.run_id)["agent_id"] == "general_agent"
+
+
+def test_explicit_mention_skips_router_and_creates_child_run() -> None:
+    service, gateway, audit, invoker, contexts, persistence = _service()
+
+    response = service.handle(
+        TaskRequest(
+            user_id="u1",
+            roles=["recruiter"],
+            text="@招聘 分析候选人",
+            context={"conversation_id": "conversation-existing"},
+        )
+    )
+
+    assert invoker.json_calls == []
+    assert response.agent == "hr_recruiter"
+    assert response.governance["route"]["type"] == "explicit_mention"
+    assert response.governance["delegation"]["child_run_id"]
+    delegated = gateway.requests[0]
+    assert delegated.text == "分析候选人"
+    assert delegated.context["agent"] == "hr_recruiter"
+    assert "conversation_id" not in delegated.context
+    child = audit.get_run(response.governance["delegation"]["child_run_id"])
+    assert child["parent_run_id"] == response.run_id
+    assert persistence.turns[0]["assistant_agent_id"] == "hr_recruiter"
+
+
+def test_general_router_can_delegate_without_explicit_mention() -> None:
+    service, gateway, audit, invoker, contexts, persistence = _service(
+        {
+            "action": "delegate",
+            "target_agent": "customer_service",
+            "task": "查询订单 O-1 的物流",
+            "reason": "属于订单物流能力",
+            "confidence": "high",
+        }
+    )
+
+    response = service.handle(
+        TaskRequest(
+            user_id="u1",
+            roles=["support"],
+            text="我的 O-1 怎么还没到",
+            context={},
+        )
+    )
+
+    assert response.agent == "customer_service"
+    assert response.governance["route"]["type"] == "general_delegate"
+    assert gateway.requests[0].text == "查询订单 O-1 的物流"
+    assert contexts.delegations[0]["agent"].name == "customer_service"
+    assert gateway.requests[0].context["agent_context"]["knowledge"] == ["招聘制度"]
+
+
+def test_approval_resume_returns_to_the_original_general_conversation() -> None:
+    service, gateway, audit, invoker, contexts, persistence = _service()
+    parent = audit.start_run(
+        tenant_id="tenant-a",
+        user_id="u1",
+        text="@招聘 发出录用通知",
+        agent_id="general_agent",
+        conversation_id="conversation-approval",
+    )
+    child = audit.start_run(
+        tenant_id="tenant-a",
+        user_id="u1",
+        text="发出录用通知",
+        agent_id="hr_recruiter",
+        parent_run_id=parent,
+        conversation_id="conversation-approval",
+    )
+    audit.record(
+        parent,
+        "agent_route_decided",
+        {
+            "type": "explicit_mention",
+            "action": "delegate",
+            "target_agent": "hr_recruiter",
+            "reason": "用户显式指定",
+            "confidence": "high",
+        },
+    )
+    audit.record(
+        child,
+        "run_paused",
+        {"status": "waiting_for_approval", "thread_id": "approval-thread"},
+    )
+
+    response = service.resume(
+        "approval-thread",
+        user_id="u1",
+        roles=["recruiter"],
+        approved_skills=["offer.send"],
+    )
+
+    assert response.run_id == parent
+    assert response.conversation_id == "conversation-approval"
+    assert response.agent == "hr_recruiter"
+    assert persistence.turns[0]["user_message"] == "@招聘 发出录用通知"
+    assert persistence.turns[0]["assistant_agent_id"] == "hr_recruiter"

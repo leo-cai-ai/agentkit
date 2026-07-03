@@ -9,6 +9,15 @@ function readUiConfig() {
 }
 
 const UI_CONFIG = readUiConfig();
+const AGENT_DIRECTORY = (() => {
+  const node = document.getElementById("agent-directory");
+  if (!node) return [];
+  try {
+    return JSON.parse(node.textContent || "[]");
+  } catch {
+    return [];
+  }
+})();
 const DEMO_PROMPT = UI_CONFIG.demo_prompt || "Rank the top 3 candidates for JOB-001 and explain why.";
 let pendingApproval = null;
 let pendingInput = null;
@@ -317,13 +326,12 @@ function finalizeAssistantBubble(bubble, text) {
 // The server owns trusted identity/RBAC and routes the selected agent to
 // answer-only memory or the governed action graph.
 function collectChatPayload(message, extraContext = {}) {
-  const selectedAgent = getSelectedAgentName();
   const context = {
-    agent: selectedAgent,
+    agent: "general_agent",
     message,
     ...extraContext,
   };
-  if (pendingInput?.agent === selectedAgent) {
+  if (pendingInput?.agent === "general_agent") {
     context.skill = pendingInput.skill_name;
     context.skill_args = { ...(pendingInput.arguments || {}) };
   }
@@ -335,7 +343,7 @@ function collectChatPayload(message, extraContext = {}) {
 }
 
 function getSelectedAgentName() {
-  return document.querySelector('input[name="agent"]:checked')?.value || UI_CONFIG.default_agent || "";
+  return "general_agent";
 }
 
 function getAgentCard(agentName) {
@@ -345,7 +353,12 @@ function getAgentCard(agentName) {
 function getSelectedAgentLabel() {
   const selected = getSelectedAgentName();
   const card = getAgentCard(selected);
-  return card?.querySelector("strong")?.textContent?.trim() || selected || "Agent";
+  return card?.querySelector("strong")?.textContent?.trim() || agentLabel(selected);
+}
+
+function agentLabel(agentName) {
+  const entry = AGENT_DIRECTORY.find((agent) => agent.name === agentName);
+  return entry?.label || String(agentName || "General Agent").replaceAll("_", " ");
 }
 
 function getSelectedAgentDemoPrompt() {
@@ -501,14 +514,14 @@ function formatRelativeTime(epochSeconds) {
 }
 
 function conversationTitle(conv) {
-  if (!conv) return "New conversation";
-  return (conv.title || "").trim() || "Untitled conversation";
+  if (!conv) return "新会话";
+  return (conv.title || "").trim() || "未命名会话";
 }
 
 function conversationMeta(conv) {
-  if (!conv) return "Start a fresh thread";
+  if (!conv) return "开始新的对话";
   const when = formatRelativeTime(conv.updated_at || conv.created_at);
-  return when ? `Updated ${when}` : "Saved conversation";
+  return when ? `更新于 ${when}` : "已保存会话";
 }
 
 function setConversationTrigger(conv) {
@@ -524,8 +537,8 @@ function renderConversationMenu() {
   const newConversationActive = !currentConversationId;
   const items = [
     `<li class="conversation-item" role="option" tabindex="${newConversationActive ? "0" : "-1"}" aria-selected="${newConversationActive}" data-conversation-id="" data-active="${newConversationActive}">
-       <span class="conversation-item-title">New conversation</span>
-       <span class="conversation-item-meta">Start a fresh thread</span>
+       <span class="conversation-item-title">新会话</span>
+       <span class="conversation-item-meta">开始新的对话</span>
      </li>`,
   ];
   for (const conv of conversationCache) {
@@ -575,7 +588,7 @@ async function loadConversations(agent) {
   const menu = document.querySelector("[data-conversation-menu]");
   if (!menu) return;
   try {
-    const response = await fetch(`/api/conversations?agent=${encodeURIComponent(agent)}`);
+    const response = await fetch("/api/conversations");
     if (!response.ok) return;
     const data = await response.json();
     conversationCache = data.conversations || [];
@@ -608,7 +621,11 @@ async function loadConversationMessages(conversationId) {
     const thread = document.getElementById("chat-thread");
     if (thread) thread.innerHTML = "";
     for (const msg of messages) {
-      addChatMessage(msg.role === "user" ? "user" : "assistant", msg.content, msg.role === "user" ? "You" : getSelectedAgentLabel());
+      addChatMessage(
+        msg.role === "user" ? "user" : "assistant",
+        msg.content,
+        msg.role === "user" ? "你" : agentLabel(msg.agent_id || "general_agent"),
+      );
     }
   } catch {
     if (currentConversationId === requestedConversationId) {
@@ -1038,12 +1055,19 @@ function finalizeActionResult(result, requestPayload, bubble, selectedAgent, str
       skills: approval.skills || [],
       thread_id: response.output?.thread_id || "",
     };
-    addApprovalChatMessage(result.assistant_text, approval, getSelectedAgentLabel());
+    addApprovalChatMessage(
+      result.assistant_text,
+      approval,
+      agentLabel(result.agent || "general_agent"),
+    );
   } else if (bubble) {
     // Tokens emitted inside an action workflow may be an intermediate artifact
     // (for example, only the generated article body). Once the workflow ends,
     // prefer the server's complete evidence/report response.
     finalizeAssistantBubble(bubble, result.assistant_text || streamed || "");
+    const label = bubble.node.querySelector(":scope > span");
+    if (label) label.textContent = agentLabel(result.agent || "general_agent");
+    appendAgentTrace(bubble.node, result.response || {});
   }
   if (status === "needs_clarification") {
     const resolution = response.output?.input_resolution || {};
@@ -1066,6 +1090,114 @@ function finalizeActionResult(result, requestPayload, bubble, selectedAgent, str
     || ["waiting_for_approval", "needs_clarification", "rejected"].includes(status)
     || ["platform_question", "chit_chat", "unknown"].includes(intentType);
   renderResult(result, requestPayload, { hidePrimaryPanel });
+}
+
+function appendAgentTrace(node, response) {
+  if (!node || !response?.governance) return;
+  const route = response.governance.route || {};
+  const delegation = response.governance.delegation || {};
+  if (!route.type && !delegation.child_run_id) return;
+  const details = document.createElement("details");
+  details.className = "ak-agent-trace";
+  const summary = document.createElement("summary");
+  summary.textContent = delegation.child_run_id ? "查看 Agent 委派追踪" : "查看 General 决策摘要";
+  const list = document.createElement("dl");
+  const rows = [
+    ["路由", route.type || "general_answer"],
+    ["执行者", agentLabel(response.agent || delegation.target_agent || "general_agent")],
+    ["依据", route.reason || "General Agent 直接回答"],
+    ["父运行", delegation.parent_run_id || response.run_id || ""],
+    ["子运行", delegation.child_run_id || ""],
+  ];
+  for (const [name, value] of rows) {
+    if (!value) continue;
+    const term = document.createElement("dt");
+    term.textContent = name;
+    const description = document.createElement("dd");
+    description.textContent = value;
+    list.append(term, description);
+  }
+  details.append(summary, list);
+  node.appendChild(details);
+}
+
+function bindMentionAutocomplete() {
+  const input = document.querySelector("[data-chat-input]");
+  const menu = document.querySelector("[data-agent-mention-menu]");
+  if (!input || !menu) return;
+  let activeIndex = 0;
+  let visible = [];
+
+  const mentionState = () => {
+    const caret = input.selectionStart ?? input.value.length;
+    const before = input.value.slice(0, caret);
+    const match = before.match(/(?:^|\s)@([^\s@]*)$/);
+    return match ? { query: match[1].toLocaleLowerCase(), start: caret - match[1].length - 1, caret } : null;
+  };
+  const close = () => {
+    menu.hidden = true;
+    menu.innerHTML = "";
+    visible = [];
+    input.setAttribute("aria-expanded", "false");
+  };
+  const render = () => {
+    const state = mentionState();
+    if (!state) {
+      close();
+      return;
+    }
+    visible = AGENT_DIRECTORY.filter((agent) => agent.name !== "general_agent").filter((agent) => {
+      const haystack = [agent.name, agent.label, ...(agent.aliases || [])].join(" ").toLocaleLowerCase();
+      return haystack.includes(state.query);
+    });
+    if (!visible.length) {
+      close();
+      return;
+    }
+    activeIndex = Math.min(activeIndex, visible.length - 1);
+    menu.innerHTML = visible.map((agent, index) => {
+      const alias = agent.aliases?.[0] || agent.label || agent.name;
+      return `<button type="button" role="option" data-mention-index="${index}" aria-selected="${index === activeIndex}"><strong>@${escapeHtml(alias)}</strong><span>${escapeHtml(agent.mission || agent.description || agent.domain || "")}</span></button>`;
+    }).join("");
+    menu.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+  };
+  const choose = (index) => {
+    const state = mentionState();
+    const agent = visible[index];
+    if (!state || !agent) return;
+    const alias = agent.aliases?.[0] || agent.label || agent.name;
+    input.setRangeText(`@${alias} `, state.start, state.caret, "end");
+    close();
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.focus();
+  };
+
+  input.addEventListener("input", render);
+  input.addEventListener("click", render);
+  input.addEventListener("keydown", (event) => {
+    if (menu.hidden || !visible.length) return;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      activeIndex = (activeIndex + (event.key === "ArrowDown" ? 1 : -1) + visible.length) % visible.length;
+      render();
+    } else if (event.key === "Enter" || event.key === "Tab") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      choose(activeIndex);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      close();
+    }
+  }, true);
+  menu.addEventListener("click", (event) => {
+    const option = event.target.closest("[data-mention-index]");
+    if (option) choose(Number(option.dataset.mentionIndex));
+  });
+  document.addEventListener("click", (event) => {
+    if (event.target !== input && !menu.contains(event.target)) close();
+  });
 }
 
 function agentFromRequestPayload(payload) {
@@ -1423,6 +1555,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindAgentSelector();
   bindRangeOutputs();
   bindChatForm();
+  bindMentionAutocomplete();
   bindConversationBar();
   bindApprovalActions();
   bindTabs();

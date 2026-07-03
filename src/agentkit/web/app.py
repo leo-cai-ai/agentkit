@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, Response, jsonify, render_template, request, send_from_directory
+from flask import (
+    Flask,
+    Response,
+    jsonify,
+    render_template,
+    request,
+    send_from_directory,
+)
 
 from agentkit.config import get_settings
 from agentkit.core.audit import SQLiteAuditLog
@@ -28,7 +36,7 @@ from agentkit.web.streaming import stream_response
 
 DEFAULT_UI_CONFIG = {
     "demo_prompt": "请对 JOB-001 的候选人进行排序。",
-    "default_agent": "hr_recruiter",
+    "default_agent": "general_agent",
     "demo_prompts": {},
     "default_user_id": "u-001",
     "default_roles": ["employee"],
@@ -129,6 +137,11 @@ def datetime_ts_filter(value: Any) -> str:
 
 @app.get("/")
 def overview():
+    return chat_console()
+
+
+@app.get("/overview")
+def management_overview():
     runtime = get_runtime()
     gateway = runtime.gateway
     counts = _safe_counts(gateway.audit)
@@ -194,6 +207,15 @@ def chat_console():
     )
 
 
+@app.get("/agents")
+def agent_network():
+    return render_template(
+        "agents.html",
+        active="agents",
+        title="Agent Network",
+    )
+
+
 @app.get("/operations")
 def operations():
     runtime = get_runtime()
@@ -210,6 +232,11 @@ def operations():
     events = (
         audit.events_for(selected_run_id)
         if isinstance(audit, SQLiteAuditLog) and selected_run_id
+        else []
+    )
+    child_runs = (
+        audit.child_runs(selected_run_id)
+        if hasattr(audit, "child_runs") and selected_run_id
         else []
     )
 
@@ -238,6 +265,7 @@ def operations():
         selected_run_id=selected_run_id,
         selected_run=selected_run,
         event_rows=event_rows,
+        child_runs=child_runs,
     )
 
 
@@ -399,6 +427,19 @@ def _task_request(payload: dict[str, Any]) -> TaskRequest:
     )
 
 
+def _chat_task_request(payload: dict[str, Any]) -> TaskRequest:
+    """聊天入口始终以 General Agent 为会话所有者。"""
+    normalized = dict(payload)
+    nested = normalized.get("context")
+    normalized["context"] = {
+        **(dict(nested) if isinstance(nested, dict) else {}),
+        "agent": "general_agent",
+    }
+    normalized["agent"] = "general_agent"
+    task = _task_request(normalized)
+    return replace(task, context={**task.context, "agent": "general_agent"})
+
+
 def _approval(payload: dict[str, Any]) -> tuple[str, list[str], list[str]] | None:
     values = _extract_payload(payload)
     raw = values.get("approval")
@@ -426,20 +467,29 @@ def _resume_payload(payload: dict[str, Any]) -> tuple[str, list[str], list[str]]
     return thread_id, approved, rejected
 
 
-def _run(payload: dict[str, Any]) -> dict[str, Any]:
+def _run_chat(payload: dict[str, Any]) -> dict[str, Any]:
     runtime = get_runtime()
+    if runtime.chat_service is None:
+        raise RuntimeError("多 Agent 聊天服务未初始化")
     approval = _approval(payload)
     if approval is not None:
         thread_id, approved, rejected = approval
-        response = runtime.gateway.resume(
+        task = _chat_task_request(payload)
+        response = runtime.chat_service.resume(
             thread_id,
+            user_id=task.user_id,
+            roles=task.roles,
             approved_skills=approved,
             rejected_skills=rejected,
             decision_context={"principal": current_principal().to_public_dict()},
         )
     else:
-        response = runtime.gateway.handle(_task_request(payload))
+        response = runtime.chat_service.handle(_chat_task_request(payload))
     return _web_response(response)
+
+
+def _run_task(payload: dict[str, Any]) -> dict[str, Any]:
+    return _web_response(get_runtime().gateway.handle(_task_request(payload)))
 
 
 def _resume(payload: dict[str, Any]) -> dict[str, Any]:
@@ -500,7 +550,7 @@ def _sse(produce, *, error_context: dict[str, Any] | None = None) -> Response:
 @require_permission(CHAT_USE)
 def api_chat():
     try:
-        return jsonify(_run(request.get_json(silent=True) or {}))
+        return jsonify(_run_chat(request.get_json(silent=True) or {}))
     except (KeyError, RuntimeError, ValueError) as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -509,14 +559,14 @@ def api_chat():
 @require_permission(CHAT_USE)
 def api_chat_stream():
     payload = request.get_json(silent=True) or {}
-    return _sse(lambda: _run(payload))
+    return _sse(lambda: _run_chat(payload))
 
 
 @app.post("/api/tasks")
 @require_permission(TASK_RUN)
 def api_tasks():
     try:
-        return jsonify(_run(request.get_json(silent=True) or {}))
+        return jsonify(_run_task(request.get_json(silent=True) or {}))
     except (KeyError, RuntimeError, ValueError) as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -525,7 +575,7 @@ def api_tasks():
 @require_permission(TASK_RUN)
 def api_tasks_stream():
     payload = request.get_json(silent=True) or {}
-    return _sse(lambda: _run(payload))
+    return _sse(lambda: _run_task(payload))
 
 
 @app.post("/api/tasks/resume")
@@ -550,10 +600,9 @@ def api_tasks_resume_stream():
 @require_permission(CHAT_USE)
 def api_conversations():
     runtime = get_runtime()
-    agent = str(request.args.get("agent") or get_ui_config(runtime.tenant_config)["default_agent"])
     rows = runtime.conversations.list_conversations(
         tenant_id=str(runtime.tenant_config["tenant_id"]),
-        agent=agent,
+        agent="general_agent",
         user_id=_effective_user_id({}, get_ui_config(runtime.tenant_config)),
     )
     return jsonify({"conversations": rows})
@@ -564,10 +613,9 @@ def api_conversations():
 def api_create_conversation():
     runtime = get_runtime()
     payload = request.get_json(silent=True) or {}
-    agent = str(payload.get("agent") or get_ui_config(runtime.tenant_config)["default_agent"])
     conversation_id = runtime.conversations.create_conversation(
         tenant_id=str(runtime.tenant_config["tenant_id"]),
-        agent=agent,
+        agent="general_agent",
         user_id=_effective_user_id(payload, get_ui_config(runtime.tenant_config)),
         title=str(payload.get("title") or "New conversation"),
     )
@@ -580,7 +628,12 @@ def api_conversation_messages(conversation_id: str):
     runtime = get_runtime()
     conversation = runtime.conversations.get_conversation(conversation_id)
     user_id = _effective_user_id({}, get_ui_config(runtime.tenant_config))
-    if conversation is None or conversation.get("user_id") != user_id:
+    if (
+        conversation is None
+        or conversation.get("tenant_id") != str(runtime.tenant_config["tenant_id"])
+        or conversation.get("agent") != "general_agent"
+        or conversation.get("user_id") != user_id
+    ):
         return jsonify({"error": "会话不存在"}), 404
     return jsonify({"messages": runtime.conversations.all_messages(conversation_id)})
 
@@ -594,7 +647,13 @@ def api_runs():
 @app.get("/api/runs/<run_id>")
 @require_permission(RUNS_VIEW)
 def api_run_events(run_id: str):
-    return jsonify({"events": get_runtime().gateway.audit.events_for(run_id)})
+    audit = get_runtime().gateway.audit
+    return jsonify(
+        {
+            "events": audit.events_for(run_id),
+            "children": audit.child_runs(run_id) if hasattr(audit, "child_runs") else [],
+        }
+    )
 
 
 @app.get("/api/registry")
@@ -602,11 +661,19 @@ def api_run_events(run_id: str):
 def api_registry():
     runtime = get_runtime()
     gateway = runtime.gateway
+    directory = dict(runtime.tenant_config.get("agent_directory") or {})
     return jsonify(
         {
             "agents": [
                 {
                     "name": agent.name,
+                    "label": str(
+                        (directory.get(agent.name) or {}).get("label")
+                        or agent.name.replace("_", " ").title()
+                    ),
+                    "aliases": list(
+                        (directory.get(agent.name) or {}).get("aliases") or []
+                    ),
                     "domain": agent.domain,
                     "description": agent.description,
                     "skills": agent.allowed_skills,
@@ -644,6 +711,25 @@ def api_registry():
                 for tool in gateway.tools.all()
             ],
             "strategies": list(runtime.strategy_names),
+            "relationships": [
+                {
+                    "source": "general_agent",
+                    "target": agent.name,
+                    "type": "coordinates",
+                }
+                for agent in gateway.agents.all()
+                if agent.name != "general_agent"
+            ]
+            + [
+                {"source": agent.name, "target": skill, "type": "binds"}
+                for agent in gateway.agents.all()
+                for skill in agent.allowed_skills
+            ]
+            + [
+                {"source": skill.name, "target": tool, "type": "uses"}
+                for skill in gateway.skills.all()
+                for tool in skill.tools
+            ],
         }
     )
 
@@ -658,6 +744,7 @@ def get_ui_config(tenant_config: dict[str, Any]) -> dict[str, Any]:
 
 def get_agent_cards(runtime) -> list[dict[str, Any]]:
     rows = []
+    directory = dict(runtime.tenant_config.get("agent_directory") or {})
     for profile in runtime.gateway.agents.all():
         tools = sorted(
             {
@@ -669,7 +756,13 @@ def get_agent_cards(runtime) -> list[dict[str, Any]]:
         rows.append(
             {
                 "name": profile.name,
-                "label": profile.name.replace("_", " ").title(),
+                "label": str(
+                    (directory.get(profile.name) or {}).get("label")
+                    or profile.name.replace("_", " ").title()
+                ),
+                "aliases": list(
+                    (directory.get(profile.name) or {}).get("aliases") or []
+                ),
                 "domain": profile.domain,
                 "mission": profile.description,
                 "status": "online",

@@ -38,6 +38,7 @@ from agentkit.core.memory.store import build_conversation_store
 from agentkit.core.memory.summarizer import Summarizer
 from agentkit.core.memory.vector_store import build_vector_store
 from agentkit.core.migrations import run_storage_migrations
+from agentkit.core.multi_agent import AgentDirectory, MultiAgentCoordinator
 from agentkit.core.rag.service import build_knowledge_service
 from agentkit.core.registry import AgentRegistry, SkillRegistry, ToolRegistry
 from agentkit.core.skill_store import SkillFileStore, attach_skill_packages
@@ -80,7 +81,7 @@ class AgentKitRuntime:
     context_invoker: ContextInvocationService
     manifest: dict[str, Any] | None = None
     # 迁移期间保留属性形状，但不再存在第二套 Chat Runtime。
-    chat_service: None = None
+    chat_service: MultiAgentCoordinator | None = None
 
 
 def list_tenants() -> list[str]:
@@ -303,6 +304,20 @@ def build_runtime(
         tool_backends=_build_tool_backends(tools=tools, tenant_config=tenant_config),
         idempotency_store=idempotency_store,
     )
+    directory = AgentDirectory(
+        agents=agents,
+        config=dict(tenant_config.get("agent_directory") or {}),
+    )
+    chat_service = MultiAgentCoordinator(
+        tenant_id=tenant_key,
+        tenant_selector=resolved_tenant_id,
+        directory=directory,
+        gateway=gateway,
+        audit=audit,
+        context_invoker=context_invoker,
+        conversation_context=conversation_context,
+        conversation_persistence=conversation_persistence,
+    )
     strategy_names = ("direct", "workflow", "batch", "parallel", "react", "plan_execute")
     return AgentKitRuntime(
         gateway=gateway,
@@ -315,6 +330,7 @@ def build_runtime(
         contexts=context_registry,
         context_invoker=context_invoker,
         manifest=manifest,
+        chat_service=chat_service,
     )
 
 

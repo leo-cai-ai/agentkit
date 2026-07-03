@@ -22,6 +22,8 @@ DEFAULT_SOURCES = frozenset(
         "rag.query",
         "rag.candidates",
         "routing.candidate_skills",
+        "routing.candidate_agents",
+        "routing.decision",
         "execution.allowed_tools",
         "execution.allowed_skills",
         "execution.observations",

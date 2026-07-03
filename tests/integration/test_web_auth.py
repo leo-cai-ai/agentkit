@@ -221,7 +221,7 @@ def test_authenticated_shell_preserves_structure_and_accessibility(client):
         for heading_id in labelled_panels:
             assert f'id="{heading_id}"' in html
 
-    for route in ("/", "/operations"):
+    for route in ("/overview", "/operations"):
         html = client.get(route).get_data(as_text=True)
         assert '<dl class="metric-grid ak-stat-grid"' in html
         assert html.count('class="metric-tile ak-stat-card"') == 5
@@ -238,26 +238,27 @@ def test_authenticated_shell_preserves_structure_and_accessibility(client):
         'id="result-region"',
         "data-conversation-trigger",
         "data-conversation-menu",
-        'aria-label="Message"',
+        'aria-label="消息"',
         'aria-controls="conversation-menu"',
         'id="conversation-menu"',
-        'class="ak-agent-option',
-        'class="ak-agent-tooltip" role="tooltip"',
+        'id="agent-directory"',
+        'data-agent-mention-menu',
         'class="chat-thread ak-chat-thread"',
         'role="log"',
         'class="chat-input-row ak-chat-composer"',
         "data-chat-input",
         'class="ak-chat-composer-toolbar"',
-        'aria-label="New conversation"',
+        'aria-label="新建会话"',
     ):
         assert contract in chat_html
     assert "agent-status-panel" not in chat_html
     assert '<input name="message"' not in chat_html
+    assert 'name="agent"' not in chat_html
 
     pages_css = client.get("/static/css/pages.css").get_data(as_text=True)
     for contract in (
-        ".ak-agent-button-group",
-        ".ak-agent-tooltip",
+        ".ak-general-chat-layout",
+        ".ak-mention-menu",
         ".ak-chat-workspace",
         ".ak-chat-thread",
         ".ak-chat-composer",
@@ -267,10 +268,20 @@ def test_authenticated_shell_preserves_structure_and_accessibility(client):
     workspace_rule = re.search(r"\.ak-chat-workspace\s*\{([^}]+)\}", pages_css)
     assert workspace_rule is not None
     assert "min-block-size: 38rem" in workspace_rule.group(1)
-    assert "100vh" in workspace_rule.group(1)
-    assert "100dvh" in workspace_rule.group(1)
-    assert "52rem" not in workspace_rule.group(1)
-    assert "@media (max-width: 56.25rem)" in pages_css
+
+
+def test_agent_network_uses_live_registry_topology(client):
+    _login(client)
+    page = client.get("/agents")
+    assert page.status_code == 200
+    html = page.get_data(as_text=True)
+    assert "data-agent-network" in html
+    assert "/static/js/agent_graph.js" in html
+
+    registry = client.get("/api/registry").get_json()
+    assert any(agent["name"] == "general_agent" for agent in registry["agents"])
+    assert any(edge["type"] == "coordinates" for edge in registry["relationships"])
+    assert any(edge["type"] == "binds" for edge in registry["relationships"])
 
     application_js = client.get("/static/js/app.js").get_data(as_text=True)
     dynamic_class_values = re.findall(r'class="([^"]*)"', application_js)

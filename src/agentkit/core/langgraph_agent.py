@@ -67,7 +67,16 @@ class UnifiedAgentState(TypedDict, total=False):
 
 
 class _Audit(Protocol):
-    def start_run(self, *, tenant_id: str, user_id: str, text: str) -> str: ...
+    def start_run(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        text: str,
+        agent_id: str | None = None,
+        parent_run_id: str | None = None,
+        conversation_id: str | None = None,
+    ) -> str: ...
 
     def record(self, run_id: str, event_type: str, payload: dict[str, Any]) -> None: ...
 
@@ -233,6 +242,16 @@ class UnifiedAgentGraph:
             tenant_id=self._tenant_id,
             user_id=request.user_id,
             text=request.text,
+            agent_id=str(request.context.get("agent") or "") or None,
+            parent_run_id=str(request.context.get("parent_run_id") or "") or None,
+            conversation_id=(
+                str(
+                    request.context.get("trace_conversation_id")
+                    or request.context.get("conversation_id")
+                    or ""
+                )
+                or None
+            ),
         )
         return {
             "run_id": run_id,
@@ -547,14 +566,11 @@ class UnifiedAgentGraph:
         selection = cast(StrategySelection | None, values.get("selection"))
         conversation_id = str(values["request"].context.get("conversation_id") or "")
         if snapshot.next:
-            if not any(
-                item["type"] == "run_paused" for item in self._audit.events_for(run_id)
-            ):
-                self._audit.record(
-                    run_id,
-                    "run_paused",
-                    {"status": "waiting_for_approval", "thread_id": thread_id},
-                )
+            self._audit.record(
+                run_id,
+                "run_paused",
+                {"status": "waiting_for_approval", "thread_id": thread_id},
+            )
             pending_result = cast(StrategyResult | None, values.get("result"))
             approval = {"skills": values.get("approval_required", [])}
             if pending_result is not None and pending_result.status == "deferred_action":

@@ -10,7 +10,7 @@
 4. 可控的 LLM/Tool/Token/时间预算。
 5. 通过 Skill、Python Tool 和 MCP Tool 扩展业务。
 
-当前只有 3 个运行时 Agent：`customer_service`、`hr_recruiter`、`xhs_growth`。Intent 理解和能力解析是图节点，不是额外 Agent。
+当前注册 1 个协调 Agent 和 3 个业务 Agent：`general_agent`、`customer_service`、`hr_recruiter`、`xhs_growth`。General Agent 是统一会话所有者；Intent 理解和能力解析仍是图节点，不是额外 Agent。
 
 ## 2. 五层模型
 
@@ -30,7 +30,24 @@ Agent 指令与 Skill 业务指令的唯一来源。
 根目录 `skills/` 是完整业务能力与跨平台复用单元；`contexts/business/` 只是单次业务 LLM 调用的
 输入、预算、模板和输出契约。每个业务 Context Pack 必须声明 `owner_skill`，Registry 启动时严格校验归属。
 
-## 3. 统一主图
+## 3. General Agent 与统一业务图
+
+Web 聊天先进入 `MultiAgentCoordinator`。显式 `@招聘` 等提及只解析当前消息；未提及的消息由 General Agent 根据能力卡返回 `answer / clarify / delegate`。Runtime 校验目标后，业务 Agent 才进入统一 LangGraph。
+
+```mermaid
+flowchart LR
+    UI[统一 Chat UI] --> G[General Agent]
+    G -->|直接回答| C[(General 会话)]
+    G -->|受控委派| B[业务 Agent 子运行]
+    B --> U[UnifiedAgentGraph]
+    U --> S[Skills / Tools / MCP / RAG]
+    G --> T[父运行审计]
+    B --> T
+```
+
+General Agent 只拥有对话与委派能力，不拥有业务工具。业务 Agent 获得 General 会话的限长摘要与近期消息，但 Memory、RAG、Skills 和 Tools 仍使用目标 Agent 自己的作用域与白名单。
+
+### 3.1 统一业务图
 
 ```mermaid
 flowchart TD
@@ -50,7 +67,7 @@ flowchart TD
     M --> F[finalize]
 ```
 
-入口只有 `AgentGateway.handle/resume`。Web 的 `/api/chat` 和 `/api/tasks` 只是权限不同的传输入口，都构造 `TaskRequest` 并调用同一 Gateway。
+`/api/chat` 调用 `MultiAgentCoordinator.handle/resume`，负责 General 会话和父子运行；`/api/tasks` 与 CLI 继续调用 `AgentGateway.handle/resume`，用于明确指定 Agent 的系统集成。两条入口最终共用同一 `UnifiedAgentGraph`、Tool 治理和审计存储。
 
 ## 4. 策略选择
 
@@ -89,9 +106,10 @@ ReAct 和 Plan 子图共享以下硬上限：
 
 ```text
 tenant_id
-  └─ agent_id
+  └─ general_agent
       └─ user_id
           └─ conversation_id
+              └─ assistant_agent_id（每轮实际回复者）
 ```
 
 `ConversationContextService` 在该作用域内组装：
@@ -102,6 +120,8 @@ tenant_id
 4. 当前运行可读的 Artifact。
 
 `ConversationPersistenceService` 只在成功或受控终止后写入消息。`ExtractingMemoryWriter` 从对话中提取稳定事实，Memory 失败不中断主业务。
+
+委派时不创建第二个业务会话。`build_for_delegation` 在验证 General 会话归属后，复用其摘要和近期消息，同时按目标 Agent 读取长期 Memory 与 RAG。`task_runs.parent_run_id`、`agent_id` 和 `conversation_id` 将 General 父运行、业务子运行与会话关联；审批恢复通过子运行线程回到同一个父运行。
 
 ### 6.1 Context Pack 装配与调用
 
@@ -120,7 +140,7 @@ flowchart LR
 `UNTRUSTED_DATA_BEGIN/END` 包裹的 User Message，未在 `context.yaml` 声明的值会被忽略。预算取 Model Context
 Window、Agent、Skill、Run 剩余预算与 Pack 上限的最小值，再按优先级做确定性裁剪。
 
-Registry 启动时校验路径、Source、Serializer、Truncator、模板变量、JSON Schema 与租户 Override，并把 11 个 Pack 的
+Registry 启动时校验路径、Source、Serializer、Truncator、模板变量、JSON Schema 与租户 Override，并把 13 个 Pack 的
 Hash 写入 Runtime Manifest。等待审批的 Checkpoint 同时保存 Context Manifest Hash；恢复时 Hash 不一致会拒绝执行并要求
 重新发起任务。治理页面只展示 ID、Version、Hash、Override Hash 和预算，不展示 Prompt 或运行时内容。
 

@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block page_description %}实时查看 General Agent、业务 Agent、Skills 与 Tools 的注册关系。{% endblock %}
+
+{% block page_actions %}
+  <a class="secondary" href="{{ url_for('chat_console') }}">返回聊天</a>
+{% endblock %}
+
+{% block content %}
+  <section class="ak-agent-network-shell" data-agent-network>
+    <div class="ak-network-toolbar" aria-label="图谱控制">
+      <div class="ak-network-filters" role="group" aria-label="节点类型筛选">
+        <button type="button" class="active" data-network-filter="all">全部</button>
+        <button type="button" data-network-filter="agent">Agents</button>
+        <button type="button" data-network-filter="skill">Skills</button>
+        <button type="button" data-network-filter="tool">Tools</button>
+      </div>
+      <div class="ak-network-zoom" role="group" aria-label="缩放控制">
+        <button type="button" data-network-zoom="out" aria-label="缩小">−</button>
+        <button type="button" data-network-zoom="reset">重置</button>
+        <button type="button" data-network-zoom="in" aria-label="放大">＋</button>
+      </div>
+    </div>
+
+    <div class="ak-network-stage">
+      <div class="ak-network-canvas" data-network-canvas aria-label="Agent 关系动态图"></div>
+      <aside class="ak-network-detail" data-network-detail aria-live="polite">
+        <span class="ak-eyebrow">节点详情</span>
+        <h2>AgentKit Network</h2>
+        <p>选择节点可查看能力、策略、工具与风险信息。拖动节点或缩放画布探索完整拓扑。</p>
+      </aside>
+    </div>
+
+    <details class="ak-network-fallback">
+      <summary>查看可访问的拓扑列表</summary>
+      <div data-network-list></div>
+    </details>
+  </section>
+  <script defer src="{{ url_for('static', filename='js/agent_graph.js') }}"></script>
+{% endblock %}

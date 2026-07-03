@@ -107,12 +107,33 @@ class AgentGateway:
         )
 
     def handle(self, request: TaskRequest) -> TaskResponse:
+        return self._handle(request, create_conversation=True)
+
+    def handle_delegated(self, request: TaskRequest) -> TaskResponse:
+        """执行受 General Agent 委派的任务，不创建或写入业务 Agent 会话。"""
+        return self._handle(request, create_conversation=False)
+
+    def _handle(
+        self, request: TaskRequest, *, create_conversation: bool
+    ) -> TaskResponse:
         from .safety import REFUSAL_MESSAGE, build_safety_guard
 
         decision = build_safety_guard().inspect_input(request.text)
         if decision.action == "block":
             run_id = self._audit.start_run(
-                tenant_id=self._tenant_id, user_id=request.user_id, text=request.text
+                tenant_id=self._tenant_id,
+                user_id=request.user_id,
+                text=request.text,
+                agent_id=str(request.context.get("agent") or ""),
+                parent_run_id=str(request.context.get("parent_run_id") or "") or None,
+                conversation_id=(
+                    str(
+                        request.context.get("trace_conversation_id")
+                        or request.context.get("conversation_id")
+                        or ""
+                    )
+                    or None
+                ),
             )
             self._audit.record(run_id, "safety_blocked", decision.to_audit())
             self._audit.record(run_id, "run_finished", {"status": "blocked"})
@@ -127,8 +148,10 @@ class AgentGateway:
                 governance={"safety": decision.to_audit()},
                 audit_events=self._audit.events_for(run_id),
             )
-        if self._conversation_persistence is not None and not request.context.get(
-            "conversation_id"
+        if (
+            create_conversation
+            and self._conversation_persistence is not None
+            and not request.context.get("conversation_id")
         ):
             agent_id = str(request.context.get("agent") or "")
             conversation_id = self._conversation_persistence.create_conversation(

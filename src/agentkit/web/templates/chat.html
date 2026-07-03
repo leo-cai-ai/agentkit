@@ -1,137 +1,100 @@
 {% extends "base.html" %}
 
-{% block page_description %}Work with configured agents and inspect governed execution.{% endblock %}
+{% block page_description %}与 General Agent 对话，或使用 @Agent 只指定当前一轮的执行者。{% endblock %}
 
 {% block content %}
   <script id="ui-config" type="application/json">{{ ui | tojson }}</script>
-  {% set agent_options = agents if agents is defined else [] %}
-  <section class="chat-layout ak-chat-layout">
-    <article class="panel ak-panel chat-panel ak-chat-workspace" aria-labelledby="chat-workforce-title">
+  <script id="agent-directory" type="application/json">{{ agents | tojson }}</script>
+
+  <section class="ak-general-chat-layout" aria-label="统一多 Agent 聊天">
+    <aside class="panel ak-panel ak-chat-history" aria-labelledby="conversation-history-title">
       <div class="panel-head ak-panel-header">
-        <h2 id="chat-workforce-title">Ask The AI Workforce</h2>
-        <span>Unified chat console</span>
+        <div>
+          <span class="ak-eyebrow">General Agent</span>
+          <h2 id="conversation-history-title">会话</h2>
+        </div>
+      </div>
+      <button class="primary conversation-new ak-new-chat-button" type="button" data-new-conversation aria-label="新建会话">
+        <span aria-hidden="true">＋</span>
+        <span>新建会话</span>
+      </button>
+      <div class="conversation-bar ak-history-picker" data-conversation-bar>
+        <div class="conversation-picker" data-conversation-picker>
+          <button
+            type="button"
+            class="conversation-trigger"
+            data-conversation-trigger
+            aria-haspopup="listbox"
+            aria-controls="conversation-menu"
+            aria-expanded="false"
+          >
+            <span class="conversation-trigger-body">
+              <span class="conversation-trigger-title" data-conversation-current>新会话</span>
+              <span class="conversation-trigger-meta" data-conversation-current-meta>查看历史记录</span>
+            </span>
+            <svg class="conversation-caret" viewBox="0 0 12 12" aria-hidden="true">
+              <path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <ul id="conversation-menu" class="conversation-menu ak-history-list" data-conversation-menu role="listbox" aria-label="历史会话" hidden></ul>
+        </div>
+      </div>
+      <div class="ak-chat-help">
+        <strong>单轮指定 Agent</strong>
+        <p>输入 <code>@招聘</code>、<code>@客服</code> 或 <code>@小红书</code>。下一条未提及时会重新交给 General Agent。</p>
+      </div>
+    </aside>
+
+    <article class="panel ak-panel chat-panel ak-chat-workspace" aria-labelledby="chat-workforce-title">
+      <div class="panel-head ak-panel-header ak-chat-heading">
+        <div>
+          <span class="ak-presence-dot" aria-hidden="true"></span>
+          <h2 id="chat-workforce-title">General Agent</h2>
+        </div>
+        <span>统一协调入口</span>
       </div>
 
       <section class="chat-surface ak-chat-surface">
-        <fieldset class="agent-selector field-wide ak-agent-switcher">
-          <legend>Active Agent</legend>
-          <div class="ak-agent-button-group" role="radiogroup" aria-label="Active agent">
-            {% for agent in agent_options %}
-              {% set demo_prompt = ui.demo_prompts.get(agent.name, ui.demo_prompt) if ui.demo_prompts is defined else ui.demo_prompt %}
-              {% set agent_label = agent.label | default(agent.name | replace('_', ' ') | title) %}
-              {% set skill_count = agent.allowed_skills | default([]) | length %}
-              <label
-                class="ak-agent-option"
-                data-agent-card="{{ agent.name }}"
-                data-demo-prompt="{{ demo_prompt }}"
-              >
-                <input
-                  type="radio"
-                  name="agent"
-                  value="{{ agent.name }}"
-                  aria-describedby="agent-detail-{{ loop.index }}"
-                  {{ 'checked' if agent.name == ui.default_agent else '' }}
-                >
-                <span class="ak-agent-option-label">
-                  <strong>{{ agent_label }}</strong>
-                </span>
-                <span id="agent-detail-{{ loop.index }}" class="ak-agent-tooltip" role="tooltip">
-                  <span class="ak-agent-tooltip-header">
-                    <b>{{ agent_label }}</b>
-                  </span>
-                  <span class="ak-agent-tooltip-domain">{{ agent.domain | default('configured agent') }}</span>
-                  <span class="ak-agent-tooltip-description">{{ agent.mission | default(agent.description | default('Ready for governed tasks.')) }}</span>
-                  <span class="ak-agent-tooltip-meta">{{ skill_count }} {{ 'skill' if skill_count == 1 else 'skills' }}</span>
-                </span>
-              </label>
-            {% else %}
-              <label
-                class="ak-agent-option active"
-                data-agent-card="{{ ui.default_agent }}"
-                data-demo-prompt="{{ ui.demo_prompt }}"
-              >
-                <input type="radio" name="agent" value="{{ ui.default_agent }}" aria-describedby="agent-detail-fallback" checked>
-                <span class="ak-agent-option-label">
-                  <strong>{{ ui.default_agent | replace('_', ' ') | title }}</strong>
-                </span>
-                <span id="agent-detail-fallback" class="ak-agent-tooltip" role="tooltip">
-                  <span class="ak-agent-tooltip-header">
-                    <b>{{ ui.default_agent | replace('_', ' ') | title }}</b>
-                  </span>
-                  <span class="ak-agent-tooltip-domain">configured agent</span>
-                  <span class="ak-agent-tooltip-description">Restart the Flask service to load full agent metadata.</span>
-                  <span class="ak-agent-tooltip-meta">Runtime fallback</span>
-                </span>
-              </label>
-            {% endfor %}
-          </div>
-        </fieldset>
-
-        <div class="conversation-bar" data-conversation-bar hidden>
-          <div class="conversation-picker" data-conversation-picker>
-            <span class="conversation-picker-caption">Conversation</span>
-            <button
-              type="button"
-              class="conversation-trigger"
-              data-conversation-trigger
-              aria-haspopup="listbox"
-              aria-controls="conversation-menu"
-              aria-expanded="false"
-            >
-              <span class="conversation-trigger-body">
-                <span class="conversation-trigger-title" data-conversation-current>New conversation</span>
-                <span class="conversation-trigger-meta" data-conversation-current-meta>Start a fresh thread</span>
-              </span>
-              <svg class="conversation-caret" viewBox="0 0 12 12" aria-hidden="true">
-                <path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-            </button>
-            <ul id="conversation-menu" class="conversation-menu" data-conversation-menu role="listbox" aria-label="Conversation history" hidden></ul>
-          </div>
-          <button class="secondary conversation-new" type="button" data-new-conversation aria-label="New conversation">
-            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.2v9.6M3.2 8h9.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-            <span>New chat</span>
-          </button>
-        </div>
-
         <div
           id="chat-thread"
           class="chat-thread ak-chat-thread"
           role="log"
-          aria-label="Conversation messages"
+          aria-label="对话消息"
           aria-live="polite"
           aria-relevant="additions"
           tabindex="0"
         >
           <div class="chat-message assistant">
-            <span>Agent</span>
-            <p>Select an agent and start chatting. Try <code>who are you</code> or <code>{{ ui.demo_prompt }}</code></p>
+            <span>General Agent</span>
+            <div class="chat-body">
+              <p>你好，我负责理解你的需求并协调合适的业务 Agent。你也可以使用 <code>@Agent名称</code> 只指定当前这一轮。</p>
+            </div>
           </div>
         </div>
 
-        <form id="chat-form" class="chat-input-row ak-chat-composer" aria-label="Message composer">
-          <textarea
-            id="chat-message"
-            name="message"
-            data-chat-input
-            rows="1"
-            aria-label="Message"
-            aria-describedby="chat-message-hint"
-            placeholder="Message the AI workforce"
-            autocomplete="off"
-            enterkeyhint="send"
-          ></textarea>
+        <form id="chat-form" class="chat-input-row ak-chat-composer" aria-label="消息输入框">
+          <div class="ak-mention-shell">
+            <textarea
+              id="chat-message"
+              name="message"
+              data-chat-input
+              rows="1"
+              aria-label="消息"
+              aria-describedby="chat-message-hint"
+              aria-autocomplete="list"
+              aria-controls="agent-mention-menu"
+              placeholder="向 General Agent 发送消息，输入 @ 可指定本轮 Agent"
+              autocomplete="off"
+              enterkeyhint="send"
+            ></textarea>
+            <div id="agent-mention-menu" class="ak-mention-menu" data-agent-mention-menu role="listbox" aria-label="可用 Agent" hidden></div>
+          </div>
           <div class="ak-chat-composer-toolbar">
-            <button class="secondary ak-composer-demo" type="button" data-chat-demo>
-              <svg viewBox="0 0 16 16" aria-hidden="true">
-                <path d="m8 1 .8 3.1L12 5l-3.2.9L8 9l-.8-3.1L4 5l3.2-.9L8 1Zm4 8 .5 1.8 1.8.5-1.8.5L12 14l-.5-2.2-1.8-.5 1.8-.5L12 9Z" fill="currentColor"/>
-              </svg>
-              Use Demo Prompt
-            </button>
+            <button class="secondary ak-composer-demo" type="button" data-chat-demo>示例问题</button>
             <div class="ak-composer-submit-group">
-              <span id="chat-message-hint" class="ak-composer-hint">Enter to send · Shift+Enter for new line</span>
-              <button class="primary ak-composer-send" type="submit" disabled>
-                <span>Send</span>
+              <span id="chat-message-hint" class="ak-composer-hint">Enter 发送 · Shift+Enter 换行</span>
+              <button class="primary ak-composer-send" type="submit" disabled aria-label="发送消息">
+                <span>发送</span>
                 <svg viewBox="0 0 16 16" aria-hidden="true">
                   <path d="M8 13V3m0 0L4.5 6.5M8 3l3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
                 </svg>
@@ -142,19 +105,19 @@
       </section>
     </article>
 
-    <aside class="panel ak-panel live-panel" aria-labelledby="execution-state-title">
+    <aside class="panel ak-panel live-panel ak-trace-panel" aria-labelledby="execution-state-title">
       <div class="panel-head ak-panel-header">
-        <h2 id="execution-state-title">Execution State</h2>
-        <span id="execution-state">Idle</span>
+        <h2 id="execution-state-title">执行追踪</h2>
+        <span id="execution-state">空闲</span>
       </div>
       <ol class="step-list" id="step-list">
-        <li>Route request</li>
-        <li>Build execution plan</li>
-        <li>Human approval</li>
-        <li>Run governed skill</li>
-        <li>Persist audit trail</li>
+        <li>General 理解请求</li>
+        <li>选择或校验 Agent</li>
+        <li>执行审批策略</li>
+        <li>运行 Skills / Tools</li>
+        <li>写入审计与记忆</li>
       </ol>
-
+      <a class="secondary ak-network-link" href="{{ url_for('agent_network') }}">查看 Agent Network</a>
     </aside>
   </section>
 

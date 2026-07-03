@@ -35,6 +35,21 @@ def test_add_message_updates_conversation_updated_at(store):
     assert store.count_messages(cid) == 1
 
 
+def test_message_preserves_the_actual_assistant_agent(store):
+    cid = store.create_conversation(
+        tenant_id="t1", agent="general_agent", user_id="u1"
+    )
+    store.add_message(
+        conversation_id=cid,
+        role="assistant",
+        content="已完成招聘分析",
+        agent_id="hr_recruiter",
+    )
+
+    message = store.all_messages(cid)[0]
+    assert message["agent_id"] == "hr_recruiter"
+
+
 def test_recent_messages_returns_last_n_chronological(store):
     cid = store.create_conversation(tenant_id="t1", agent="cs", user_id="u1")
     for i in range(5):

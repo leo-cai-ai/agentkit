@@ -7,6 +7,8 @@ from agentkit.core.context.registry import ContextRegistry
 EXPECTED = {
     "runtime.intent": "json",
     "runtime.capability-route": "json",
+    "runtime.agent-route": "json",
+    "runtime.general-answer": "text",
     "runtime.react-action": "json",
     "runtime.plan-generate": "json",
     "runtime.memory-extract": "json",

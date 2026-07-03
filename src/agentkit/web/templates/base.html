@@ -17,37 +17,37 @@
 
     <div class="ak-app-shell">
       <aside class="sidebar ak-app-sidebar" aria-label="Application navigation">
-        <a class="brand ak-brand" href="{{ url_for('overview') }}">
+        <a class="brand ak-brand" href="{{ url_for('chat_console') }}">
           <span class="brand-mark ak-brand-mark">EA</span>
           <span>
-            <strong>Enterprise AI</strong>
-            <small>Workforce Console</small>
+            <strong>AgentKit</strong>
+            <small>企业 AI 工作台</small>
           </span>
         </a>
         <nav class="nav ak-primary-nav" aria-label="Primary navigation">
           <a
-            class="{{ 'active' if active == 'overview' else '' }}"
-            {% if active == 'overview' %}aria-current="page"{% endif %}
-            href="{{ url_for('overview') }}"
-          >Overview</a>
-          <a
             class="{{ 'active' if active == 'chat' else '' }}"
             {% if active == 'chat' %}aria-current="page"{% endif %}
             href="{{ url_for('chat_console') }}"
-          >Chat</a>
+          >聊天</a>
+          <a
+            class="{{ 'active' if active == 'agents' else '' }}"
+            {% if active == 'agents' %}aria-current="page"{% endif %}
+            href="{{ url_for('agent_network') }}"
+          >Agent Network</a>
           <a
             class="{{ 'active' if active == 'operations' else '' }}"
             {% if active == 'operations' %}aria-current="page"{% endif %}
             href="{{ url_for('operations') }}"
-          >Operations</a>
+          >运行追踪</a>
           <a
             class="{{ 'active' if active == 'governance' else '' }}"
             {% if active == 'governance' %}aria-current="page"{% endif %}
             href="{{ url_for('governance') }}"
-          >Governance</a>
+          >治理指标</a>
         </nav>
         <div class="sidebar-card ak-tenant-summary">
-          <span>Active tenant</span>
+          <span>当前租户</span>
           <strong>{{ tenant_id }}</strong>
         </div>
       </aside>

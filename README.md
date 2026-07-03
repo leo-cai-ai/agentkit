@@ -2,20 +2,24 @@
 
 AgentKit 是一个面向企业的通用 AI Agent 框架，目标是让业务 Agent 可快速交付，同时具备稳定性、并发能力、可追溯性、可维护性、可扩展性、可评测性和可控的 Token 成本。
 
-当前仓库只有 3 个对外业务 Agent：
+当前仓库包含 1 个协调 Agent 和 3 个业务 Agent：
+
+- `general_agent`：统一聊天、澄清和受控委派，不直接拥有业务工具。
 
 - `customer_service`：客服问答、订单、物流和退款。
 - `hr_recruiter`：候选人批量评估与排序。
 - `xhs_growth`：小红书研究、策略、文案、审核、发布与指标。
 
-运行时不再注册隐式的平台 Agent，所有请求都由显式选择的业务 Agent 进入同一张 LangGraph。
+Web 默认只有一个聊天入口。普通消息由 General Agent 处理；`@招聘`、`@客服`、`@小红书` 只对当前消息生效，下一条未提及消息重新由 General Agent 判断。业务 Agent 进入同一张 LangGraph，General 与业务运行通过父子 `run_id` 追踪。
 
 ## 核心设计
 
 ```mermaid
 flowchart LR
-    A[Web / CLI / API] --> G[AgentGateway]
-    G --> U[UnifiedAgentGraph]
+    A[Web Chat] --> M[MultiAgentCoordinator]
+    M --> G[General Agent]
+    G -->|受控委派| U[UnifiedAgentGraph]
+    B[CLI / Task API] --> U
     U --> C[Context: Conversation / Memory / RAG]
     U --> R[Capability Resolution]
     R --> S[Strategy Selector]
@@ -113,7 +117,7 @@ Python Tool 通过 `entrypoint` 加载；MCP Tool 通过 `server` 和 `tool` 声
 
 ## Context Packs
 
-三个 Agent 的 `agent.md` 正文是 Agent 长期指令的唯一来源，`SKILL.md` 是 Skill 业务指令的唯一来源。
+四个 Agent 的 `agent.md` 正文是 Agent 长期指令的唯一来源，`SKILL.md` 是 Skill 业务指令的唯一来源。
 `contexts/` 不复制这些说明，也不保存会话、Memory、RAG 原文或 Tool 输出；它只声明某个 LLM 节点允许读取哪些
 运行时数据、如何分配 Token、是否注入 Agent/Skill 指令，以及输出必须满足的 Schema。
 
@@ -121,7 +125,7 @@ Python Tool 通过 `entrypoint` 加载；MCP Tool 通过 `server` 和 `tool` 声
 `owner_skill` 关联根目录 `skills/` 中的能力包。后者不保存 Workflow、Tool 实现或完整业务说明。
 
 动态数据统一进入 User Message，并被标记为不可信；System Message 由不可覆盖的安全 Fragment、节点规则和显式允许的
-Agent/Skill 指令组成。Registry 在启动时严格校验 11 个 Pack 并生成 Hash。审批恢复时如果 Context Manifest Hash 已变化，
+Agent/Skill 指令组成。Registry 在启动时严格校验 13 个 Pack 并生成 Hash。审批恢复时如果 Context Manifest Hash 已变化，
 运行会拒绝继续，避免用新规则恢复旧任务。租户只能通过 `contexts/overrides/<tenant>/` 覆盖 System/User 模板，不能改变
 安全 Fragment、输入白名单、预算或 Schema。
 

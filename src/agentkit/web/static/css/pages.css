@@ -6,6 +6,255 @@
    ===================================================================== */
 
 /* Overview */
+
+/* General Agent Chat */
+.ak-general-chat-layout {
+  display: grid;
+  grid-template-columns: minmax(13rem, 0.72fr) minmax(32rem, 2.2fr) minmax(14rem, 0.78fr);
+  gap: var(--ak-sys-space-grid);
+  align-items: stretch;
+  min-block-size: calc(100dvh - 9.5rem);
+}
+
+.ak-chat-history,
+.ak-trace-panel {
+  min-block-size: 0;
+}
+
+.ak-chat-workspace {
+  min-block-size: 38rem;
+}
+
+.ak-chat-history {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ak-sys-space-3);
+  padding: var(--ak-sys-space-3);
+}
+
+.ak-eyebrow {
+  display: block;
+  color: var(--ak-sys-color-accent-strong);
+  font-size: 0.6875rem;
+  font-weight: 750;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.ak-new-chat-button,
+.ak-network-link {
+  inline-size: 100%;
+  justify-content: center;
+}
+
+.ak-history-picker .conversation-picker,
+.ak-history-picker .conversation-trigger {
+  inline-size: 100%;
+}
+
+.ak-history-list {
+  position: static;
+  max-block-size: 48vh;
+  margin-block-start: var(--ak-sys-space-2);
+  overflow-y: auto;
+  box-shadow: none;
+}
+
+.ak-chat-help {
+  margin-block-start: auto;
+  padding: var(--ak-sys-space-3);
+  border: 1px solid var(--ak-sys-color-border-default);
+  border-radius: var(--ak-sys-radius-sm);
+  background: var(--ak-sys-color-bg-surface-subtle);
+}
+
+.ak-chat-help p {
+  margin: var(--ak-sys-space-2) 0 0;
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.75rem;
+  line-height: 1.55;
+}
+
+.ak-chat-heading > div {
+  display: flex;
+  align-items: center;
+  gap: var(--ak-sys-space-2);
+}
+
+.ak-presence-dot {
+  inline-size: 0.65rem;
+  block-size: 0.65rem;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 0.8rem color-mix(in srgb, var(--ok) 70%, transparent);
+}
+
+.ak-mention-shell {
+  position: relative;
+  flex: 1 1 auto;
+}
+
+.ak-mention-shell textarea {
+  inline-size: 100%;
+}
+
+.ak-mention-menu {
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: calc(100% + var(--ak-sys-space-2));
+  z-index: 20;
+  display: grid;
+  gap: 0.25rem;
+  max-block-size: 18rem;
+  padding: var(--ak-sys-space-2);
+  overflow-y: auto;
+  border: 1px solid var(--ak-sys-color-border-interactive);
+  border-radius: var(--ak-sys-radius-md);
+  background: var(--ak-sys-color-bg-elevated);
+  box-shadow: 0 1rem 3rem rgb(0 0 0 / 0.18);
+}
+
+.ak-mention-menu[hidden] { display: none; }
+
+.ak-mention-menu button {
+  display: grid;
+  gap: 0.2rem;
+  padding: var(--ak-sys-space-2) var(--ak-sys-space-3);
+  border: 0;
+  border-radius: var(--ak-sys-radius-sm);
+  color: var(--ak-sys-color-text-primary);
+  background: transparent;
+  text-align: start;
+  cursor: pointer;
+}
+
+.ak-mention-menu button:hover,
+.ak-mention-menu button[aria-selected="true"] {
+  background: var(--ak-sys-color-accent-soft);
+}
+
+.ak-mention-menu span {
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.75rem;
+}
+
+.ak-agent-trace {
+  margin-block-start: var(--ak-sys-space-2);
+  padding-block-start: var(--ak-sys-space-2);
+  border-block-start: 1px solid var(--ak-sys-color-border-default);
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.75rem;
+}
+
+.ak-agent-trace summary { cursor: pointer; font-weight: 650; }
+.ak-agent-trace dl { display: grid; grid-template-columns: 5rem 1fr; gap: 0.3rem 0.6rem; }
+.ak-agent-trace dt, .ak-agent-trace dd { margin: 0; overflow-wrap: anywhere; }
+
+/* Agent Network */
+.ak-agent-network-shell {
+  display: grid;
+  gap: var(--ak-sys-space-3);
+}
+
+.ak-network-toolbar,
+.ak-network-filters,
+.ak-network-zoom {
+  display: flex;
+  align-items: center;
+  gap: var(--ak-sys-space-2);
+}
+
+.ak-network-toolbar { justify-content: space-between; }
+.ak-network-toolbar button {
+  min-block-size: 2.25rem;
+  padding: 0 var(--ak-sys-space-3);
+  border: 1px solid var(--ak-sys-color-border-default);
+  border-radius: 999px;
+  color: var(--ak-sys-color-text-secondary);
+  background: var(--ak-sys-color-bg-surface);
+  cursor: pointer;
+}
+.ak-network-toolbar button.active,
+.ak-network-toolbar button:hover {
+  color: var(--ak-sys-color-text-primary);
+  border-color: var(--ak-sys-color-border-interactive);
+  background: var(--ak-sys-color-accent-soft);
+}
+
+.ak-network-stage {
+  position: relative;
+  min-block-size: 42rem;
+  overflow: hidden;
+  border: 1px solid var(--ak-sys-color-border-default);
+  border-radius: var(--ak-sys-radius-lg);
+  background:
+    linear-gradient(rgb(255 255 255 / 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(255 255 255 / 0.025) 1px, transparent 1px),
+    radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--ak-sys-color-accent-default) 15%, transparent), transparent 45%),
+    var(--ak-sys-color-bg-surface);
+  background-size: 28px 28px, 28px 28px, auto, auto;
+}
+
+.ak-network-canvas { position: absolute; inset: 0; }
+.ak-network-canvas svg { inline-size: 100%; block-size: 100%; touch-action: none; }
+.ak-network-edges path {
+  fill: none;
+  stroke: color-mix(in srgb, var(--ak-sys-color-accent-default) 42%, transparent);
+  stroke-width: 1.5;
+  stroke-dasharray: 8 8;
+  animation: ak-network-flow 1.8s linear infinite;
+  transition: opacity 160ms ease, stroke 160ms ease, stroke-width 160ms ease;
+}
+.ak-network-edges path.is-highlighted { stroke: var(--ak-sys-color-accent-strong); stroke-width: 3; }
+.ak-network-node { cursor: grab; transition: opacity 160ms ease; }
+.ak-network-node:active { cursor: grabbing; }
+.ak-node-halo { fill: color-mix(in srgb, var(--ak-sys-color-accent-default) 12%, transparent); stroke: none; }
+.ak-node-body { fill: var(--ak-sys-color-bg-elevated); stroke: var(--ak-sys-color-border-interactive); stroke-width: 2; }
+.ak-network-node.is-general .ak-node-body { fill: color-mix(in srgb, var(--ak-sys-color-accent-default) 24%, var(--ak-sys-color-bg-elevated)); stroke: var(--ak-sys-color-accent-strong); stroke-width: 3; }
+.ak-network-node.is-skill .ak-node-body { stroke: var(--info); }
+.ak-network-node.is-tool .ak-node-body { stroke: var(--warn); }
+.ak-network-node.is-selected .ak-node-halo { fill: color-mix(in srgb, var(--ak-sys-color-accent-strong) 28%, transparent); }
+.ak-node-title { fill: var(--ak-sys-color-text-primary); font-size: 11px; font-weight: 700; pointer-events: none; }
+.ak-node-type { fill: var(--ak-sys-color-text-subtle); font-size: 7px; letter-spacing: 0.11em; pointer-events: none; }
+.ak-network-node.is-filtered,
+.ak-network-edges path.is-filtered { opacity: 0.08; pointer-events: none; }
+
+.ak-network-detail {
+  position: absolute;
+  inset-block-start: var(--ak-sys-space-4);
+  inset-inline-end: var(--ak-sys-space-4);
+  inline-size: min(19rem, 28%);
+  padding: var(--ak-sys-space-4);
+  border: 1px solid var(--ak-sys-color-border-default);
+  border-radius: var(--ak-sys-radius-md);
+  background: color-mix(in srgb, var(--ak-sys-color-bg-elevated) 90%, transparent);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 1rem 3rem rgb(0 0 0 / 0.16);
+}
+.ak-network-detail h2 { margin: var(--ak-sys-space-2) 0; font-size: 1.1rem; }
+.ak-network-detail p { color: var(--ak-sys-color-text-subtle); font-size: 0.8rem; line-height: 1.5; }
+.ak-network-detail dl { display: grid; grid-template-columns: 5rem 1fr; gap: 0.5rem; font-size: 0.75rem; }
+.ak-network-detail dt, .ak-network-detail dd { margin: 0; overflow-wrap: anywhere; }
+.ak-network-detail dt { color: var(--ak-sys-color-text-subtle); }
+.ak-network-fallback ul { display: grid; gap: var(--ak-sys-space-2); padding: 0; list-style: none; }
+.ak-network-fallback li { display: grid; gap: 0.25rem; padding: var(--ak-sys-space-2); border-block-end: 1px solid var(--ak-sys-color-border-default); }
+.ak-network-fallback span { color: var(--ak-sys-color-text-subtle); font-size: 0.75rem; }
+.ak-network-error { padding: 4rem; color: var(--ak-sys-color-text-subtle); text-align: center; }
+
+@keyframes ak-network-flow { to { stroke-dashoffset: -32; } }
+
+@media (max-width: 1180px) {
+  .ak-general-chat-layout { grid-template-columns: minmax(12rem, 0.7fr) minmax(28rem, 2fr); }
+  .ak-trace-panel { display: none; }
+}
+
+@media (max-width: 760px) {
+  .ak-general-chat-layout { grid-template-columns: 1fr; }
+  .ak-chat-history { min-block-size: auto; }
+  .ak-chat-help { display: none; }
+  .ak-network-detail { position: static; inline-size: auto; margin: var(--ak-sys-space-3); }
+  .ak-network-stage { min-block-size: 36rem; }
+}
 .ak-overview-grid {
   display: grid;
   grid-template-columns: minmax(0, 13fr) minmax(30rem, 11fr);

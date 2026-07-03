@@ -20,13 +20,40 @@ from typing import Any
 @dataclass
 class InMemoryAuditLog:
     _events: list[dict[str, Any]] = field(default_factory=list)
+    _runs: dict[str, dict[str, Any]] = field(default_factory=dict)
 
-    def start_run(self, *, tenant_id: str, user_id: str, text: str) -> str:
+    def start_run(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        text: str,
+        agent_id: str | None = None,
+        parent_run_id: str | None = None,
+        conversation_id: str | None = None,
+    ) -> str:
         run_id = str(uuid.uuid4())
+        self._runs[run_id] = {
+            "run_id": run_id,
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "text": text,
+            "status": "running",
+            "agent_id": agent_id,
+            "parent_run_id": parent_run_id,
+            "conversation_id": conversation_id,
+        }
         self.record(
             run_id,
             "run_started",
-            {"tenant_id": tenant_id, "user_id": user_id, "text": text},
+            {
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "text": text,
+                "agent_id": agent_id,
+                "parent_run_id": parent_run_id,
+                "conversation_id": conversation_id,
+            },
         )
         return run_id
 
@@ -39,9 +66,44 @@ class InMemoryAuditLog:
                 "payload": payload,
             }
         )
+        run = self._runs.get(run_id)
+        if run is not None:
+            if event_type == "run_finished":
+                run["status"] = payload.get("status") or "completed"
+            elif event_type == "run_paused":
+                run["status"] = payload.get("status") or "waiting_for_approval"
+            elif event_type == "run_resumed":
+                run["status"] = "running"
 
     def events_for(self, run_id: str) -> list[dict[str, Any]]:
         return [event for event in self._events if event["run_id"] == run_id]
+
+    def get_run(self, run_id: str) -> dict[str, Any] | None:
+        run = self._runs.get(run_id)
+        return dict(run) if run is not None else None
+
+    def child_runs(self, parent_run_id: str) -> list[dict[str, Any]]:
+        return [
+            dict(run)
+            for run in self._runs.values()
+            if run.get("parent_run_id") == parent_run_id
+        ]
+
+    def run_for_thread(
+        self, thread_id: str, *, tenant_id: str, user_id: str
+    ) -> dict[str, Any] | None:
+        for event in reversed(self._events):
+            if event["payload"].get("thread_id") != thread_id:
+                continue
+            run = self._runs.get(str(event["run_id"]))
+            if (
+                run
+                and run.get("parent_run_id")
+                and run["tenant_id"] == tenant_id
+                and run["user_id"] == user_id
+            ):
+                return dict(run)
+        return None
 
 
 class SQLiteAuditLog:
@@ -56,23 +118,50 @@ class SQLiteAuditLog:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 
-    def start_run(self, *, tenant_id: str, user_id: str, text: str) -> str:
+    def start_run(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        text: str,
+        agent_id: str | None = None,
+        parent_run_id: str | None = None,
+        conversation_id: str | None = None,
+    ) -> str:
         run_id = str(uuid.uuid4())
         now = round(time.time(), 3)
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO task_runs (
-                    run_id, tenant_id, user_id, text, status, started_at
+                    run_id, tenant_id, user_id, text, status, started_at,
+                    agent_id, parent_run_id, conversation_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (run_id, tenant_id, user_id, text, "running", now),
+                (
+                    run_id,
+                    tenant_id,
+                    user_id,
+                    text,
+                    "running",
+                    now,
+                    agent_id,
+                    parent_run_id,
+                    conversation_id,
+                ),
             )
         self.record(
             run_id,
             "run_started",
-            {"tenant_id": tenant_id, "user_id": user_id, "text": text},
+            {
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "text": text,
+                "agent_id": agent_id,
+                "parent_run_id": parent_run_id,
+                "conversation_id": conversation_id,
+            },
         )
         return run_id
 
@@ -143,7 +232,8 @@ class SQLiteAuditLog:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT run_id, tenant_id, user_id, text, status, started_at, finished_at
+                SELECT run_id, tenant_id, user_id, text, status, started_at, finished_at,
+                       agent_id, parent_run_id, conversation_id
                 FROM task_runs
                 ORDER BY started_at DESC
                 LIMIT ?
@@ -151,6 +241,44 @@ class SQLiteAuditLog:
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def get_run(self, run_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM task_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def child_runs(self, parent_run_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM task_runs
+                WHERE parent_run_id = ?
+                ORDER BY started_at ASC
+                """,
+                (parent_run_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def run_for_thread(
+        self, thread_id: str, *, tenant_id: str, user_id: str
+    ) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT r.*
+                FROM audit_events AS e
+                JOIN task_runs AS r ON r.run_id = e.run_id
+                WHERE json_extract(e.payload_json, '$.thread_id') = ?
+                  AND r.tenant_id = ? AND r.user_id = ?
+                  AND r.parent_run_id IS NOT NULL
+                ORDER BY e.id DESC
+                LIMIT 1
+                """,
+                (thread_id, tenant_id, user_id),
+            ).fetchone()
+        return dict(row) if row is not None else None
 
     def run_counts_by_status(self) -> dict[str, int]:
         with self._connect() as conn:
@@ -273,23 +401,50 @@ class PostgresAuditLog(SQLiteAuditLog):
         self._tenant_id = tenant_id
         self._init_schema()
 
-    def start_run(self, *, tenant_id: str, user_id: str, text: str) -> str:
+    def start_run(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        text: str,
+        agent_id: str | None = None,
+        parent_run_id: str | None = None,
+        conversation_id: str | None = None,
+    ) -> str:
         run_id = str(uuid.uuid4())
         now = round(time.time(), 3)
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO task_runs (
-                    run_id, tenant_id, user_id, text, status, started_at
+                    run_id, tenant_id, user_id, text, status, started_at,
+                    agent_id, parent_run_id, conversation_id
                 )
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (run_id, tenant_id, user_id, text, "running", now),
+                (
+                    run_id,
+                    tenant_id,
+                    user_id,
+                    text,
+                    "running",
+                    now,
+                    agent_id,
+                    parent_run_id,
+                    conversation_id,
+                ),
             )
         self.record(
             run_id,
             "run_started",
-            {"tenant_id": tenant_id, "user_id": user_id, "text": text},
+            {
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "text": text,
+                "agent_id": agent_id,
+                "parent_run_id": parent_run_id,
+                "conversation_id": conversation_id,
+            },
         )
         return run_id
 
@@ -373,7 +528,8 @@ class PostgresAuditLog(SQLiteAuditLog):
             if self._tenant_id:
                 rows = conn.execute(
                     """
-                    SELECT run_id, tenant_id, user_id, text, status, started_at, finished_at
+                    SELECT run_id, tenant_id, user_id, text, status, started_at, finished_at,
+                           agent_id, parent_run_id, conversation_id
                     FROM task_runs
                     WHERE tenant_id = %s
                     ORDER BY started_at DESC
@@ -384,7 +540,8 @@ class PostgresAuditLog(SQLiteAuditLog):
             else:
                 rows = conn.execute(
                     """
-                    SELECT run_id, tenant_id, user_id, text, status, started_at, finished_at
+                    SELECT run_id, tenant_id, user_id, text, status, started_at, finished_at,
+                           agent_id, parent_run_id, conversation_id
                     FROM task_runs
                     ORDER BY started_at DESC
                     LIMIT %s
@@ -400,9 +557,81 @@ class PostgresAuditLog(SQLiteAuditLog):
                 "status": row[4],
                 "started_at": row[5],
                 "finished_at": row[6],
+                "agent_id": row[7],
+                "parent_run_id": row[8],
+                "conversation_id": row[9],
             }
             for row in rows
         ]
+
+    def get_run(self, run_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            if self._tenant_id:
+                row = conn.execute(
+                    """
+                    SELECT run_id, tenant_id, user_id, text, status, started_at,
+                           finished_at, agent_id, parent_run_id, conversation_id
+                    FROM task_runs WHERE run_id = %s AND tenant_id = %s
+                    """,
+                    (run_id, self._tenant_id),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT run_id, tenant_id, user_id, text, status, started_at,
+                           finished_at, agent_id, parent_run_id, conversation_id
+                    FROM task_runs WHERE run_id = %s
+                    """,
+                    (run_id,),
+                ).fetchone()
+        return _postgres_run_row(row) if row is not None else None
+
+    def child_runs(self, parent_run_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            if self._tenant_id:
+                rows = conn.execute(
+                    """
+                    SELECT run_id, tenant_id, user_id, text, status, started_at,
+                           finished_at, agent_id, parent_run_id, conversation_id
+                    FROM task_runs
+                    WHERE parent_run_id = %s AND tenant_id = %s
+                    ORDER BY started_at ASC
+                    """,
+                    (parent_run_id, self._tenant_id),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT run_id, tenant_id, user_id, text, status, started_at,
+                           finished_at, agent_id, parent_run_id, conversation_id
+                    FROM task_runs
+                    WHERE parent_run_id = %s
+                    ORDER BY started_at ASC
+                    """,
+                    (parent_run_id,),
+                ).fetchall()
+        return [_postgres_run_row(row) for row in rows]
+
+    def run_for_thread(
+        self, thread_id: str, *, tenant_id: str, user_id: str
+    ) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT r.run_id, r.tenant_id, r.user_id, r.text, r.status,
+                       r.started_at, r.finished_at, r.agent_id,
+                       r.parent_run_id, r.conversation_id
+                FROM audit_events AS e
+                JOIN task_runs AS r ON r.run_id = e.run_id
+                WHERE e.payload_json ->> 'thread_id' = %s
+                  AND r.tenant_id = %s AND r.user_id = %s
+                  AND r.parent_run_id IS NOT NULL
+                ORDER BY e.id DESC
+                LIMIT 1
+                """,
+                (thread_id, tenant_id, user_id),
+            ).fetchone()
+        return _postgres_run_row(row) if row is not None else None
 
     def run_counts_by_status(self) -> dict[str, int]:
         with self._connect() as conn:
@@ -591,3 +820,18 @@ class PostgresAuditLog(SQLiteAuditLog):
         from .migrations import run_postgres_migrations
 
         run_postgres_migrations(self._settings)
+
+
+def _postgres_run_row(row: Any) -> dict[str, Any]:
+    return {
+        "run_id": row[0],
+        "tenant_id": row[1],
+        "user_id": row[2],
+        "text": row[3],
+        "status": row[4],
+        "started_at": row[5],
+        "finished_at": row[6],
+        "agent_id": row[7],
+        "parent_run_id": row[8],
+        "conversation_id": row[9],
+    }

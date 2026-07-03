@@ -39,7 +39,7 @@ def test_cli_exposes_validate_contexts() -> None:
 def test_validate_contexts_json(capsys) -> None:
     assert cli._validate_contexts(tenant_id="company_alpha", as_json=True) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["count"] == 11
+    assert payload["count"] == 13
     assert payload["manifest_hash"].startswith("sha256:")
 
 

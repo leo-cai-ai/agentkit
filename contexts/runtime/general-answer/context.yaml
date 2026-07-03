@@ -1,0 +1,53 @@
+id: runtime.general-answer
+version: 1
+owner: runtime
+templates:
+  system: system.md
+  user: user.md
+instructions:
+  agent: true
+  skill: false
+inputs:
+  - name: message
+    source: request.message
+    required: true
+    priority: 100
+    max_chars: 4000
+  - name: summary
+    source: conversation.summary
+    required: false
+    priority: 70
+    max_chars: 4000
+    truncate: newest
+  - name: recent_messages
+    source: conversation.recent_messages
+    required: false
+    priority: 80
+    serializer: canonical_json
+    max_items: 16
+    max_chars: 8000
+    truncate: newest
+  - name: candidate_agents
+    source: routing.candidate_agents
+    required: true
+    priority: 90
+    serializer: canonical_json
+    max_items: 30
+    max_chars: 10000
+    truncate: head
+  - name: decision
+    source: routing.decision
+    required: true
+    priority: 100
+    serializer: canonical_json
+    max_chars: 2000
+exclude: [secrets, tool_credentials, skill.handler, other_agent_context]
+limits:
+  max_input_tokens: 7000
+  response_reserve_tokens: 1800
+output:
+  mode: text
+audit:
+  record_input_names: true
+  record_content_hashes: true
+  record_rendered_content: false

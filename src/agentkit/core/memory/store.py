@@ -93,17 +93,27 @@ class ConversationStore:
         content: str,
         token_estimate: int = 0,
         run_id: str | None = None,
+        agent_id: str | None = None,
     ) -> int:
         now = round(time.time(), 3)
         with self._connect() as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO messages (
-                    conversation_id, role, content, token_estimate, run_id, created_at
+                    conversation_id, role, content, token_estimate, run_id, agent_id,
+                    created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (conversation_id, role, content, token_estimate, run_id, now),
+                (
+                    conversation_id,
+                    role,
+                    content,
+                    token_estimate,
+                    run_id,
+                    agent_id,
+                    now,
+                ),
             )
             conn.execute(
                 "UPDATE conversations SET updated_at = ? WHERE id = ?",
@@ -280,6 +290,7 @@ class ConversationStore:
                     content TEXT NOT NULL,
                     token_estimate INTEGER NOT NULL DEFAULT 0,
                     run_id TEXT,
+                    agent_id TEXT,
                     created_at REAL NOT NULL,
                     FOREIGN KEY(conversation_id) REFERENCES conversations(id)
                 )
@@ -291,6 +302,11 @@ class ConversationStore:
                 ON messages(conversation_id, id)
                 """
             )
+            columns = {
+                str(row[1]) for row in conn.execute("PRAGMA table_info(messages)")
+            }
+            if "agent_id" not in columns:
+                conn.execute("ALTER TABLE messages ADD COLUMN agent_id TEXT")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS conversation_summaries (

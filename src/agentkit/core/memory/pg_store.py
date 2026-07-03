@@ -82,18 +82,28 @@ class PgConversationStore(ConversationStore):
         content: str,
         token_estimate: int = 0,
         run_id: str | None = None,
+        agent_id: str | None = None,
     ) -> int:
         now = round(time.time(), 3)
         with self._connect() as conn:
             row = conn.execute(
                 """
                 INSERT INTO messages (
-                    conversation_id, role, content, token_estimate, run_id, created_at
+                    conversation_id, role, content, token_estimate, run_id, agent_id,
+                    created_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
-                (conversation_id, role, content, token_estimate, run_id, now),
+                (
+                    conversation_id,
+                    role,
+                    content,
+                    token_estimate,
+                    run_id,
+                    agent_id,
+                    now,
+                ),
             ).fetchone()
             conn.execute(
                 "UPDATE conversations SET updated_at = %s WHERE id = %s",
@@ -107,9 +117,11 @@ class PgConversationStore(ConversationStore):
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, conversation_id, role, content, token_estimate, run_id, created_at
+                SELECT id, conversation_id, role, content, token_estimate, run_id,
+                       agent_id, created_at
                 FROM (
-                    SELECT id, conversation_id, role, content, token_estimate, run_id, created_at
+                    SELECT id, conversation_id, role, content, token_estimate, run_id,
+                           agent_id, created_at
                     FROM messages
                     WHERE conversation_id = %s
                     ORDER BY id DESC
@@ -125,7 +137,8 @@ class PgConversationStore(ConversationStore):
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, conversation_id, role, content, token_estimate, run_id, created_at
+                SELECT id, conversation_id, role, content, token_estimate, run_id,
+                       agent_id, created_at
                 FROM messages
                 WHERE conversation_id = %s
                 ORDER BY id ASC
@@ -294,6 +307,7 @@ class PgConversationStore(ConversationStore):
                     content TEXT NOT NULL,
                     token_estimate INTEGER NOT NULL DEFAULT 0,
                     run_id TEXT,
+                    agent_id TEXT,
                     created_at DOUBLE PRECISION NOT NULL
                 )
                 """
@@ -304,6 +318,7 @@ class PgConversationStore(ConversationStore):
                 ON messages(conversation_id, id)
                 """
             )
+            conn.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS agent_id TEXT")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS conversation_summaries (
@@ -361,7 +376,8 @@ def _message_row(row: Any) -> dict[str, Any]:
         "content": row[3],
         "token_estimate": row[4],
         "run_id": row[5],
-        "created_at": row[6],
+        "agent_id": row[6],
+        "created_at": row[7],
     }
 
 

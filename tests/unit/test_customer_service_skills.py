@@ -16,7 +16,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def test_repository_catalog_has_exactly_three_business_agents() -> None:
     catalog = load_catalog(REPO_ROOT)
 
-    assert set(catalog.agents) == {"customer_service", "hr_recruiter", "xhs_growth"}
+    assert set(catalog.agents) == {
+        "general_agent",
+        "customer_service",
+        "hr_recruiter",
+        "xhs_growth",
+    }
+    assert catalog.agents["general_agent"].skills == ()
 
 
 def test_customer_service_declares_four_governed_capabilities() -> None:

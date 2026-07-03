@@ -92,6 +92,59 @@ class ConversationContextService:
         ):
             raise ValueError("会话不属于当前租户、Agent 或用户")
 
+        return self._assemble_context(
+            agent=agent,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            run_id=run_id,
+            message=message,
+            roles=roles,
+        )
+
+    def build_for_delegation(
+        self,
+        *,
+        agent: AgentProfile,
+        tenant_id: str,
+        owner_agent_id: str,
+        user_id: str,
+        conversation_id: str,
+        run_id: str,
+        message: str,
+        roles: Sequence[str] = (),
+    ) -> AgentConversationContext:
+        """共享 General 会话历史，同时使用目标 Agent 自己的记忆和 RAG。"""
+        conversation = self._store.get_conversation(conversation_id)
+        if conversation is None:
+            raise ValueError(f"未知 conversation_id: {conversation_id}")
+        if (
+            conversation.get("tenant_id") != tenant_id
+            or conversation.get("agent") != owner_agent_id
+            or conversation.get("user_id") != user_id
+        ):
+            raise ValueError("会话不属于当前租户、所有者 Agent 或用户")
+        return self._assemble_context(
+            agent=agent,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            run_id=run_id,
+            message=message,
+            roles=roles,
+        )
+
+    def _assemble_context(
+        self,
+        *,
+        agent: AgentProfile,
+        tenant_id: str,
+        user_id: str,
+        conversation_id: str,
+        run_id: str,
+        message: str,
+        roles: Sequence[str],
+    ) -> AgentConversationContext:
         policy = agent.context_policy
         recent: tuple[dict[str, str], ...] = ()
         summary = ""
@@ -112,7 +165,7 @@ class ConversationContextService:
                 memories = tuple(
                     self._memory.retrieve(
                         tenant_id=tenant_id,
-                        agent=agent_id,
+                        agent=agent.name,
                         user_id=user_id,
                         query=message,
                         k=policy.memory.retrieval_k,
@@ -126,7 +179,7 @@ class ConversationContextService:
                     message,
                     run_id=run_id,
                     user_id=user_id,
-                    agent=agent_id,
+                    agent=agent.name,
                     roles=roles,
                     k=policy.rag.top_k,
                     filters={"collection": list(policy.rag.collections)},

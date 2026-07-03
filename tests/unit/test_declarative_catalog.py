@@ -69,6 +69,15 @@ def test_enabled_agents_are_explicit_and_validated(tmp_path: Path) -> None:
     }
 
 
+def test_repository_catalog_contains_general_agent_without_business_skills() -> None:
+    catalog = load_catalog(Path.cwd())
+
+    general = catalog.agents["general_agent"]
+    assert general.skills == ()
+    assert general.context.rag.enabled is False
+    assert general.execution.allowed_strategies == (ExecutionStrategyName.DIRECT,)
+
+
 def _write_catalog(
     root: Path,
     *,
