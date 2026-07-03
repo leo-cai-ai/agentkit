@@ -32,6 +32,7 @@ def test_persistence_writes_only_explicit_scope(tmp_path) -> None:
         user_message="查询订单",
         assistant_message="<think>隐藏推理</think>已查询",
         run_id="r1",
+        window_turns=6,
     )
 
     messages = store.all_messages(conversation_id)
@@ -57,6 +58,8 @@ def test_persistence_rejects_cross_user_write(tmp_path) -> None:
             conversation_id=conversation_id,
             user_message="越权写入",
             assistant_message="不允许",
+            run_id="r1",
+            window_turns=6,
         )
     except ValueError as exc:
         assert "不属于当前" in str(exc)
@@ -65,7 +68,16 @@ def test_persistence_rejects_cross_user_write(tmp_path) -> None:
 
 
 class FakeExtractor:
-    def extract(self, *, user_text: str, assistant_text: str) -> list[str]:
+    def extract(
+        self,
+        *,
+        tenant_id: str,
+        run_id: str,
+        user_text: str,
+        assistant_text: str,
+    ) -> list[str]:
+        assert tenant_id == "t1"
+        assert run_id == "r1"
         assert user_text == "我喜欢邮件联系"
         assert assistant_text == "已记住"
         return ["用户偏好邮件联系"]
@@ -124,3 +136,44 @@ def test_extracting_memory_writer_is_best_effort() -> None:
         assistant_message="已记住",
         run_id="r1",
     )
+
+
+def test_summary_failure_does_not_rollback_persisted_turn(tmp_path) -> None:
+    class BrokenSummarizer:
+        def fold(self, **kwargs) -> str:
+            raise RuntimeError("summary unavailable")
+
+    class RecordingAudit:
+        def __init__(self) -> None:
+            self.events = []
+
+        def record(self, run_id, event_type, payload) -> None:
+            self.events.append((run_id, event_type, payload))
+
+    store = ConversationStore(tmp_path / "memory.sqlite")
+    audit = RecordingAudit()
+    service = ConversationPersistenceService(
+        store=store,
+        summarizer=BrokenSummarizer(),
+        audit=audit,
+    )
+    conversation_id = service.create_conversation(
+        tenant_id="t1", agent_id="customer_service", user_id="u1"
+    )
+
+    service.record_turn(
+        tenant_id="t1",
+        agent_id="customer_service",
+        user_id="u1",
+        conversation_id=conversation_id,
+        user_message="hello",
+        assistant_message="world",
+        run_id="r1",
+        window_turns=0,
+    )
+
+    assert [item["content"] for item in store.all_messages(conversation_id)] == [
+        "hello",
+        "world",
+    ]
+    assert audit.events[0][1] == "memory_summary_failed"

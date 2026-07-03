@@ -267,6 +267,7 @@ class UnifiedAgentGraph:
             agent_id=state["agent"].name,
             user_id=request.user_id,
             conversation_id=conversation_id,
+            run_id=state["run_id"],
             message=request.text,
             roles=request.roles,
         )
@@ -527,6 +528,7 @@ class UnifiedAgentGraph:
             user_message=state["request"].text,
             assistant_message=json.dumps(result.output, ensure_ascii=False, default=str),
             run_id=state["run_id"],
+            window_turns=state["agent"].context_policy.memory.window_turns,
         )
         return {}
 

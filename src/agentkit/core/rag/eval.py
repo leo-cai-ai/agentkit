@@ -107,6 +107,8 @@ def evaluate_retriever(
         hits = retriever.retrieve(
             RetrievalQuery(
                 tenant_id=tenant_id,
+                tenant_selector=tenant_id,
+                run_id="rag-eval",
                 text=case.query,
                 roles=case.roles,
                 k=case.k,

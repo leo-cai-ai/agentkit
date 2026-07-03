@@ -1,15 +1,7 @@
-"""Conversational memory for memory-enabled (conversational) agents.
-
-Phase 4a ships the short-term memory core: a per-tenant conversation store,
-a pluggable token estimator, a rolling-summary summarizer, a budget-aware
-context builder (sliding window + fold-to-summary), and the orchestrating
-``ConversationManager``. Semantic long-term memory (embeddings/retrieval)
-arrives in Phase 4b.
-"""
+"""统一 Agent Runtime 使用的会话存储、摘要与语义记忆能力。"""
 
 from __future__ import annotations
 
-from .context_builder import BuildResult, ContextBuilder
 from .embeddings import (
     EmbeddingProvider,
     FakeEmbeddingProvider,
@@ -17,7 +9,6 @@ from .embeddings import (
     build_embedding_provider,
 )
 from .extractor import MemoryExtractor
-from .manager import ChatReply, ConversationManager
 from .pg_store import PgConversationStore
 from .retrieval import MemoryRetriever, cosine
 from .store import ConversationStore, build_conversation_store
@@ -32,10 +23,6 @@ from .vector_store import (
 )
 
 __all__ = [
-    "BuildResult",
-    "ChatReply",
-    "ContextBuilder",
-    "ConversationManager",
     "ConversationStore",
     "PgConversationStore",
     "build_conversation_store",

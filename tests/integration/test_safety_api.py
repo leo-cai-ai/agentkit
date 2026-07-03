@@ -82,4 +82,4 @@ def test_benign_message_still_reaches_llm(client):
     )
     assert resp.status_code == 200
     assert resp.get_json()["response"]["status"] == "completed"
-    assert "intent decomposition module" in _CALLS[0].lower()
+    assert "意图分解节点" in _CALLS[0]

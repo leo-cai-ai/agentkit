@@ -35,6 +35,7 @@ from agentkit.core.memory.embeddings import build_embedding_provider
 from agentkit.core.memory.extractor import MemoryExtractor
 from agentkit.core.memory.retrieval import MemoryRetriever
 from agentkit.core.memory.store import build_conversation_store
+from agentkit.core.memory.summarizer import Summarizer
 from agentkit.core.memory.vector_store import build_vector_store
 from agentkit.core.migrations import run_storage_migrations
 from agentkit.core.rag.service import build_knowledge_service
@@ -231,7 +232,13 @@ def build_runtime(
     vector_store = build_vector_store(settings, conversation_store)
     memory = MemoryRetriever(vector_store=vector_store, embeddings=embeddings)
     knowledge = (
-        build_knowledge_service(settings, tenant_id=tenant_key, embeddings=embeddings)
+        build_knowledge_service(
+            settings,
+            tenant_id=tenant_key,
+            tenant_selector=resolved_tenant_id,
+            context_invoker=context_invoker,
+            embeddings=embeddings,
+        )
         if bool(getattr(settings, "rag_enabled", False))
         else None
     )
@@ -243,9 +250,17 @@ def build_runtime(
     conversation_persistence = ConversationPersistenceService(
         store=conversation_store,
         memory_writer=ExtractingMemoryWriter(
-            extractor=MemoryExtractor(),
+            extractor=MemoryExtractor(
+                context_invoker=context_invoker,
+                tenant_selector=resolved_tenant_id,
+            ),
             retriever=memory,
         ),
+        summarizer=Summarizer(
+            context_invoker=context_invoker,
+            tenant_selector=resolved_tenant_id,
+        ),
+        audit=audit,
     )
     idempotency_store = build_idempotency_store(
         backend=storage_backend,

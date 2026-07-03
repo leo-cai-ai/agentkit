@@ -14,7 +14,7 @@ from agentkit.runtime.bootstrap import build_runtime
 def _responder(calls: list[str]):
     def respond(system: str, user: str) -> str:
         normalized = system.lower()
-        if "intent decomposition module" in normalized:
+        if "意图分解节点" in system:
             return json.dumps(
                 {
                     "intent_type": "business_task",

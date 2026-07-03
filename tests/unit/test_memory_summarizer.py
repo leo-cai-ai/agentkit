@@ -1,44 +1,39 @@
 from agentkit.core.memory.summarizer import Summarizer
+from tests.context_support import SpyContextInvoker
 
 
-def test_fold_empty_turns_returns_existing_without_calling_llm():
-    calls = []
+def test_fold_empty_turns_returns_existing_without_calling_llm() -> None:
+    spy = SpyContextInvoker()
+    summarizer = Summarizer(context_invoker=spy, tenant_selector="company_alpha")
 
-    def chat_fn(system, user):
-        calls.append((system, user))
-        return "should-not-be-used"
+    assert summarizer.fold(
+        tenant_id="t1",
+        run_id="r1",
+        existing_summary="prev",
+        turns=[],
+    ) == "prev"
+    assert spy.requests == []
 
-    s = Summarizer(chat_fn=chat_fn)
-    assert s.fold(existing_summary="prev", turns=[]) == "prev"
-    assert calls == []
 
+def test_summarizer_uses_structured_summary_window() -> None:
+    spy = SpyContextInvoker("new summary")
+    summarizer = Summarizer(context_invoker=spy, tenant_selector="company_alpha")
+    turns = [
+        {"role": "user", "content": "my name is Sam"},
+        {"role": "assistant", "content": "Hi Sam"},
+    ]
 
-def test_fold_passes_existing_and_turns_to_llm():
-    captured = {}
-
-    def chat_fn(system, user):
-        captured["system"] = system
-        captured["user"] = user
-        return "  new summary  "
-
-    s = Summarizer(chat_fn=chat_fn)
-    result = s.fold(
+    result = summarizer.fold(
+        tenant_id="t1",
+        run_id="r1",
         existing_summary="old summary",
-        turns=[
-            {"role": "user", "content": "my name is Sam"},
-            {"role": "assistant", "content": "Hi Sam"},
-        ],
+        turns=turns,
     )
-    assert result == "new summary"  # stripped
-    assert "old summary" in captured["user"]
-    assert "my name is Sam" in captured["user"]
-    assert "Hi Sam" in captured["user"]
 
-
-def test_fold_handles_no_existing_summary():
-    def chat_fn(system, user):
-        assert "(none)" in user
-        return "fresh"
-
-    s = Summarizer(chat_fn=chat_fn)
-    assert s.fold(existing_summary="", turns=[{"role": "user", "content": "x"}]) == "fresh"
+    assert result == "new summary"
+    request = spy.requests[-1]
+    assert request.context_id == "runtime.memory-summary"
+    assert request.values["memory.summary_window"] == {
+        "existing_summary": "old summary",
+        "turns": turns,
+    }

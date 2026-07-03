@@ -36,12 +36,14 @@ class KnowledgeService:
         self,
         *,
         tenant_id: str,
+        tenant_selector: str,
         store: KnowledgeStore,
         embeddings: EmbeddingProvider,
         retriever: Retriever,
         chunker: AdaptiveTextChunker,
     ) -> None:
         self._tenant_id = tenant_id
+        self._tenant_selector = tenant_selector
         self._store = store
         self._embeddings = embeddings
         self._retriever = retriever
@@ -98,6 +100,7 @@ class KnowledgeService:
         self,
         text: str,
         *,
+        run_id: str,
         user_id: str = "",
         agent: str = "",
         roles: Sequence[str] = (),
@@ -107,6 +110,8 @@ class KnowledgeService:
         return self._retriever.retrieve(
             RetrievalQuery(
                 tenant_id=self._tenant_id,
+                tenant_selector=self._tenant_selector,
+                run_id=run_id,
                 text=text,
                 user_id=user_id,
                 agent=agent,
@@ -120,6 +125,7 @@ class KnowledgeService:
         self,
         text: str,
         *,
+        run_id: str,
         user_id: str = "",
         agent: str = "",
         roles: Sequence[str] = (),
@@ -130,6 +136,7 @@ class KnowledgeService:
             format_hit_for_context(hit)
             for hit in self.retrieve(
                 text,
+                run_id=run_id,
                 user_id=user_id,
                 agent=agent,
                 roles=roles,
@@ -143,6 +150,8 @@ def build_knowledge_service(
     settings: Any,
     *,
     tenant_id: str,
+    tenant_selector: str,
+    context_invoker: Any,
     store: KnowledgeStore | None = None,
     embeddings: EmbeddingProvider | None = None,
 ) -> KnowledgeService:
@@ -156,9 +165,16 @@ def build_knowledge_service(
             ocr_max_chars=int(getattr(settings, "rag_ocr_chunk_max_chars", 900)),
         )
     )
-    retriever = build_retriever(settings, store=store, embeddings=embeddings)
+    retriever = build_retriever(
+        settings,
+        store=store,
+        embeddings=embeddings,
+        context_invoker=context_invoker,
+        tenant_selector=tenant_selector,
+    )
     return KnowledgeService(
         tenant_id=tenant_id,
+        tenant_selector=tenant_selector,
         store=store,
         embeddings=embeddings,
         retriever=retriever,
@@ -187,16 +203,26 @@ def build_retriever(
     *,
     store: KnowledgeStore,
     embeddings: EmbeddingProvider,
+    context_invoker: Any,
+    tenant_selector: str,
 ) -> Retriever:
     query_rewriter = (
-        LLMQueryRewriter(max_variants=int(getattr(settings, "rag_query_rewrite_max", 3)))
+        LLMQueryRewriter(
+            context_invoker=context_invoker,
+            tenant_selector=tenant_selector,
+            max_variants=int(getattr(settings, "rag_query_rewrite_max", 3)),
+        )
         if str(getattr(settings, "rag_query_rewrite", "none")).lower() == "llm"
         else NoopQueryRewriter()
     )
     reranker_name = str(getattr(settings, "rag_reranker", "none")).lower()
     reranker: Reranker
     if reranker_name == "llm":
-        reranker = LLMReranker(max_candidates=int(getattr(settings, "rag_rerank_candidates", 12)))
+        reranker = LLMReranker(
+            context_invoker=context_invoker,
+            tenant_selector=tenant_selector,
+            max_candidates=int(getattr(settings, "rag_rerank_candidates", 12)),
+        )
     elif reranker_name in {"keyword", "overlap"}:
         reranker = KeywordOverlapReranker()
     else:

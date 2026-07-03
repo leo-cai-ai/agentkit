@@ -10,7 +10,7 @@ import agentkit.config as config_mod
 
 
 def _responder(system: str, user: str) -> str:
-    if "intent decomposition module" in system.lower():
+    if "意图分解节点" in system:
         return json.dumps(
             {
                 "intent_type": "business_task",

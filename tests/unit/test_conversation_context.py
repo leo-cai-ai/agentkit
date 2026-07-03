@@ -78,6 +78,7 @@ def test_context_builder_enables_rag_per_agent(tmp_path) -> None:
         agent_id="customer_service",
         user_id="u1",
         conversation_id=customer_id,
+        run_id="r1",
         message="退款规则",
         roles=("support",),
     )
@@ -87,6 +88,7 @@ def test_context_builder_enables_rag_per_agent(tmp_path) -> None:
         agent_id="xhs_growth",
         user_id="u1",
         conversation_id=xhs_id,
+        run_id="r2",
         message="退款规则",
     )
 
@@ -113,6 +115,7 @@ def test_context_is_scoped_by_tenant_agent_user(tmp_path) -> None:
         agent_id="customer_service",
         user_id="u1",
         conversation_id=customer_id,
+        run_id="r1",
         message="订单",
     )
     xhs = service.build(
@@ -121,6 +124,7 @@ def test_context_is_scoped_by_tenant_agent_user(tmp_path) -> None:
         agent_id="xhs_growth",
         user_id="u1",
         conversation_id=xhs_id,
+        run_id="r2",
         message="订单",
     )
 
@@ -144,6 +148,7 @@ def test_context_rejects_cross_scope_conversation(tmp_path) -> None:
             agent_id="xhs_growth",
             user_id="u1",
             conversation_id=conversation_id,
+            run_id="r1",
             message="越权读取",
         )
     except ValueError as exc:

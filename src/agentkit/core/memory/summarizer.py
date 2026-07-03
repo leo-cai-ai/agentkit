@@ -1,54 +1,55 @@
-"""Rolling-summary summarizer.
-
-Folds the oldest conversation turns into a running summary so the short-term
-context stays under budget while older context is not lost outright (the full
-transcript remains in the store).
-
-The LLM call is injected as ``chat_fn`` (default: ``llm_client.require_chat``)
-so the summarizer is trivially unit-testable with a deterministic stub.
-"""
+"""通过 Context Pack 维护会话滚动摘要。"""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from typing import Any
 
-ChatFn = Callable[[str, str], str]
-
-_SYSTEM_PROMPT = (
-    "You maintain a concise running summary of a conversation between a user and "
-    "an assistant. Merge the EXISTING SUMMARY with the NEW TURNS into a single "
-    "updated summary. Preserve durable facts, user preferences, decisions, open "
-    "questions, and identifiers. Be concise; drop pleasantries. Reply with the "
-    "updated summary text only."
-)
-
-
-def _render_turns(turns: Sequence[dict[str, Any]]) -> str:
-    lines = []
-    for turn in turns:
-        role = str(turn.get("role", "user"))
-        content = str(turn.get("content", "")).strip()
-        lines.append(f"{role}: {content}")
-    return "\n".join(lines)
+from agentkit.core.context.models import ContextRenderRequest
 
 
 class Summarizer:
-    def __init__(self, *, chat_fn: ChatFn | None = None) -> None:
-        self._chat_fn = chat_fn
+    """把超出短期窗口的历史折叠为简洁摘要。"""
 
-    def _chat(self) -> ChatFn:
-        if self._chat_fn is not None:
-            return self._chat_fn
-        from agentkit.core import llm_client
+    def __init__(
+        self,
+        *,
+        context_invoker: Any,
+        tenant_selector: str,
+        max_tokens: int = 10_000,
+    ) -> None:
+        self._context_invoker = context_invoker
+        self._tenant_selector = tenant_selector
+        self._max_tokens = max(1, int(max_tokens))
 
-        return llm_client.require_chat
-
-    def fold(self, *, existing_summary: str, turns: Sequence[dict[str, Any]]) -> str:
+    def fold(
+        self,
+        *,
+        tenant_id: str,
+        run_id: str,
+        existing_summary: str,
+        turns: Sequence[dict[str, Any]],
+    ) -> str:
         if not turns:
             return existing_summary
-        existing = (existing_summary or "").strip()
-        user = (
-            f"EXISTING SUMMARY:\n{existing or '(none)'}\n\n" f"NEW TURNS:\n{_render_turns(turns)}"
+        result = self._context_invoker.invoke_text(
+            ContextRenderRequest(
+                context_id="runtime.memory-summary",
+                tenant_id=tenant_id,
+                tenant_selector=self._tenant_selector,
+                run_id=run_id,
+                agent=None,
+                skill=None,
+                values={
+                    "memory.summary_window": {
+                        "existing_summary": (existing_summary or "").strip(),
+                        "turns": list(turns),
+                    }
+                },
+                global_token_limit=self._max_tokens,
+            )
         )
-        return self._chat()(_SYSTEM_PROMPT, user).strip()
+        return str(result.value).strip()
+
+
+__all__ = ["Summarizer"]

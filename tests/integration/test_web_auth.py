@@ -105,7 +105,7 @@ def test_auth_disabled_allows_access(monkeypatch):
 
 def _responder(system: str, user: str) -> str:
     s = system.lower()
-    if "intent decomposition module" in s:
+    if "意图分解节点" in system:
         return json.dumps(
             {
                 "intent_type": "business_task",

@@ -11,7 +11,9 @@ import re
 from collections.abc import Sequence
 from dataclasses import replace
 from math import log
+from typing import Any
 
+from agentkit.core.context.models import ContextRenderRequest
 from agentkit.core.memory.embeddings import EmbeddingProvider
 from agentkit.core.memory.vector_store import cosine
 
@@ -41,21 +43,40 @@ class NoopQueryRewriter:
 class LLMQueryRewriter:
     """Generate retrieval variants for ambiguous, terse or conversational queries."""
 
-    def __init__(self, *, max_variants: int = 3) -> None:
+    def __init__(
+        self,
+        *,
+        context_invoker: Any,
+        tenant_selector: str,
+        max_variants: int = 3,
+    ) -> None:
+        self._context_invoker = context_invoker
+        self._tenant_selector = tenant_selector
         self._max_variants = max(1, int(max_variants))
 
     def rewrite(self, query: RetrievalQuery) -> list[str]:
-        from agentkit.core.llm_client import require_chat_json
-
-        data = require_chat_json(
-            (
-                "You are a RAG query-rewrite component. Return only valid JSON "
-                "with key queries: a list of short search queries. Preserve named "
-                "entities, product names, dates, IDs and user language. Do not answer."
-            ),
-            query.text,
-        )
+        _validate_tenant_selector(query, self._tenant_selector)
         variants = [query.text]
+        try:
+            data = self._context_invoker.invoke_json(
+                ContextRenderRequest(
+                    context_id="runtime.rag-query-rewrite",
+                    tenant_id=query.tenant_id,
+                    tenant_selector=query.tenant_selector,
+                    run_id=query.run_id,
+                    agent=None,
+                    skill=None,
+                    values={
+                        "rag.query": query.text,
+                        "conversation.summary": "",
+                    },
+                    global_token_limit=8000,
+                )
+            ).value
+        except Exception:
+            return variants
+        if not isinstance(data, dict):
+            return variants
         raw = data.get("queries")
         if isinstance(raw, list):
             for item in raw:
@@ -187,18 +208,23 @@ class KeywordOverlapReranker:
 class LLMReranker:
     """Optional LLM reranker over already-retrieved snippets."""
 
-    def __init__(self, *, max_candidates: int = 12) -> None:
+    def __init__(
+        self,
+        *,
+        context_invoker: Any,
+        tenant_selector: str,
+        max_candidates: int = 12,
+    ) -> None:
+        self._context_invoker = context_invoker
+        self._tenant_selector = tenant_selector
         self._max_candidates = max(1, int(max_candidates))
 
     def rerank(self, *, query: RetrievalQuery, hits: Sequence[RetrievalHit]) -> list[RetrievalHit]:
         if not hits:
             return []
-        from agentkit.core.llm_client import require_chat_json
-
+        _validate_tenant_selector(query, self._tenant_selector)
         candidates = list(hits)[: self._max_candidates]
-        payload = {
-            "query": query.text,
-            "candidates": [
+        candidate_payload = [
                 {
                     "id": hit.chunk.id,
                     "title": hit.chunk.title,
@@ -207,16 +233,27 @@ class LLMReranker:
                     "score": hit.score,
                 }
                 for hit in candidates
-            ],
-        }
-        data = require_chat_json(
-            (
-                "You are a RAG reranker. Return only valid JSON with key "
-                "ranked_ids: candidate ids ordered by relevance to the query. "
-                "Use only the supplied candidate text."
-            ),
-            str(payload),
-        )
+            ]
+        try:
+            data = self._context_invoker.invoke_json(
+                ContextRenderRequest(
+                    context_id="runtime.rag-rerank",
+                    tenant_id=query.tenant_id,
+                    tenant_selector=query.tenant_selector,
+                    run_id=query.run_id,
+                    agent=None,
+                    skill=None,
+                    values={
+                        "rag.query": query.text,
+                        "rag.candidates": candidate_payload,
+                    },
+                    global_token_limit=14_000,
+                )
+            ).value
+        except Exception:
+            return list(hits)[: query.k]
+        if not isinstance(data, dict):
+            return list(hits)[: query.k]
         ranked_ids = data.get("ranked_ids")
         if not isinstance(ranked_ids, list):
             return list(hits)[: query.k]
@@ -235,6 +272,11 @@ class LLMReranker:
                 )
         ordered.extend(by_id.values())
         return ordered[: query.k]
+
+
+def _validate_tenant_selector(query: RetrievalQuery, expected: str) -> None:
+    if query.tenant_selector != expected:
+        raise ValueError("RAG 查询 tenant_selector 与服务实例不一致")
 
 
 class HybridRetriever:

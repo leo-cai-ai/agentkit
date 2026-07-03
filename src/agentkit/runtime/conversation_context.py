@@ -36,6 +36,7 @@ class KnowledgeReader(Protocol):
         self,
         text: str,
         *,
+        run_id: str,
         user_id: str = "",
         agent: str = "",
         roles: Sequence[str] = (),
@@ -75,6 +76,7 @@ class ConversationContextService:
         agent_id: str,
         user_id: str,
         conversation_id: str,
+        run_id: str,
         message: str,
         roles: Sequence[str] = (),
     ) -> AgentConversationContext:
@@ -122,6 +124,7 @@ class ConversationContextService:
             knowledge = tuple(
                 self._knowledge.retrieve_context(
                     message,
+                    run_id=run_id,
                     user_id=user_id,
                     agent=agent_id,
                     roles=roles,

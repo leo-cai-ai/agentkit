@@ -431,12 +431,19 @@ def _parse_csv(value: str | None) -> list[str]:
 def _rag_service_for_tenant(tenant_selector: str | None):
     from agentkit.config import get_settings
     from agentkit.core.rag.service import build_knowledge_service
-    from agentkit.runtime.bootstrap import load_tenant_config, resolve_tenant_id
+    from agentkit.runtime.bootstrap import build_runtime, load_tenant_config, resolve_tenant_id
 
     resolved = resolve_tenant_id(tenant_selector)
     tenant_config = load_tenant_config(resolved)
     tenant_id = str(tenant_config.get("tenant_id") or resolved)
-    return tenant_id, build_knowledge_service(get_settings(), tenant_id=tenant_id)
+    runtime = build_runtime(tenant_id=resolved)
+    service = build_knowledge_service(
+        get_settings(),
+        tenant_id=tenant_id,
+        tenant_selector=resolved,
+        context_invoker=runtime.context_invoker,
+    )
+    return tenant_id, service, runtime.gateway.audit
 
 
 def _rag_ingest(
@@ -452,7 +459,7 @@ def _rag_ingest(
     configure_logging()
     from agentkit.config import get_settings
 
-    logical_tenant_id, service = _rag_service_for_tenant(tenant_id)
+    logical_tenant_id, service, _audit = _rag_service_for_tenant(tenant_id)
     settings = get_settings()
     report = service.ingest_path(
         path,
@@ -490,15 +497,18 @@ def _rag_query(
     configure_logging()
     from agentkit.config import get_settings
 
-    logical_tenant_id, service = _rag_service_for_tenant(tenant_id)
+    logical_tenant_id, service, audit = _rag_service_for_tenant(tenant_id)
     top_k = k if k is not None else int(getattr(get_settings(), "rag_top_k", 5))
+    run_id = audit.start_run(tenant_id=logical_tenant_id, user_id=user_id, text=text)
     hits = service.retrieve(
         text,
+        run_id=run_id,
         user_id=user_id,
         agent=agent,
         roles=_parse_csv(roles),
         k=top_k,
     )
+    audit.record(run_id, "run_finished", {"status": "completed", "result_count": len(hits)})
     rows = [
         {
             "chunk_id": hit.chunk.id,

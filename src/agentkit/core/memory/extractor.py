@@ -1,63 +1,57 @@
-"""Durable-fact extraction for long-term memory.
-
-After a turn, the extractor asks the LLM to distill durable facts/preferences
-about the user as a JSON array of short strings. Extraction is best-effort:
-any parsing/LLM failure yields an empty list so a bad extraction never breaks
-the chat turn.
-"""
+"""通过受治理 Context Pack 提取长期稳定事实。"""
 
 from __future__ import annotations
 
-import json
-import re
-from collections.abc import Callable
+from typing import Any
 
-ChatFn = Callable[[str, str], str]
-
-_SYSTEM_PROMPT = (
-    "You extract durable, reusable facts about the USER from a single exchange "
-    "(stable preferences, identity details, long-lived constraints or goals). "
-    "Ignore transient chit-chat and assistant content. Reply with ONLY a JSON "
-    'array of short strings, e.g. ["the user prefers email", "the user is in Tokyo"]. '
-    "If there is nothing durable, reply with []."
-)
-
-
-def _parse_array(raw: str) -> list[str]:
-    text = raw.strip()
-    fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", text, flags=re.S)
-    if fence:
-        text = fence.group(1).strip()
-    try:
-        data = json.loads(text)
-    except Exception:
-        match = re.search(r"\[.*\]", text, flags=re.S)
-        if not match:
-            return []
-        try:
-            data = json.loads(match.group(0))
-        except Exception:
-            return []
-    if not isinstance(data, list):
-        return []
-    return [item.strip() for item in data if isinstance(item, str) and item.strip()]
+from agentkit.core.context.models import ContextRenderRequest
 
 
 class MemoryExtractor:
-    def __init__(self, *, chat_fn: ChatFn | None = None) -> None:
-        self._chat_fn = chat_fn
+    """尽力提取事实；模型或解析失败不会中断业务事务。"""
 
-    def _chat(self) -> ChatFn:
-        if self._chat_fn is not None:
-            return self._chat_fn
-        from agentkit.core import llm_client
+    def __init__(
+        self,
+        *,
+        context_invoker: Any,
+        tenant_selector: str,
+        max_tokens: int = 8000,
+    ) -> None:
+        self._context_invoker = context_invoker
+        self._tenant_selector = tenant_selector
+        self._max_tokens = max(1, int(max_tokens))
 
-        return llm_client.require_chat
-
-    def extract(self, *, user_text: str, assistant_text: str) -> list[str]:
-        user = f"USER:\n{user_text.strip()}\n\nASSISTANT:\n{assistant_text.strip()}"
+    def extract(
+        self,
+        *,
+        tenant_id: str,
+        run_id: str,
+        user_text: str,
+        assistant_text: str,
+    ) -> list[str]:
         try:
-            raw = self._chat()(_SYSTEM_PROMPT, user)
+            value = self._context_invoker.invoke_json(
+                ContextRenderRequest(
+                    context_id="runtime.memory-extract",
+                    tenant_id=tenant_id,
+                    tenant_selector=self._tenant_selector,
+                    run_id=run_id,
+                    agent=None,
+                    skill=None,
+                    values={
+                        "memory.exchange": {
+                            "user": user_text.strip(),
+                            "assistant": assistant_text.strip(),
+                        }
+                    },
+                    global_token_limit=self._max_tokens,
+                )
+            ).value
         except Exception:
             return []
-        return _parse_array(raw)
+        if not isinstance(value, list):
+            return []
+        return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+
+__all__ = ["MemoryExtractor"]

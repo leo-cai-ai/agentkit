@@ -11,10 +11,8 @@ from agentkit.runtime.bootstrap import build_runtime
 
 
 def _responder(system: str, user: str) -> str:
-    if "intent decomposition module" in system.lower():
-        payload = json.loads(user)
-        message = payload["message"].lower()
-        if "hello" in message:
+    if "意图分解节点" in system:
+        if "hello" in user.lower():
             return json.dumps(
                 {
                     "intent_type": "chit_chat",

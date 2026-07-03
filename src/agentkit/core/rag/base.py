@@ -39,6 +39,8 @@ class KnowledgeChunk:
 @dataclass(frozen=True)
 class RetrievalQuery:
     tenant_id: str
+    tenant_selector: str
+    run_id: str
     text: str
     user_id: str = ""
     agent: str = ""
