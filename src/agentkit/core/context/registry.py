@@ -75,7 +75,7 @@ class ContextRegistry:
     def _load_all(self, overrides: dict[str, str]) -> dict[str, ContextDefinition]:
         items: dict[str, ContextDefinition] = {}
         context_files = sorted((self._root / "runtime").glob("**/context.yaml"))
-        context_files.extend(sorted((self._root / "skills").glob("**/context.yaml")))
+        context_files.extend(sorted((self._root / "business").glob("**/context.yaml")))
         for context_file in context_files:
             item = self._load_one(context_file)
             context_id = item.model.id
@@ -160,7 +160,7 @@ class ContextRegistry:
                 relative = context_file.parent.relative_to(self._root / "runtime")
                 expected_owner = "runtime"
             else:
-                relative = context_file.parent.relative_to(self._root / "skills")
+                relative = context_file.parent.relative_to(self._root / "business")
                 expected_owner = "skill"
         except ValueError as exc:
             raise ValueError(f"{context_file}: Context 文件不在受管目录") from exc

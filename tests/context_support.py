@@ -26,7 +26,8 @@ def write_context_pack(
         fragment.write_text(name, encoding="utf-8")
 
     parts = context_id.split(".")
-    base = "runtime" if parts[0] == "runtime" else "skills"
+    owner = "runtime" if parts[0] == "runtime" else "skill"
+    base = "runtime" if owner == "runtime" else "business"
     folder = root / base / Path(*parts[1:])
     folder.mkdir(parents=True, exist_ok=True)
     declared = inputs or [
@@ -41,7 +42,7 @@ def write_context_pack(
     definition: dict[str, Any] = {
         "id": context_id,
         "version": 1,
-        "owner": parts[0],
+        "owner": owner,
         "templates": {"system": "system.md", "user": "user.md"},
         "instructions": instructions or {"agent": False, "skill": False},
         "inputs": declared,
@@ -51,6 +52,8 @@ def write_context_pack(
         },
         "output": {"mode": output_mode},
     }
+    if owner == "skill":
+        definition["owner_skill"] = "demo.skill"
     if output_mode == "json":
         definition["output"]["schema"] = "output.schema.json"
         (folder / "output.schema.json").write_text(
