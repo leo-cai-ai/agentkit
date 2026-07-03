@@ -133,6 +133,23 @@ def test_workflow_writes_result_artifact() -> None:
     assert context.artifacts.get(result.artifacts[0]["artifact_id"]).payload["value"] == 7
 
 
+def test_workflow_surfaces_deferred_action_without_executing_it() -> None:
+    action = {"tool_name": "publish.note", "arguments": {"draft_id": "D-1"}}
+    skill = _skill(
+        "demo.workflow",
+        lambda ctx, args: {"summary": "等待发布", "deferred_action": action},
+        orchestration=OrchestrationMode.WORKFLOW,
+    )
+
+    result = WorkflowStrategy().execute(
+        context=_context(skill),
+        request=StrategyRequest("发布", {}, _resolution("demo.workflow")),
+    )
+
+    assert result.status == "deferred_action"
+    assert result.output["deferred_action"] == action
+
+
 def test_batch_shards_and_merges() -> None:
     skill = _skill(
         "demo.batch",

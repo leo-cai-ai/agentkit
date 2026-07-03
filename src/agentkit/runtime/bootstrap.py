@@ -1,4 +1,4 @@
-"""Bootstrap helpers shared by the CLI and Flask console."""
+"""统一 Agent Runtime 的启动器，供 CLI 与 Web 共用。"""
 
 from __future__ import annotations
 
@@ -12,25 +12,46 @@ from typing import Any
 from agentkit.config import get_settings
 from agentkit.core.artifacts import ArtifactRecord, build_artifact_store
 from agentkit.core.audit import PostgresAuditLog, SQLiteAuditLog
-from agentkit.core.contracts import AgentProfile
+from agentkit.core.execution.batch import BatchStrategy
+from agentkit.core.execution.direct import DirectStrategy
+from agentkit.core.execution.llm_models import StructuredPlanModel, StructuredReactModel
+from agentkit.core.execution.models import ToolProvider
+from agentkit.core.execution.parallel import ParallelStrategy
+from agentkit.core.execution.plan import PlanExecuteStrategy
+from agentkit.core.execution.react import ReactStrategy
+from agentkit.core.execution.registry import StrategyRegistry
+from agentkit.core.execution.selector import StrategySelector
+from agentkit.core.execution.workflow import WorkflowStrategy
 from agentkit.core.gateway import AgentGateway, build_checkpointer
 from agentkit.core.idempotency import build_idempotency_store
+from agentkit.core.memory.embeddings import build_embedding_provider
+from agentkit.core.memory.extractor import MemoryExtractor
+from agentkit.core.memory.retrieval import MemoryRetriever
+from agentkit.core.memory.store import build_conversation_store
+from agentkit.core.memory.vector_store import build_vector_store
 from agentkit.core.migrations import run_storage_migrations
 from agentkit.core.prompts import load_prompt_files
+from agentkit.core.rag.service import build_knowledge_service
 from agentkit.core.registry import AgentRegistry, SkillRegistry, ToolRegistry
 from agentkit.core.skill_store import SkillFileStore, attach_skill_packages
+from agentkit.core.tool_backends import (
+    McpToolBackend,
+    PythonToolBackend,
+    StdioMcpClient,
+    ToolBackendRegistry,
+)
+from agentkit.runtime.conversation_context import ConversationContextService
+from agentkit.runtime.conversation_persistence import (
+    ConversationPersistenceService,
+    ExtractingMemoryWriter,
+)
 from agentkit.runtime.declarative_catalog import (
+    DEFAULT_GLOBAL_BUDGET,
     load_catalog,
     register_catalog,
     resolve_enabled_agent_ids,
 )
 
-# Root that holds the editable config tree (tenants/ prompts/ skills/ data/).
-# When running from a source checkout this is the repo root
-# (src/agentkit/runtime/ -> repo). When the package is pip-installed (e.g. inside
-# the Docker image) __file__ lives under site-packages, so parents[3] would point
-# into the venv; AGENTKIT_ROOT lets the deployment pin the real config root
-# (the Dockerfile/compose set it to /app).
 AGENTKIT_ROOT = Path(
     os.environ.get("AGENTKIT_ROOT") or Path(__file__).resolve().parents[3]
 ).resolve()
@@ -43,45 +64,47 @@ TENANT_ENV_VAR = "AGENTKIT_TENANT_ID"
 @dataclass(frozen=True)
 class AgentKitRuntime:
     gateway: AgentGateway
-    tenant_config: dict
+    tenant_config: dict[str, Any]
     db_path: Path
     skill_store: SkillFileStore
     tenant_id: str
-    chat_service: Any = None
+    strategy_names: tuple[str, ...]
     manifest: dict[str, Any] | None = None
+    # 迁移期间保留属性形状，但不再存在第二套 Chat Runtime。
+    chat_service: None = None
 
 
 def list_tenants() -> list[str]:
-    """Return the available tenant ids (filenames of tenants/*.json), sorted."""
+    """返回可用租户 ID。"""
     if not TENANTS_DIR.is_dir():
         return []
     return sorted(path.stem for path in TENANTS_DIR.glob("*.json"))
 
 
 def resolve_tenant_id(explicit: str | None = None) -> str:
-    """Pick the tenant id: explicit arg > env var > default."""
+    """按显式参数、环境变量、默认值的顺序选择租户。"""
     if explicit:
         return explicit
     return os.environ.get(TENANT_ENV_VAR) or DEFAULT_TENANT_ID
 
 
-def load_tenant_config(tenant_id: str = DEFAULT_TENANT_ID) -> dict:
+def load_tenant_config(tenant_id: str = DEFAULT_TENANT_ID) -> dict[str, Any]:
     path = TENANTS_DIR / f"{tenant_id}.json"
     if not path.is_file():
         available = ", ".join(list_tenants()) or "(none)"
         raise FileNotFoundError(
-            f"Unknown tenant '{tenant_id}'. Available tenants: {available}. "
-            f"Create one with `agentkit new-tenant {tenant_id}`."
+            f"未知租户 {tenant_id!r}，可用租户: {available}。"
+            f"可使用 `agentkit new-tenant {tenant_id}` 创建。"
         )
     return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _runtime_manifest(*, tenant_id: str, tenant_config: dict[str, Any]) -> dict[str, Any]:
@@ -89,10 +112,10 @@ def _runtime_manifest(*, tenant_id: str, tenant_config: dict[str, Any]) -> dict[
     prompts: dict[str, Any] = {}
     prompt_files = tenant_config.get("prompt_files", {})
     if isinstance(prompt_files, dict):
-        for name, rel_path in sorted(prompt_files.items()):
-            prompt_path = (AGENTKIT_ROOT / str(rel_path)).resolve()
+        for name, relative in sorted(prompt_files.items()):
+            prompt_path = (AGENTKIT_ROOT / str(relative)).resolve()
             prompts[str(name)] = {
-                "path": str(Path(str(rel_path)).as_posix()),
+                "path": str(Path(str(relative)).as_posix()),
                 "sha256": _sha256_file(prompt_path) if prompt_path.is_file() else "",
             }
     return {
@@ -100,10 +123,9 @@ def _runtime_manifest(*, tenant_id: str, tenant_config: dict[str, Any]) -> dict[
         "tenant_id": tenant_config.get("tenant_id", tenant_id),
         "tenant_selector": tenant_id,
         "tenant_config": {
-            "path": str((TENANTS_DIR / f"{tenant_id}.json").relative_to(AGENTKIT_ROOT).as_posix()),
+            "path": str(tenant_path.relative_to(AGENTKIT_ROOT).as_posix()),
             "sha256": _sha256_file(tenant_path) if tenant_path.is_file() else "",
         },
-        "enabled_domains": list(tenant_config.get("enabled_domains", [])),
         "enabled_agents": list(tenant_config.get("enabled_agents", [])),
         "prompt_files": prompts,
     }
@@ -114,40 +136,36 @@ def build_runtime(
     tenant_id: str | None = None,
     db_path: Path | None = None,
 ) -> AgentKitRuntime:
+    """从声明式目录编译唯一 Runtime，不注册隐式平台 Agent。"""
     resolved_tenant_id = resolve_tenant_id(tenant_id)
     if db_path is None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         db_path = DATA_DIR / f"{resolved_tenant_id}.sqlite"
     tenant_config = load_tenant_config(resolved_tenant_id)
-    manifest = _runtime_manifest(tenant_id=resolved_tenant_id, tenant_config=tenant_config)
+    tenant_key = str(tenant_config.get("tenant_id") or resolved_tenant_id)
+    manifest = _runtime_manifest(
+        tenant_id=resolved_tenant_id,
+        tenant_config=tenant_config,
+    )
     tenant_config["prompts"] = load_prompt_files(
         base_dir=AGENTKIT_ROOT,
         prompt_files=tenant_config.get("prompt_files", {}),
     )
     tenant_config["runtime_manifest"] = manifest
 
-    agents = AgentRegistry()
-    skills = SkillRegistry()
-    tools = ToolRegistry()
     settings = get_settings()
     storage_backend = str(getattr(settings, "storage_backend", "sqlite")).lower()
     run_storage_migrations(settings, sqlite_path=db_path)
-    audit: SQLiteAuditLog
-    if storage_backend in ("postgres", "pg"):
-        audit = PostgresAuditLog(
-            settings,
-            tenant_id=str(tenant_config.get("tenant_id") or resolved_tenant_id),
-        )
-    elif storage_backend in ("", "sqlite"):
+    if storage_backend in {"postgres", "pg"}:
+        audit = PostgresAuditLog(settings, tenant_id=tenant_key)
+    elif storage_backend in {"", "sqlite"}:
         audit = SQLiteAuditLog(db_path)
     else:
-        raise ValueError(
-            f"Unsupported storage_backend: {storage_backend!r}. "
-            "Supported backends: 'sqlite', 'postgres'."
-        )
+        raise ValueError(f"不支持的 storage_backend: {storage_backend!r}")
 
-    # 业务 Agent、Skill 与工具全部从声明式目录加载。没有 enabled_agents 时，
-    # 兼容按 enabled_domains 选择，保证已有租户可平滑迁移。
+    agents = AgentRegistry()
+    skills = SkillRegistry()
+    tools = ToolRegistry()
     catalog = load_catalog(AGENTKIT_ROOT)
     enabled_agent_ids = resolve_enabled_agent_ids(catalog, tenant_config)
     register_catalog(
@@ -159,10 +177,6 @@ def build_runtime(
         tenant_config=tenant_config,
     )
 
-    # Platform agents are business-agnostic and always available. The router is
-    # allowed to dispatch to whatever skills the enabled packs registered.
-    _register_platform_agents(agents=agents, skills=skills, tenant_config=tenant_config)
-
     skill_store = SkillFileStore(AGENTKIT_ROOT / "skills", display_root=AGENTKIT_ROOT)
     attach_skill_packages(skills=skills, store=skill_store)
     tenant_config["skill_catalog"] = [
@@ -170,13 +184,14 @@ def build_runtime(
             "name": skill.name,
             "domain": skill.domain,
             "description": skill.description,
-            "execution_mode": skill.execution_mode,
+            "reasoning": skill.execution.reasoning.value,
+            "orchestration": skill.execution.orchestration.value,
+            "tool_policy": skill.execution.tool_policy.value,
             "permissions": skill.permissions,
             "tools": skill.tools,
             "batch_key": skill.batch_key,
             "input_schema": skill.input_schema,
             "output_schema": skill.output_schema,
-            "requires_approval": skill.name in tenant_config.get("approval_required_skills", []),
         }
         for skill in skills.all()
     ]
@@ -186,9 +201,31 @@ def build_runtime(
         sqlite_path=db_path.with_name(f"{resolved_tenant_id}_checkpoints.sqlite"),
         settings=settings,
     )
+    strategies = _build_strategies(checkpointer)
+    conversation_store = build_conversation_store(settings, db_path)
+    embeddings = build_embedding_provider(settings)
+    vector_store = build_vector_store(settings, conversation_store)
+    memory = MemoryRetriever(vector_store=vector_store, embeddings=embeddings)
+    knowledge = (
+        build_knowledge_service(settings, tenant_id=tenant_key, embeddings=embeddings)
+        if bool(getattr(settings, "rag_enabled", False))
+        else None
+    )
+    conversation_context = ConversationContextService(
+        store=conversation_store,
+        memory_reader=memory,
+        knowledge_service=knowledge,
+    )
+    conversation_persistence = ConversationPersistenceService(
+        store=conversation_store,
+        memory_writer=ExtractingMemoryWriter(
+            extractor=MemoryExtractor(),
+            retriever=memory,
+        ),
+    )
     idempotency_store = build_idempotency_store(
         backend=storage_backend,
-        tenant_id=tenant_config["tenant_id"],
+        tenant_id=tenant_key,
         sqlite_path=db_path,
         settings=settings,
     )
@@ -196,7 +233,7 @@ def build_runtime(
     def artifact_store_factory(run_id: str):
         return build_artifact_store(
             backend=storage_backend,
-            tenant_id=tenant_config["tenant_id"],
+            tenant_id=tenant_key,
             run_id=run_id,
             sqlite_path=db_path,
             settings=settings,
@@ -210,36 +247,84 @@ def build_runtime(
         )
 
     gateway = AgentGateway(
-        tenant_id=tenant_config["tenant_id"],
+        tenant_id=tenant_key,
         tenant_config=tenant_config,
         agents=agents,
         skills=skills,
         tools=tools,
         audit=audit,
         checkpointer=checkpointer,
+        selector=StrategySelector(skills=skills, global_budget=DEFAULT_GLOBAL_BUDGET),
+        strategies=strategies,
+        conversation_context=conversation_context,
+        conversation_persistence=conversation_persistence,
         artifact_store_factory=artifact_store_factory,
+        tool_backends=_build_tool_backends(tools=tools, tenant_config=tenant_config),
         idempotency_store=idempotency_store,
     )
-    chat_service = _build_chat_service(
-        tenant_id=tenant_config["tenant_id"],
-        tenant_config=tenant_config,
-        db_path=db_path,
-        agents=agents,
-        audit=audit,
-    )
+    strategy_names = ("direct", "workflow", "batch", "parallel", "react", "plan_execute")
     return AgentKitRuntime(
         gateway=gateway,
         tenant_config=tenant_config,
         db_path=db_path,
         skill_store=skill_store,
         tenant_id=resolved_tenant_id,
-        chat_service=chat_service,
+        strategy_names=strategy_names,
         manifest=manifest,
     )
 
 
+def _build_strategies(checkpointer: Any) -> StrategyRegistry:
+    direct = DirectStrategy()
+    workflow = WorkflowStrategy()
+    batch = BatchStrategy()
+    parallel = ParallelStrategy()
+    react = ReactStrategy(model=StructuredReactModel(), checkpointer=checkpointer)
+    base = [direct, workflow, batch, parallel, react]
+    step_strategies = StrategyRegistry(base)
+    plan = PlanExecuteStrategy(
+        model=StructuredPlanModel(),
+        strategies=step_strategies,
+        checkpointer=checkpointer,
+    )
+    return StrategyRegistry([*base, plan])
+
+
+def _build_tool_backends(
+    *,
+    tools: ToolRegistry,
+    tenant_config: dict[str, Any],
+) -> ToolBackendRegistry:
+    backends: dict[ToolProvider, Any] = {ToolProvider.PYTHON: PythonToolBackend()}
+    mcp_tool_servers = {
+        tool.mcp_server for tool in tools.all() if tool.provider is ToolProvider.MCP
+    }
+    if mcp_tool_servers:
+        configured = tenant_config.get("mcp_servers", {})
+        if not isinstance(configured, dict):
+            raise ValueError("mcp_servers 必须是对象")
+        clients: dict[str, StdioMcpClient] = {}
+        for server_name in sorted(str(name) for name in mcp_tool_servers if name):
+            raw = configured.get(server_name)
+            if not isinstance(raw, dict) or not raw.get("command"):
+                raise ValueError(f"MCP Server 未配置: {server_name}")
+            transport = str(raw.get("transport") or "stdio")
+            if transport != "stdio":
+                raise ValueError(f"当前仅支持 stdio MCP: {server_name}")
+            clients[server_name] = StdioMcpClient(
+                command=str(raw["command"]),
+                args=[str(item) for item in raw.get("args", [])],
+            )
+        backends[ToolProvider.MCP] = McpToolBackend(clients)
+    return ToolBackendRegistry(backends)
+
+
 def _record_persisted_artifact(
-    *, audit: Any, run_id: str, backend: str, record: ArtifactRecord
+    *,
+    audit: Any,
+    run_id: str,
+    backend: str,
+    record: ArtifactRecord,
 ) -> None:
     audit.record(run_id, "artifact_written", record.ref())
     audit.record(
@@ -255,52 +340,11 @@ def _record_persisted_artifact(
     )
 
 
-def _build_chat_service(
-    *,
-    tenant_id: str,
-    tenant_config: dict,
-    db_path: Path,
-    agents: AgentRegistry,
-    audit: Any,
-) -> Any:
-    """Build the conversational-agent service (memory stack). Import-safe."""
-    from agentkit.config import get_settings
-    from agentkit.runtime.chat_service import ChatService
-
-    return ChatService(
-        tenant_id=tenant_id,
-        tenant_config=tenant_config,
-        db_path=db_path,
-        agents=agents,
-        audit=audit,
-        settings=get_settings(),
-    )
-
-
-def _register_platform_agents(
-    *,
-    agents: AgentRegistry,
-    skills: SkillRegistry,
-    tenant_config: dict,
-) -> None:
-    prompt_files = tenant_config.get("prompt_files", {})
-    agents.register(
-        AgentProfile(
-            name="router",
-            domain="platform",
-            description="Business-agnostic LangGraph router and dispatcher.",
-            allowed_skills=[skill.name for skill in skills.all()],
-            allowed_tools=[],
-            prompt_file=prompt_files.get("agents.router", ""),
-        )
-    )
-    agents.register(
-        AgentProfile(
-            name="general",
-            domain="platform",
-            description="Runtime conversational fallback for platform questions.",
-            allowed_skills=[],
-            allowed_tools=[],
-            prompt_file=prompt_files.get("agents.general", ""),
-        )
-    )
+__all__ = [
+    "AGENTKIT_ROOT",
+    "AgentKitRuntime",
+    "build_runtime",
+    "list_tenants",
+    "load_tenant_config",
+    "resolve_tenant_id",
+]

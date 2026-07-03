@@ -31,7 +31,7 @@ class WorkflowStrategy:
             metadata={"skill": skill.name, "run_id": context.run_id},
         ).ref()
         return StrategyResult(
-            status="completed",
+            status="deferred_action" if "deferred_action" in output else "completed",
             output=output,
             artifacts=(artifact,),
         )

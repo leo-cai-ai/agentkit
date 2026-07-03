@@ -1,5 +1,8 @@
 from agentkit.core.memory.store import ConversationStore
-from agentkit.runtime.conversation_persistence import ConversationPersistenceService
+from agentkit.runtime.conversation_persistence import (
+    ConversationPersistenceService,
+    ExtractingMemoryWriter,
+)
 
 
 class FakeMemoryWriter:
@@ -59,3 +62,65 @@ def test_persistence_rejects_cross_user_write(tmp_path) -> None:
         assert "不属于当前" in str(exc)
     else:
         raise AssertionError("必须拒绝跨用户写入")
+
+
+class FakeExtractor:
+    def extract(self, *, user_text: str, assistant_text: str) -> list[str]:
+        assert user_text == "我喜欢邮件联系"
+        assert assistant_text == "已记住"
+        return ["用户偏好邮件联系"]
+
+
+class FakeRetriever:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def remember(self, **kwargs) -> list[str]:
+        self.calls.append(kwargs)
+        return ["m-1"]
+
+
+def test_extracting_memory_writer_persists_durable_facts_in_agent_scope() -> None:
+    retriever = FakeRetriever()
+    writer = ExtractingMemoryWriter(extractor=FakeExtractor(), retriever=retriever)
+
+    writer.record(
+        tenant_id="t1",
+        agent_id="customer_service",
+        user_id="u1",
+        conversation_id="c1",
+        user_message="我喜欢邮件联系",
+        assistant_message="已记住",
+        run_id="r1",
+    )
+
+    assert retriever.calls == [
+        {
+            "tenant_id": "t1",
+            "agent": "customer_service",
+            "user_id": "u1",
+            "texts": ["用户偏好邮件联系"],
+            "kind": "fact",
+            "source_conversation_id": "c1",
+        }
+    ]
+
+
+def test_extracting_memory_writer_is_best_effort() -> None:
+    class BrokenRetriever:
+        def remember(self, **kwargs) -> list[str]:
+            raise RuntimeError("向量库暂时不可用")
+
+    writer = ExtractingMemoryWriter(
+        extractor=FakeExtractor(),
+        retriever=BrokenRetriever(),
+    )
+    writer.record(
+        tenant_id="t1",
+        agent_id="customer_service",
+        user_id="u1",
+        conversation_id="c1",
+        user_message="我喜欢邮件联系",
+        assistant_message="已记住",
+        run_id="r1",
+    )

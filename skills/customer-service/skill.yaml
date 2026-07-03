@@ -1,0 +1,82 @@
+package_id: customer-service
+tools:
+  - id: commerce.order.get
+    provider: python
+    entrypoint: scripts.tools:get_order
+    description: 查询当前用户的订单摘要。
+    risk: read_only
+    permissions: [order.read]
+    idempotent: true
+    timeout_seconds: 10
+  - id: logistics.track
+    provider: python
+    entrypoint: scripts.tools:track_logistics
+    description: 根据订单号查询物流轨迹。
+    risk: read_only
+    permissions: [logistics.read]
+    idempotent: true
+    timeout_seconds: 10
+  - id: refund.submit
+    provider: python
+    entrypoint: scripts.tools:submit_refund
+    description: 提交一次具有幂等键的退款申请。
+    risk: side_effect
+    permissions: [refund.write]
+    idempotent: true
+    timeout_seconds: 15
+capabilities:
+  - id: customer.answer
+    domain: support.customer_service
+    description: 使用客服 FAQ、会话和长期 Memory 回答一般问题。
+    entrypoint: scripts.handlers:answer_question
+    execution: {reasoning: direct, orchestration: single, tool_policy: none}
+    autonomy: {max_model_calls: 2, max_iterations: 2, max_tokens: 4000, timeout_seconds: 30}
+    permissions: []
+    tools: []
+    input_schema: {type: object, properties: {}}
+    output_schema: {type: object, required: [answer], properties: {answer: {type: string}}}
+    keywords: [客服, 帮助, 规则, 期限, 怎么办]
+  - id: order.lookup
+    domain: support.customer_service
+    description: 查询一个订单的状态和物流编号。
+    entrypoint: scripts.handlers:lookup_order
+    execution: {reasoning: direct, orchestration: single, tool_policy: read_only}
+    autonomy: {max_model_calls: 2, max_tool_calls: 2, max_iterations: 2, max_tokens: 4000, timeout_seconds: 30}
+    permissions: [order.read]
+    tools: [commerce.order.get]
+    input_schema:
+      type: object
+      required: [order_id]
+      properties: {order_id: {type: string, minLength: 1}}
+    output_schema: {type: object, properties: {order_id: {type: string}, status: {type: string}}}
+    keywords: [订单, 查询, 状态]
+  - id: logistics.diagnose
+    domain: support.customer_service
+    description: 基于订单和物流 Observation 诊断配送问题。
+    entrypoint: scripts.handlers:diagnose_logistics
+    execution: {reasoning: react, orchestration: single, tool_policy: read_only, allow_dynamic_selection: true}
+    autonomy: {max_model_calls: 8, max_tool_calls: 8, max_iterations: 5, max_tokens: 10000, timeout_seconds: 120}
+    permissions: [order.read, logistics.read]
+    tools: [commerce.order.get, logistics.track]
+    input_schema:
+      type: object
+      required: [order_id]
+      properties: {order_id: {type: string, minLength: 1}}
+    output_schema: {type: object, properties: {summary: {type: string}, evidence: {type: array}}}
+    keywords: [物流, 快递, 没到, 延迟, 配送]
+  - id: refund.apply
+    domain: support.customer_service
+    description: 审批后提交退款申请。
+    entrypoint: scripts.handlers:apply_refund
+    execution: {reasoning: direct, orchestration: workflow, tool_policy: side_effect}
+    autonomy: {max_model_calls: 4, max_tool_calls: 3, max_iterations: 3, max_tokens: 6000, timeout_seconds: 120}
+    permissions: [refund.write]
+    tools: [refund.submit]
+    input_schema:
+      type: object
+      required: [order_id]
+      properties:
+        order_id: {type: string, minLength: 1}
+        reason: {type: string, default: 用户申请退款}
+    output_schema: {type: object, properties: {refund_id: {type: string}, status: {type: string}}}
+    keywords: [退款, 退货, 取消订单]

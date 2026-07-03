@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from agentkit.core.llm_client import strip_reasoning_tags
+from agentkit.core.memory.extractor import MemoryExtractor
+from agentkit.core.memory.retrieval import MemoryRetriever
 from agentkit.core.memory.tokenizer import HeuristicTokenEstimator, TokenEstimator
 
 
@@ -43,6 +45,52 @@ class MemoryWriter(Protocol):
         assistant_message: str,
         run_id: str | None,
     ) -> None: ...
+
+
+class ExtractingMemoryWriter:
+    """从已完成的对话中提取稳定事实，并写入 Agent 隔离的长期 Memory。
+
+    Memory 是辅助能力，提取模型或向量库短暂失败不应让业务请求失败。
+    """
+
+    def __init__(
+        self,
+        *,
+        extractor: MemoryExtractor,
+        retriever: MemoryRetriever,
+    ) -> None:
+        self._extractor = extractor
+        self._retriever = retriever
+
+    def record(
+        self,
+        *,
+        tenant_id: str,
+        agent_id: str,
+        user_id: str,
+        conversation_id: str,
+        user_message: str,
+        assistant_message: str,
+        run_id: str | None,
+    ) -> None:
+        del run_id
+        try:
+            facts = self._extractor.extract(
+                user_text=user_message,
+                assistant_text=assistant_message,
+            )
+            if facts:
+                self._retriever.remember(
+                    tenant_id=tenant_id,
+                    agent=agent_id,
+                    user_id=user_id,
+                    texts=facts,
+                    kind="fact",
+                    source_conversation_id=conversation_id,
+                )
+        except Exception:
+            # Memory 写回不在业务事务内，失败时下一轮仍可重新提取。
+            return
 
 
 class ConversationPersistenceService:
@@ -123,4 +171,4 @@ class ConversationPersistenceService:
             )
 
 
-__all__ = ["ConversationPersistenceService"]
+__all__ = ["ConversationPersistenceService", "ExtractingMemoryWriter"]

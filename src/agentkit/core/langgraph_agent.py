@@ -239,7 +239,19 @@ class UnifiedAgentGraph:
             roles=request.roles,
         )
         self._audit.record(state["run_id"], "context_built", {"conversation_id": conversation_id})
-        return {"conversation": context}
+        enriched_request = replace(
+            request,
+            context={
+                **request.context,
+                "agent_context": {
+                    "summary": context.summary,
+                    "recent_messages": list(context.recent_messages),
+                    "memories": list(context.memories),
+                    "knowledge": list(context.knowledge),
+                },
+            },
+        )
+        return {"conversation": context, "request": enriched_request}
 
     def _understand_request(self, state: UnifiedAgentState) -> dict[str, Any]:
         if "result" in state:
