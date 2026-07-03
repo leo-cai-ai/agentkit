@@ -34,6 +34,17 @@ def _login(client) -> None:
     assert resp.status_code == 302
 
 
+def test_governance_page_shows_context_hash_not_prompt_content(client) -> None:
+    _login(client)
+
+    response = client.get("/governance")
+
+    assert response.status_code == 200
+    assert b"runtime.intent" in response.data
+    assert b"sha256:" in response.data
+    assert b"UNTRUSTED_DATA_BEGIN" not in response.data
+
+
 def test_unauthenticated_redirects_to_login(client):
     resp = client.get("/")
     assert resp.status_code == 302

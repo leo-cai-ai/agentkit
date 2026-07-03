@@ -260,6 +260,16 @@ def governance():
         }
         for tool in gateway.tools.all()
     ]
+    contexts = [
+        {
+            "ID": item["id"],
+            "Version": item["version"],
+            "Hash": item["hash"],
+            "Override Hash": item["override_hash"] or "-",
+            "Max Input Tokens": item["max_input_tokens"],
+        }
+        for item in runtime.contexts.manifest()
+    ]
     audit = gateway.audit
     return render_template(
         "governance.html",
@@ -268,6 +278,7 @@ def governance():
         agents=agents,
         skills=skills,
         tools=tools,
+        contexts=contexts,
         event_counts=audit.event_counts_by_type() if isinstance(audit, SQLiteAuditLog) else [],
         cost_summary=audit.cost_summary() if isinstance(audit, SQLiteAuditLog) else {},
     )

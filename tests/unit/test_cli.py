@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import agentkit.cli as cli
@@ -29,6 +30,17 @@ def test_cli_exposes_only_declarative_commands() -> None:
     assert "new-skill" in help_text
     assert "validate-packs" not in help_text
     assert "new-pack" not in help_text
+
+
+def test_cli_exposes_validate_contexts() -> None:
+    assert "validate-contexts" in cli.build_parser().format_help()
+
+
+def test_validate_contexts_json(capsys) -> None:
+    assert cli._validate_contexts(tenant_id="company_alpha", as_json=True) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["count"] == 11
+    assert payload["manifest_hash"].startswith("sha256:")
 
 
 def test_runtime_doctor_reports_unknown_tenant() -> None:

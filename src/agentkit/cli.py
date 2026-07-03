@@ -292,6 +292,24 @@ def _runtime_doctor_checks(tenant_id: str | None = None) -> list[dict[str, Any]]
     add("enabled agents", bool(selected), ", ".join(sorted(selected)))
 
     try:
+        from agentkit.core.context import ContextRegistry
+
+        contexts = ContextRegistry(
+            root=AGENTKIT_ROOT / "contexts",
+            tenant_selector=resolved_tenant,
+            overrides=dict(tenant_config.get("context_overrides") or {}),
+            global_token_limit=get_settings().llm_context_window_tokens,
+        )
+    except Exception as exc:  # noqa: BLE001 - doctor 需要返回结构化失败项
+        add("context registry", False, str(exc))
+        return checks
+    add(
+        "context registry",
+        True,
+        f"{len(contexts.manifest())} packs, {contexts.manifest_hash}",
+    )
+
+    try:
         runtime = build_runtime(tenant_id=resolved_tenant)
     except Exception as exc:  # noqa: BLE001
         add("runtime build", False, str(exc))
@@ -324,6 +342,42 @@ def _runtime_doctor_checks(tenant_id: str | None = None) -> list[dict[str, Any]]
     add("registered skills", True, ", ".join(sorted(registered_skills)) or "(none)")
     add("registered tools", True, ", ".join(sorted(registered_tools)) or "(none)")
     return checks
+
+
+def _validate_contexts(*, tenant_id: str | None, as_json: bool) -> int:
+    """严格加载 Context Registry，不调用模型。"""
+    try:
+        from agentkit.config import get_settings
+        from agentkit.core.context import ContextRegistry
+        from agentkit.runtime.bootstrap import AGENTKIT_ROOT, load_tenant_config, resolve_tenant_id
+
+        resolved = resolve_tenant_id(tenant_id)
+        tenant_config = load_tenant_config(resolved)
+        registry = ContextRegistry(
+            root=AGENTKIT_ROOT / "contexts",
+            tenant_selector=resolved,
+            overrides=dict(tenant_config.get("context_overrides") or {}),
+            global_token_limit=get_settings().llm_context_window_tokens,
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI 仅输出安全错误摘要
+        print(f"[FAIL] Context Registry 无效: {exc}", file=sys.stderr)
+        return 1
+    packs = registry.manifest()
+    result = {
+        "count": len(packs),
+        "manifest_hash": registry.manifest_hash,
+        "packs": packs,
+    }
+    if as_json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print(f"[ok] Context Registry: {result['count']} packs, {result['manifest_hash']}")
+        for item in packs:
+            print(
+                f"  {item['id']} v{item['version']} {item['hash']} "
+                f"budget={item['max_input_tokens']}"
+            )
+    return 0
 
 
 def _doctor(*, tenant_id: str | None, skip_db: bool, as_json: bool) -> int:
@@ -631,6 +685,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     validate_catalog.add_argument("--json", action="store_true", help="Emit JSON report.")
 
+    validate_contexts = sub.add_parser(
+        "validate-contexts",
+        help="Validate Context Packs, tenant overrides, hashes and token budgets.",
+    )
+    validate_contexts.add_argument("--json", action="store_true", help="Emit JSON report.")
+
     ev = sub.add_parser("eval", help="Run a golden dataset and enforce a regression gate.")
     ev.add_argument("dataset", help="Path to a .jsonl or .json golden dataset.")
     ev.add_argument(
@@ -721,6 +781,8 @@ def main() -> None:
         _new_skill(args.package_id)
     elif args.command == "validate-catalog":
         raise SystemExit(_validate_catalog(as_json=args.json))
+    elif args.command == "validate-contexts":
+        raise SystemExit(_validate_contexts(tenant_id=args.tenant, as_json=args.json))
     elif args.command == "eval":
         code = _run_eval(
             args.dataset,
