@@ -3,9 +3,37 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
+from agentkit.core.context.models import ContextDefinitionModel
 from agentkit.core.context.registry import ContextRegistry
 from tests.context_support import write_context_pack
+
+
+def _minimal_definition(*, owner: str, owner_skill: str | None = None) -> dict:
+    value = {
+        "id": "runtime.demo" if owner == "runtime" else "skill.demo",
+        "version": 1,
+        "owner": owner,
+        "templates": {"system": "system.md", "user": "user.md"},
+        "limits": {"max_input_tokens": 1000, "response_reserve_tokens": 100},
+        "output": {"mode": "text"},
+    }
+    if owner_skill is not None:
+        value["owner_skill"] = owner_skill
+    return value
+
+
+def test_skill_context_requires_owner_skill() -> None:
+    with pytest.raises(ValidationError, match="owner_skill"):
+        ContextDefinitionModel.model_validate(_minimal_definition(owner="skill"))
+
+
+def test_runtime_context_rejects_owner_skill() -> None:
+    with pytest.raises(ValidationError, match="owner_skill"):
+        ContextDefinitionModel.model_validate(
+            _minimal_definition(owner="runtime", owner_skill="candidate.rank")
+        )
 
 
 def test_registry_loads_pack_and_builds_stable_manifest(tmp_path: Path) -> None:

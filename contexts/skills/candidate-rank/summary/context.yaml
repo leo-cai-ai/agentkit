@@ -1,6 +1,7 @@
 id: skill.candidate-rank.summary
 version: 1
 owner: skill
+owner_skill: candidate.rank
 templates:
   system: system.md
   user: user.md

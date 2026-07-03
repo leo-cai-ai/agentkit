@@ -1,6 +1,7 @@
 id: skill.xhs-growth-campaign.article-generate
 version: 1
 owner: skill
+owner_skill: xhs.growth.campaign
 templates:
   system: system.md
   user: user.md

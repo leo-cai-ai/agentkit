@@ -65,6 +65,10 @@ class ContextDefinitionModel(StrictModel):
     id: str = Field(pattern=r"^(runtime|skill)\.[a-z0-9][a-z0-9.-]*$")
     version: int = Field(gt=0)
     owner: Literal["runtime", "skill"]
+    owner_skill: str | None = Field(
+        default=None,
+        pattern=r"^[a-z][a-z0-9_.-]*$",
+    )
     templates: ContextTemplatesModel
     fragments: list[str] = Field(default_factory=list)
     instructions: ContextInstructionsModel = Field(default_factory=ContextInstructionsModel)
@@ -73,6 +77,14 @@ class ContextDefinitionModel(StrictModel):
     limits: ContextLimitsModel
     output: ContextOutputModel = Field(default_factory=ContextOutputModel)
     audit: ContextAuditModel = Field(default_factory=ContextAuditModel)
+
+    @model_validator(mode="after")
+    def validate_owner_skill(self) -> ContextDefinitionModel:
+        if self.owner == "skill" and not self.owner_skill:
+            raise ValueError("Skill Context 必须声明 owner_skill")
+        if self.owner == "runtime" and self.owner_skill is not None:
+            raise ValueError("Runtime Context 不能声明 owner_skill")
+        return self
 
 
 @dataclass(frozen=True)
