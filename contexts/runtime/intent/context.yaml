@@ -1,0 +1,39 @@
+id: runtime.intent
+version: 1
+owner: runtime
+templates:
+  system: system.md
+  user: user.md
+fragments: [json-only]
+instructions:
+  agent: true
+  skill: false
+inputs:
+  - name: message
+    source: request.message
+    required: true
+    priority: 100
+    max_chars: 4000
+  - name: summary
+    source: conversation.summary
+    required: false
+    priority: 60
+    max_chars: 4000
+    truncate: newest
+  - name: baseline
+    source: request.intent_baseline
+    required: true
+    priority: 100
+    serializer: canonical_json
+    max_chars: 4000
+exclude: [secrets, tool_credentials, rag.raw_documents, other_agent_context]
+limits:
+  max_input_tokens: 6000
+  response_reserve_tokens: 1200
+output:
+  mode: json
+  schema: output.schema.json
+audit:
+  record_input_names: true
+  record_content_hashes: true
+  record_rendered_content: false

@@ -1,0 +1,28 @@
+id: runtime.memory-extract
+version: 1
+owner: runtime
+templates:
+  system: system.md
+  user: user.md
+fragments: [json-only]
+instructions:
+  agent: false
+  skill: false
+inputs:
+  - name: exchange
+    source: memory.exchange
+    required: true
+    priority: 100
+    serializer: canonical_json
+    max_chars: 8000
+exclude: [secrets, tool_credentials, other_agent_context]
+limits:
+  max_input_tokens: 4000
+  response_reserve_tokens: 800
+output:
+  mode: json
+  schema: output.schema.json
+audit:
+  record_input_names: true
+  record_content_hashes: true
+  record_rendered_content: false

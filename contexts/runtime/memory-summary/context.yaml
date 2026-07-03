@@ -1,0 +1,26 @@
+id: runtime.memory-summary
+version: 1
+owner: runtime
+templates:
+  system: system.md
+  user: user.md
+instructions:
+  agent: false
+  skill: false
+inputs:
+  - name: summary_window
+    source: memory.summary_window
+    required: true
+    priority: 100
+    serializer: canonical_json
+    max_chars: 12000
+exclude: [secrets, tool_credentials, other_agent_context]
+limits:
+  max_input_tokens: 6000
+  response_reserve_tokens: 1200
+output:
+  mode: text
+audit:
+  record_input_names: true
+  record_content_hashes: true
+  record_rendered_content: false

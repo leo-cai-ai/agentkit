@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["type", "tool_name", "arguments", "decision_summary", "answer", "evidence_refs"],
+  "properties": {
+    "type": {"enum": ["tool_call", "final"]},
+    "tool_name": {"type": ["string", "null"]},
+    "arguments": {"type": "object"},
+    "decision_summary": {"type": "string"},
+    "answer": {"type": "string"},
+    "evidence_refs": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,35 @@
+id: runtime.rag-rerank
+version: 1
+owner: runtime
+templates:
+  system: system.md
+  user: user.md
+fragments: [json-only, evidence-policy]
+instructions:
+  agent: false
+  skill: false
+inputs:
+  - name: query
+    source: rag.query
+    required: true
+    priority: 100
+    max_chars: 3000
+  - name: candidates
+    source: rag.candidates
+    required: true
+    priority: 100
+    serializer: canonical_json
+    max_items: 12
+    max_chars: 14000
+    truncate: highest_score
+exclude: [secrets, tool_credentials, other_tenant_documents]
+limits:
+  max_input_tokens: 10000
+  response_reserve_tokens: 1200
+output:
+  mode: json
+  schema: output.schema.json
+audit:
+  record_input_names: true
+  record_content_hashes: true
+  record_rendered_content: false

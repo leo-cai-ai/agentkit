@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
 from pydantic import ValidationError
 
 from .models import ContextDefinition, ContextDefinitionModel
@@ -127,6 +129,12 @@ class ContextRegistry:
                 label="Output Schema",
             )
             output_schema = _load_json_mapping(schema_path)
+            try:
+                Draft202012Validator.check_schema(output_schema)
+            except SchemaError as exc:
+                raise ValueError(
+                    f"{schema_path}: JSON Schema 定义无效: {exc.message}"
+                ) from exc
 
         content_hash = _definition_hash(
             model=model,

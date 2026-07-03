@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["intent_type", "goal", "target", "entities", "confidence"],
+  "properties": {
+    "language": {"type": "string"},
+    "intent_type": {
+      "enum": ["business_task", "platform_question", "approval_decision", "chit_chat", "unknown"]
+    },
+    "goal": {"type": "string"},
+    "target": {
+      "type": "object",
+      "required": ["kind", "name"],
+      "properties": {
+        "kind": {"enum": ["business_skill", "platform_handler", "none"]},
+        "name": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "entities": {"type": "object"},
+    "confidence": {"enum": ["high", "medium", "low"]},
+    "clarification": {"type": "string"},
+    "signals": {"type": "array", "items": {"type": "string"}, "maxItems": 16}
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,61 @@
+id: runtime.plan-generate
+version: 1
+owner: runtime
+templates:
+  system: system.md
+  user: user.md
+fragments: [json-only, evidence-policy]
+instructions:
+  agent: true
+  skill: false
+inputs:
+  - name: goal
+    source: request.goal
+    required: true
+    priority: 100
+    max_chars: 2000
+  - name: arguments
+    source: request.arguments
+    required: true
+    priority: 90
+    serializer: canonical_json
+    max_chars: 6000
+  - name: allowed_skills
+    source: execution.allowed_skills
+    required: true
+    priority: 100
+    serializer: canonical_json
+    max_items: 20
+    max_chars: 10000
+    truncate: head
+  - name: completed_artifacts
+    source: execution.completed_artifacts
+    required: false
+    priority: 80
+    serializer: canonical_json
+    max_items: 12
+    max_chars: 6000
+    truncate: newest
+  - name: previous_failure
+    source: execution.previous_failure
+    required: false
+    priority: 90
+    serializer: canonical_json
+    max_chars: 3000
+  - name: remaining_budget
+    source: execution.remaining_budget
+    required: true
+    priority: 100
+    serializer: canonical_json
+    max_chars: 2000
+exclude: [secrets, tool_credentials, tool.implementation, conversation.raw_messages]
+limits:
+  max_input_tokens: 12000
+  response_reserve_tokens: 2500
+output:
+  mode: json
+  schema: output.schema.json
+audit:
+  record_input_names: true
+  record_content_hashes: true
+  record_rendered_content: false

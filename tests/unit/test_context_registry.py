@@ -68,6 +68,17 @@ def test_registry_rejects_pack_above_global_token_limit(tmp_path: Path) -> None:
         )
 
 
+def test_registry_rejects_invalid_output_schema_at_startup(tmp_path: Path) -> None:
+    folder = write_context_pack(tmp_path)
+    (folder / "output.schema.json").write_text(
+        '{"type":"not-a-json-schema-type"}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="JSON Schema 定义无效"):
+        ContextRegistry(root=tmp_path, tenant_selector="company_alpha")
+
+
 def test_registry_rejects_template_path_escape(tmp_path: Path) -> None:
     folder = write_context_pack(tmp_path)
     context_file = folder / "context.yaml"

@@ -1,0 +1,33 @@
+id: runtime.rag-query-rewrite
+version: 1
+owner: runtime
+templates:
+  system: system.md
+  user: user.md
+fragments: [json-only]
+instructions:
+  agent: false
+  skill: false
+inputs:
+  - name: query
+    source: rag.query
+    required: true
+    priority: 100
+    max_chars: 3000
+  - name: summary
+    source: conversation.summary
+    required: false
+    priority: 60
+    max_chars: 3000
+    truncate: newest
+exclude: [secrets, tool_credentials, rag.raw_documents]
+limits:
+  max_input_tokens: 4000
+  response_reserve_tokens: 800
+output:
+  mode: json
+  schema: output.schema.json
+audit:
+  record_input_names: true
+  record_content_hashes: true
+  record_rendered_content: false

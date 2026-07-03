@@ -1,0 +1,55 @@
+id: runtime.react-action
+version: 1
+owner: runtime
+templates:
+  system: system.md
+  user: user.md
+fragments: [json-only, evidence-policy]
+instructions:
+  agent: true
+  skill: true
+inputs:
+  - name: goal
+    source: request.goal
+    required: true
+    priority: 100
+    max_chars: 2000
+  - name: arguments
+    source: request.arguments
+    required: true
+    priority: 90
+    serializer: canonical_json
+    max_chars: 6000
+  - name: allowed_tools
+    source: execution.allowed_tools
+    required: true
+    priority: 100
+    serializer: canonical_json
+    max_items: 12
+    max_chars: 8000
+    truncate: head
+  - name: observations
+    source: execution.observations
+    required: false
+    priority: 80
+    serializer: canonical_json
+    max_items: 8
+    max_chars: 8000
+    truncate: newest
+  - name: remaining_budget
+    source: execution.remaining_budget
+    required: true
+    priority: 100
+    serializer: canonical_json
+    max_chars: 2000
+exclude: [secrets, tool_credentials, conversation.raw_messages, rag.raw_documents]
+limits:
+  max_input_tokens: 12000
+  response_reserve_tokens: 2000
+output:
+  mode: json
+  schema: output.schema.json
+audit:
+  record_input_names: true
+  record_content_hashes: true
+  record_rendered_content: false

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["primary_skill", "candidate_skills", "reason", "confidence", "has_dependencies"],
+  "properties": {
+    "primary_skill": {"type": ["string", "null"]},
+    "candidate_skills": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "reason": {"type": "string"},
+    "confidence": {"enum": ["high", "medium", "low"]},
+    "has_dependencies": {"type": "boolean"}
+  },
+  "additionalProperties": false
+}
