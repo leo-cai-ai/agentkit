@@ -116,6 +116,17 @@ def format_ts_filter(value: Any) -> str:
     return format_timestamp(value)
 
 
+@app.template_filter("datetime_ts")
+def datetime_ts_filter(value: Any) -> str:
+    """Return a machine-readable timestamp for HTML ``datetime`` attributes."""
+    if value in (None, ""):
+        return ""
+    try:
+        return datetime.fromtimestamp(float(value)).astimezone().isoformat(timespec="seconds")
+    except (TypeError, ValueError, OSError):
+        return str(value)
+
+
 @app.get("/")
 def overview():
     runtime = get_runtime()
@@ -187,26 +198,36 @@ def chat_console():
 def operations():
     runtime = get_runtime()
     audit = runtime.gateway.audit
+    counts = _safe_counts(audit)
+    completed = counts.get("completed", 0)
+    running = counts.get("running", 0)
+    failed = counts.get("failed", 0)
+    blocked = counts.get("waiting_for_approval", 0) + counts.get("rejected", 0)
+    total = sum(counts.values())
     runs = _safe_runs(audit, limit=50)
     selected_run_id = request.args.get("run_id") or (runs[0]["run_id"] if runs else "")
-    events = audit.events_for(selected_run_id) if selected_run_id else []
-    counts = _safe_counts(audit)
+    selected_run = next((run for run in runs if run["run_id"] == selected_run_id), None)
+    events = (
+        audit.events_for(selected_run_id)
+        if isinstance(audit, SQLiteAuditLog) and selected_run_id
+        else []
+    )
+
+    metrics = [
+        {"label": "Total Runs", "value": total, "helper": "Recorded executions"},
+        {"label": "Completed", "value": completed, "helper": "Finished successfully"},
+        {"label": "Running", "value": running, "helper": "Currently active"},
+        {"label": "Blocked", "value": blocked, "helper": "Awaiting or rejected approval"},
+        {"label": "Failed", "value": failed, "helper": "Requires attention"},
+    ]
     event_rows = [
         {
-            "Time": format_timestamp(event["ts"]),
-            "Event": event["type"],
-            "Details": json.dumps(event["payload"], ensure_ascii=False),
+            "timestamp": event["ts"],
+            "time": format_timestamp(event["ts"]),
+            "type": event["type"],
+            "payload": event.get("payload", {}),
         }
         for event in events
-    ]
-    metrics = [
-        {"label": label, "value": counts.get(status, 0), "helper": "Audit status"}
-        for label, status in (
-            ("Completed", "completed"),
-            ("Running", "running"),
-            ("Waiting", "waiting_for_approval"),
-            ("Failed", "failed"),
-        )
     ]
     return render_template(
         "operations.html",
@@ -215,6 +236,7 @@ def operations():
         metrics=metrics,
         runs=runs,
         selected_run_id=selected_run_id,
+        selected_run=selected_run,
         event_rows=event_rows,
     )
 

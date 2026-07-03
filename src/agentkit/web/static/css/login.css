@@ -1,0 +1,145 @@
+/* LoginShell: isolated from the authenticated console shell. */
+
+html {
+  min-block-size: 100%;
+  background: var(--ak-sys-color-bg-canvas);
+  font-family: var(--ak-sys-font-sans);
+}
+
+.login-page {
+  min-block-size: 100vh;
+  min-block-size: 100dvh;
+  margin: 0;
+  color: var(--ak-sys-color-text-primary);
+  background:
+    radial-gradient(circle at 50% 0%, var(--ak-sys-color-accent-soft), transparent 38rem),
+    var(--ak-sys-color-bg-canvas);
+  color-scheme: var(--ak-sys-color-scheme);
+}
+
+.login-page *,
+.login-page *::before,
+.login-page *::after {
+  box-sizing: border-box;
+}
+
+.login-shell {
+  min-block-size: inherit;
+  display: grid;
+  place-items: center;
+  padding: clamp(var(--ak-sys-space-4), 5vw, 3rem);
+}
+
+.login-card {
+  inline-size: min(100%, 25rem);
+  display: grid;
+  gap: var(--ak-sys-space-6);
+  padding: clamp(var(--ak-sys-space-5), 4vw, 1.75rem);
+  border: 1px solid var(--ak-sys-color-border-default);
+  border-radius: var(--ak-sys-radius-lg);
+  background: var(--ak-sys-color-bg-surface);
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--ak-sys-space-3);
+}
+
+.login-brand-mark {
+  inline-size: 2.5rem;
+  block-size: 2.5rem;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: var(--ak-sys-radius-sm);
+  color: var(--ak-sys-color-text-inverse);
+  background: var(--ak-sys-color-accent-default);
+  font-size: 0.8125rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.login-brand-copy {
+  min-inline-size: 0;
+  display: grid;
+  gap: 0.125rem;
+}
+
+.login-brand-name {
+  color: var(--ak-sys-color-text-primary);
+  font-size: 0.9375rem;
+  font-weight: 750;
+  line-height: 1.25;
+}
+
+.login-brand-product {
+  color: var(--ak-sys-color-text-subtle);
+  font-family: var(--ak-sys-font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.12em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.login-heading {
+  display: grid;
+  gap: var(--ak-sys-space-2);
+}
+
+.login-heading h1,
+.login-heading p {
+  margin: 0;
+}
+
+.login-heading h1 {
+  font-size: clamp(1.5rem, 4vw, 1.75rem);
+  line-height: 1.2;
+  letter-spacing: -0.025em;
+}
+
+.login-heading p {
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+
+.login-form {
+  display: grid;
+  gap: var(--ak-sys-space-4);
+}
+
+.login-feedback {
+  min-block-size: 2.375rem;
+  display: grid;
+  align-items: center;
+}
+
+@media (max-width: 30rem) {
+  .login-shell {
+    padding: var(--ak-sys-space-4);
+  }
+
+  .login-card {
+    gap: var(--ak-sys-space-5);
+    padding: var(--ak-sys-space-5);
+  }
+}
+
+@media (max-height: 40rem) {
+  .login-shell {
+    place-items: start center;
+  }
+}
+
+@media (forced-colors: active) {
+  .login-page {
+    background: Canvas;
+  }
+
+  .login-brand-mark {
+    border: 1px solid CanvasText;
+    color: ButtonText;
+    background: ButtonFace;
+  }
+}

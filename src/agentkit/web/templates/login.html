@@ -4,22 +4,58 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Sign in | Enterprise AI Workforce</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/tokens.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/components.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/login.css') }}">
   </head>
-  <body data-page="login">
-    <main class="page-shell" style="display:flex;align-items:center;justify-content:center;min-height:100vh">
-      <form class="sidebar-card" method="post" style="max-width:360px;width:100%;padding:2rem;display:flex;flex-direction:column;gap:1rem">
-        <h1 style="margin:0">Workforce Console</h1>
-        <p style="margin:0;color:#64748b">Enter your access token to continue.</p>
-        {% if error %}
-        <p role="alert" style="margin:0;color:#b91c1c">{{ error }}</p>
-        {% endif %}
-        <label style="display:flex;flex-direction:column;gap:0.4rem">
-          <span>Access token</span>
-          <input type="password" name="token" autocomplete="current-password" required>
-        </label>
-        <button type="submit">Sign in</button>
-      </form>
+  <body class="login-page" data-page="login">
+    <main class="login-shell">
+      <section class="login-card" aria-labelledby="login-title">
+        <div class="login-brand">
+          <span class="login-brand-mark" aria-hidden="true">EA</span>
+          <span class="login-brand-copy">
+            <span class="login-brand-name">Enterprise AI</span>
+            <span class="login-brand-product">Workforce Console</span>
+          </span>
+        </div>
+
+        <header class="login-heading">
+          <h1 id="login-title">Sign in</h1>
+          <p>Enter your access token to continue to the management console.</p>
+        </header>
+
+        <form class="login-form" method="post">
+          <div class="ak-field">
+            <label class="ak-field-label" for="access-token">Access token</label>
+            <input
+              class="ak-input"
+              id="access-token"
+              type="password"
+              name="token"
+              autocomplete="current-password"
+              autocapitalize="none"
+              spellcheck="false"
+              {% if error %}
+              aria-describedby="login-error"
+              aria-errormessage="login-error"
+              aria-invalid="true"
+              {% else %}
+              aria-describedby="login-token-hint"
+              {% endif %}
+              required
+            >
+            <div class="login-feedback">
+              {% if error %}
+              <p class="ak-alert ak-alert-danger" id="login-error" role="alert">{{ error }}</p>
+              {% else %}
+              <p class="ak-field-hint" id="login-token-hint">Your token is used only to authenticate this session.</p>
+              {% endif %}
+            </div>
+          </div>
+
+          <button class="ak-button ak-button-primary ak-button-block" type="submit">Sign in</button>
+        </form>
+      </section>
     </main>
   </body>
 </html>
