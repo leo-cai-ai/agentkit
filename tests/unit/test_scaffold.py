@@ -16,7 +16,7 @@ def test_render_tenant_config_uses_explicit_agents() -> None:
         "enabled_agents": [],
         "role_permissions": {},
         "principal_business_roles": {},
-        "prompt_files": {},
+        "context_overrides": {},
         "mcp_servers": {},
     }
 
@@ -24,7 +24,10 @@ def test_render_tenant_config_uses_explicit_agents() -> None:
 def test_create_agent_writes_single_manifest(tmp_path) -> None:
     path = scaffold.create_agent("finance_agent", root=tmp_path / "agents")
     assert path == tmp_path / "agents" / "finance_agent" / "agent.md"
-    assert "id: finance_agent" in path.read_text(encoding="utf-8")
+    rendered = path.read_text(encoding="utf-8")
+    assert "id: finance_agent" in rendered
+    assert "prompt_file" not in rendered
+    assert "# finance_agent Agent" in rendered
     with pytest.raises(FileExistsError):
         scaffold.create_agent("finance_agent", root=tmp_path / "agents")
 

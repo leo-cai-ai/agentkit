@@ -50,6 +50,7 @@ def _agent() -> AgentProfile:
             RagContextPolicy(False, (), 1, 100),
             ArtifactContextPolicy(("test",), ("test",)),
         ),
+        instructions="测试执行 Agent 指令",
     )
 
 

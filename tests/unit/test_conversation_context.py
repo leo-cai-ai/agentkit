@@ -55,6 +55,7 @@ def _agent(*, agent_id: str, rag_enabled: bool, memory_enabled: bool = True) -> 
             ),
             artifacts=ArtifactContextPolicy((), ()),
         ),
+        instructions="测试会话 Agent 指令",
     )
 
 

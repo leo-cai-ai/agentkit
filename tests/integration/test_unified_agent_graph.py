@@ -70,6 +70,7 @@ def _agent(agent_id: str, skills: list[str]) -> AgentProfile:
             RagContextPolicy(False, (), 3, 600),
             ArtifactContextPolicy(("test",), ("test",)),
         ),
+        instructions="测试统一图 Agent 指令",
     )
 
 

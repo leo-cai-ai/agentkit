@@ -2,7 +2,6 @@
 id: hr_recruiter
 domain: hr.recruitment
 description: 招聘筛选与候选人排序 Agent。
-prompt_file: prompts/agents/recruitment.md
 skills: [candidate.rank]
 context:
   memory: {enabled: true, scope: agent_user, window_turns: 6, max_context_tokens: 4000, retrieval_k: 4}

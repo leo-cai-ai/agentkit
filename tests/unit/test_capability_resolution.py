@@ -51,6 +51,7 @@ def _agent() -> AgentProfile:
             RagContextPolicy(True, ("faq",), 5, 1200),
             ArtifactContextPolicy((), ()),
         ),
+        instructions="测试客服 Agent 指令",
         routing_keywords=("订单", "物流", "退款"),
     )
 

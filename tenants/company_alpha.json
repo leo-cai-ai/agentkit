@@ -25,11 +25,7 @@
     "max_top_n": 5,
     "default_top_n": 3
   },
-  "prompt_files": {
-    "agents.recruitment": "prompts/agents/recruitment.md",
-    "agents.social_growth": "prompts/agents/social_growth.md",
-    "agents.customer_service": "prompts/agents/customer_service.md"
-  },
+  "context_overrides": {},
   "role_permissions": {
     "recruiter": ["hr.job.read", "hr.candidate.read"],
     "hr_admin": ["hr.job.read", "hr.candidate.read", "hr.candidate.write"],

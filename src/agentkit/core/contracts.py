@@ -89,9 +89,9 @@ class AgentProfile:
     autonomy_budget: AutonomyBudget
     # Agent 的上下文边界由声明式 agent.md 提供。
     context_policy: ContextPolicy
+    instructions: str
     model: str = "default"
     max_tokens: int = 100_000
-    prompt_file: str = ""
     routing_keywords: tuple[str, ...] = ()
 
 

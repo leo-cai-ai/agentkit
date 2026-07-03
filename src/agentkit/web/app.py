@@ -229,7 +229,6 @@ def governance():
             "Name": agent.name,
             "Domain": agent.domain,
             "Model": agent.model,
-            "Prompt File": agent.prompt_file,
             "Allowed Skills": ", ".join(agent.allowed_skills),
             "Description": agent.description,
         }
@@ -269,10 +268,6 @@ def governance():
         agents=agents,
         skills=skills,
         tools=tools,
-        prompt_rows=[
-            {"Name": name, "File": path}
-            for name, path in runtime.tenant_config.get("prompt_files", {}).items()
-        ],
         event_counts=audit.event_counts_by_type() if isinstance(audit, SQLiteAuditLog) else [],
         cost_summary=audit.cost_summary() if isinstance(audit, SQLiteAuditLog) else {},
     )

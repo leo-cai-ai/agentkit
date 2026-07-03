@@ -53,6 +53,8 @@ def test_catalog_registers_new_runtime_contracts(tmp_path: Path) -> None:
     python_tool = tools.get("docs.lookup")
     assert profile.execution_policy.default_strategy is ExecutionStrategyName.REACT
     assert profile.context_policy.rag.collections == ("research-docs",)
+    assert profile.instructions == "# 研究 Agent"
+    assert not hasattr(profile, "prompt_file")
     assert skill.execution.reasoning is ReasoningStrategy.REACT
     assert python_tool.handler is not None
     assert python_tool.handler({"query": "agent"}) == {"query": "agent"}
@@ -84,7 +86,6 @@ def _write_catalog(
         "id": "research",
         "domain": "knowledge.research",
         "description": "企业研究 Agent",
-        "prompt_file": "prompts/agents/research.md",
         "skills": ["research.explore"],
         "context": {
             "memory": {

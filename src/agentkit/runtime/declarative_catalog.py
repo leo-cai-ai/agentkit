@@ -136,7 +136,6 @@ class _AgentYaml(_StrictModel):
     id: str = Field(min_length=1)
     domain: str = Field(min_length=1)
     description: str = Field(min_length=1)
-    prompt_file: str = ""
     skills: list[str]
     context: _ContextYaml
     execution: _AgentExecutionYaml
@@ -199,7 +198,6 @@ class AgentManifest:
     domain: str
     description: str
     skills: tuple[str, ...]
-    prompt_file: str
     context: ContextPolicy
     execution: AgentExecutionPolicy
     autonomy: AutonomyBudget
@@ -329,7 +327,7 @@ def register_catalog(
                 execution_policy=manifest.execution,
                 autonomy_budget=manifest.autonomy,
                 context_policy=manifest.context,
-                prompt_file=manifest.prompt_file,
+                instructions=manifest.instructions,
                 max_tokens=manifest.autonomy.max_tokens,
                 routing_keywords=manifest.routing_keywords,
             )
@@ -416,6 +414,8 @@ def _build_agent_manifest(
     body: str,
     source_path: Path,
 ) -> AgentManifest:
+    if not body.strip():
+        raise ValueError(f"{source_path}: Agent 正文不能为空")
     memory = raw.context.memory
     rag = raw.context.rag
     artifacts = raw.context.artifacts
@@ -424,7 +424,6 @@ def _build_agent_manifest(
         domain=raw.domain,
         description=raw.description,
         skills=tuple(raw.skills),
-        prompt_file=raw.prompt_file,
         context=ContextPolicy(
             memory=MemoryContextPolicy(
                 enabled=memory.enabled,

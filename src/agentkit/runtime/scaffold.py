@@ -21,7 +21,7 @@ def render_tenant_config(tenant_id: str) -> str:
             "enabled_agents": [],
             "role_permissions": {},
             "principal_business_roles": {},
-            "prompt_files": {},
+            "context_overrides": {},
             "mcp_servers": {},
         },
         ensure_ascii=False,
@@ -35,7 +35,6 @@ def render_agent_manifest(agent_id: str) -> str:
 id: {agent_id}
 domain: example.{agent_id}
 description: 请填写 {agent_id} 的业务职责。
-prompt_file: ""
 skills: []
 context:
   memory:
@@ -59,7 +58,7 @@ autonomy:
 routing_keywords: []
 ---
 
-# {agent_id}
+# {agent_id} Agent
 
 请在这里编写 Agent 的业务边界、安全约束和输出规则。
 """
