@@ -2,7 +2,7 @@
 
 {% block content %}
   <script id="ui-config" type="application/json">{{ ui | tojson }}</script>
-  {% set agent_options = chat_agents if chat_agents is defined and chat_agents else ui.chat_agents | default([]) %}
+  {% set agent_options = agents if agents is defined else [] %}
   <section class="chat-layout">
     <article class="panel chat-panel">
       <div class="panel-head">

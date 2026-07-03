@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from agentkit.config import get_settings
 from agentkit.core.contracts import ToolDefinition
 
 from .providers import (
@@ -79,7 +80,35 @@ def build_handlers(tenant_config: dict[str, Any]) -> dict[str, Any]:
         ),
         "xhs.rpa.publish_note": lambda args: publish_note_tool(args, selected.publishing),
         "xhs.metrics.fetch": lambda args: fetch_metrics_tool(args, selected.metrics),
+        "__interactive_login__": lambda args: _interactive_login(args, provider_config),
     }
+
+
+def _interactive_login(
+    args: dict[str, Any],
+    provider_config: dict[str, Any],
+) -> dict[str, Any]:
+    """打开持久化浏览器，人工完成登录和风险验证。"""
+    from .providers import build_playwright_publishing_provider, build_playwright_research_provider
+
+    settings = get_settings()
+    target = str(args.get("target") or "search")
+    if target == "publish":
+        provider = build_playwright_publishing_provider(settings, provider_config)
+        client = provider.client
+        adapter = provider.adapter
+        url = adapter.publish_url
+    else:
+        provider = build_playwright_research_provider(settings, provider_config)
+        client = provider.client
+        adapter = provider.adapter
+        url = adapter.search_url(str(args.get("query") or "AI Agent"))
+    client.open_interactive(
+        site_key=adapter.site_key,
+        url=url,
+        readiness_check=adapter.interactive_login_complete,
+    )
+    return {"status": "authenticated", "target": target}
 
 
 def build_xhs_tool_definitions(

@@ -696,10 +696,25 @@ function approvalActionHtml(waitingForApproval, approval) {
   `;
 }
 
+// 统一 Runtime 在顶层返回 status/governance/thread_id；这里只构造前端展示模型。
+function runtimeView(raw = {}) {
+  if (!raw.status) return raw;
+  return {
+    ...raw,
+    output: {
+      ...(raw.output || {}),
+      status: raw.status,
+      governance: raw.governance || {},
+      thread_id: raw.thread_id || "",
+      final: raw.output || {},
+    },
+  };
+}
+
 function renderResult(payload, requestPayload = null, options = {}) {
   const region = document.getElementById("result-region");
   if (!region) return;
-  const response = payload.response || {};
+  const response = runtimeView(payload.response);
   const final = response.output?.final || {};
   const ranked = final.ranked_candidates || [];
   const outputStatus = response.output?.status || "";
@@ -809,7 +824,7 @@ function addApprovalChatMessage(text, approval, labelOverride = "") {
 }
 
 function addAssistantResponse(result, requestPayload) {
-  const response = result.response || {};
+  const response = runtimeView(result.response);
   const final = response.output?.final || {};
   const approval = response.output?.governance?.approval || response.output?.approval || final.approval || {};
   const label = getSelectedAgentLabel();
@@ -867,7 +882,7 @@ function bindRangeOutputs() {
 }
 
 function finalizeActionResult(result, requestPayload, bubble, selectedAgent, streamed = "") {
-  const response = result.response || {};
+  const response = runtimeView(result.response);
   const final = response.output?.final || {};
   const status = response.output?.status;
   const approval = response.output?.governance?.approval || response.output?.approval || final.approval || {};
@@ -1097,7 +1112,7 @@ async function approvePendingTask() {
       },
     });
     if (errored && !result) throw new Error(errored);
-    const status = result.response?.output?.status;
+    const status = runtimeView(result.response).output?.status;
     setExecutionState(status === "waiting_for_approval" ? "Waiting for approval" : "Completed", status === "waiting_for_approval" ? 2 : 5, status !== "waiting_for_approval");
     setAgentStatus(agentName, status === "waiting_for_approval" ? "waiting" : "completed");
     resolveApprovalActions("Approved");

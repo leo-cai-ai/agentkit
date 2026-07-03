@@ -69,6 +69,7 @@ class AgentKitRuntime:
     skill_store: SkillFileStore
     tenant_id: str
     strategy_names: tuple[str, ...]
+    conversations: Any
     manifest: dict[str, Any] | None = None
     # 迁移期间保留属性形状，但不再存在第二套 Chat Runtime。
     chat_service: None = None
@@ -270,6 +271,7 @@ def build_runtime(
         skill_store=skill_store,
         tenant_id=resolved_tenant_id,
         strategy_names=strategy_names,
+        conversations=conversation_store,
         manifest=manifest,
     )
 

@@ -22,12 +22,21 @@ def test_runtime_doctor_checks_pass_for_builtin_tenant(monkeypatch) -> None:
     assert any(check["name"] == "runtime build" for check in checks)
 
 
+def test_cli_exposes_only_declarative_commands() -> None:
+    help_text = cli.build_parser().format_help()
+    assert "validate-catalog" in help_text
+    assert "new-agent" in help_text
+    assert "new-skill" in help_text
+    assert "validate-packs" not in help_text
+    assert "new-pack" not in help_text
+
+
 def test_runtime_doctor_reports_unknown_tenant() -> None:
     checks = _runtime_doctor_checks("does_not_exist")
     assert len(checks) == 1
     assert checks[0]["name"] == "tenant config"
     assert checks[0]["passed"] is False
-    assert "Unknown tenant 'does_not_exist'" in checks[0]["detail"]
+    assert "未知租户 'does_not_exist'" in checks[0]["detail"]
     assert "agentkit new-tenant does_not_exist" in checks[0]["detail"]
 
 

@@ -23,6 +23,8 @@ def _run_demo(tenant_id: str | None = None) -> None:
         roles=["recruiter"],
         text="Rank the top 3 candidates for JOB-001 and explain why.",
         context={
+            "agent": "hr_recruiter",
+            "skill": "candidate.rank",
             "job_id": "JOB-001",
             "candidate_ids": ["C-100", "C-101", "C-102", "C-103", "C-104"],
             "top_n": 3,
@@ -53,53 +55,23 @@ def _browser_login(
         print(f"Unsupported browser site: {site}", file=sys.stderr)
         return 2
 
-    from agentkit.config import get_settings
-    from agentkit.domain_packs.social_growth.providers import (
-        build_playwright_publishing_provider,
-        build_playwright_research_provider,
-    )
-    from agentkit.runtime.bootstrap import load_tenant_config, resolve_tenant_id
+    from agentkit.runtime.bootstrap import AGENTKIT_ROOT, load_tenant_config, resolve_tenant_id
+    from agentkit.runtime.declarative_catalog import load_catalog, load_tool_factory
 
     tenant_config = load_tenant_config(resolve_tenant_id(tenant_id))
-    social_growth_config = tenant_config.get("social_growth", {})
-    provider_config = social_growth_config if isinstance(social_growth_config, dict) else {}
-    if target == "publish":
-        from agentkit.connectors.xhs_publisher_playwright import (
-            PlaywrightXhsPublishingProvider,
-        )
-
-        publish_provider = build_playwright_publishing_provider(get_settings(), provider_config)
-        if not isinstance(publish_provider, PlaywrightXhsPublishingProvider):  # pragma: no cover
-            print("Could not build the XHS Playwright publishing provider.", file=sys.stderr)
-            return 2
-        client = publish_provider.client
-        site_key = publish_provider.adapter.site_key
-        url = publish_provider.adapter.publish_url
-        readiness_check = publish_provider.adapter.interactive_login_complete
-    else:
-        from agentkit.connectors.xhs_playwright import PlaywrightXhsResearchProvider
-
-        research_provider = build_playwright_research_provider(get_settings(), provider_config)
-        if not isinstance(research_provider, PlaywrightXhsResearchProvider):  # pragma: no cover
-            print("Could not build the XHS Playwright research provider.", file=sys.stderr)
-            return 2
-        client = research_provider.client
-        site_key = research_provider.adapter.site_key
-        url = research_provider.adapter.search_url(query)
-        readiness_check = research_provider.adapter.interactive_login_complete
+    catalog = load_catalog(AGENTKIT_ROOT)
+    factory = load_tool_factory(catalog, "xhs.rpa.search_top_notes")
+    handlers = factory(tenant_config)
+    interactive_login = handlers.get("__interactive_login__")
+    if not callable(interactive_login):
+        print("XHS Tool 工厂未提供交互式登录入口。", file=sys.stderr)
+        return 2
     print(
-        "A persistent Xiaohongshu browser profile is open. Complete QR login and any "
-        "SMS, phone, or other human verification manually in that window. Do not close "
-        "it: the window stays open until the target page is authenticated and ready; "
-        "press Ctrl+C here to cancel."
+        "已打开持久化小红书浏览器。请在窗口中手动完成扫码、短信或其他验证；"
+        "在目标页完成认证前浏览器会保持打开，可按 Ctrl+C 取消。"
     )
-
-    client.open_interactive(
-        site_key=site_key,
-        url=url,
-        readiness_check=readiness_check,
-    )
-    print("Authenticated target page detected. Browser profile saved.")
+    interactive_login({"target": target, "query": query})
+    print("已检测到认证完成的目标页，浏览器会话已保存。")
     return 0
 
 
@@ -226,51 +198,58 @@ def _new_tenant(tenant_id: str, *, force: bool) -> None:
     from agentkit.runtime.scaffold import create_tenant
 
     path = create_tenant(tenant_id, root=TENANTS_DIR, force=force)
-    print(f"Created tenant config: {path}")
-    print(f"Run it with: agentkit --tenant {tenant_id} run-demo")
+    print(f"已创建租户配置: {path}")
 
 
-def _new_pack(domain: str, *, force: bool) -> None:
-    from pathlib import Path
+def _new_agent(agent_id: str) -> None:
+    from agentkit.runtime.bootstrap import AGENTKIT_ROOT
+    from agentkit.runtime.scaffold import create_agent
 
-    from agentkit.runtime.scaffold import create_pack
-
-    src_root = Path(__file__).resolve().parent / "domain_packs"
-    pack_dir = create_pack(domain, src_root=src_root, force=force)
-    print(f"Created domain pack: {pack_dir}")
-    print(f'Enable it by adding "{domain}" to a tenant\'s enabled_domains.')
+    path = create_agent(agent_id, root=AGENTKIT_ROOT / "agents")
+    print(f"已创建 Agent Manifest: {path}")
 
 
-def _validate_packs(*, domains: list[str], as_json: bool) -> int:
+def _new_skill(package_id: str) -> None:
+    from agentkit.runtime.bootstrap import AGENTKIT_ROOT
+    from agentkit.runtime.scaffold import create_skill
+
+    path = create_skill(package_id, root=AGENTKIT_ROOT / "skills")
+    print(f"已创建 Skill 包: {path}")
+
+
+def _validate_catalog(*, as_json: bool) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     configure_logging()
 
-    from agentkit.runtime.pack_registry import validate_pack_contracts
+    from agentkit.runtime.bootstrap import AGENTKIT_ROOT
+    from agentkit.runtime.declarative_catalog import load_catalog
 
-    results = validate_pack_contracts(domains=set(domains) if domains else None)
+    try:
+        catalog = load_catalog(AGENTKIT_ROOT)
+    except (OSError, ValueError) as exc:
+        print(f"[FAIL] {exc}", file=sys.stderr)
+        return 1
+    result = {
+        "agents": len(catalog.agents),
+        "capabilities": len(catalog.capabilities),
+        "tools": len(catalog.tools),
+    }
     if as_json:
-        print(json.dumps([result.to_dict() for result in results], ensure_ascii=False, indent=2))
+        print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
-        for result in results:
-            status = "PASS" if result.passed else "FAIL"
-            summary = (
-                f"{len(result.agents)} agents, "
-                f"{len(result.skills)} skills, "
-                f"{len(result.tools)} tools"
-            )
-            print(f"[{status}] {result.domain}: " f"{summary}")
-            for error in result.errors:
-                print(f"  error: {error}")
-            for warning in result.warnings:
-                print(f"  warning: {warning}")
-    return 0 if all(result.passed for result in results) else 1
+        print(
+            "[ok] 声明目录有效: "
+            f"{result['agents']} Agents, {result['capabilities']} Capabilities, "
+            f"{result['tools']} Tools"
+        )
+    return 0
 
 
 def _runtime_doctor_checks(tenant_id: str | None = None) -> list[dict[str, Any]]:
-    """Return deployment preflight checks that do not call the LLM."""
-    from agentkit.runtime.bootstrap import load_tenant_config, resolve_tenant_id
-    from agentkit.runtime.pack_registry import discover_packs, validate_pack_contracts
+    """返回不调用 LLM 的部署预检结果。"""
+    from agentkit.runtime.bootstrap import AGENTKIT_ROOT, load_tenant_config, resolve_tenant_id
+    from agentkit.runtime.declarative_catalog import load_catalog, resolve_enabled_agent_ids
 
     checks: list[dict[str, Any]] = []
 
@@ -285,35 +264,19 @@ def _runtime_doctor_checks(tenant_id: str | None = None) -> list[dict[str, Any]]
         return checks
     add("tenant config", True, resolved_tenant)
 
-    enabled_domains = [
-        str(domain) for domain in tenant_config.get("enabled_domains", []) if str(domain)
-    ]
-    if enabled_domains:
-        add("enabled domains", True, ", ".join(enabled_domains))
-    else:
-        add("enabled domains", False, "tenant has no enabled_domains")
-
-    discovered = discover_packs()
-    missing_domains = sorted(set(enabled_domains) - set(discovered))
+    try:
+        catalog = load_catalog(AGENTKIT_ROOT)
+        selected = resolve_enabled_agent_ids(catalog, tenant_config)
+    except (OSError, ValueError) as exc:
+        add("declarative catalog", False, str(exc))
+        return checks
     add(
-        "domain discovery",
-        not missing_domains,
-        "missing: " + ", ".join(missing_domains)
-        if missing_domains
-        else "all enabled domains found",
+        "declarative catalog",
+        True,
+        f"{len(catalog.agents)} agents, {len(catalog.capabilities)} capabilities, "
+        f"{len(catalog.tools)} tools",
     )
-
-    pack_results = validate_pack_contracts(domains=set(enabled_domains))
-    for result in pack_results:
-        detail = (
-            f"{len(result.agents)} agents, {len(result.skills)} skills, "
-            f"{len(result.tools)} tools"
-        )
-        if result.errors:
-            detail += "; errors: " + "; ".join(result.errors)
-        if result.warnings:
-            detail += "; warnings: " + "; ".join(result.warnings)
-        add(f"pack contract: {result.domain}", result.passed, detail)
+    add("enabled agents", bool(selected), ", ".join(sorted(selected)))
 
     try:
         runtime = build_runtime(tenant_id=resolved_tenant)
@@ -325,64 +288,6 @@ def _runtime_doctor_checks(tenant_id: str | None = None) -> list[dict[str, Any]]
     registered_agents = {agent.name for agent in runtime.gateway.agents.all()}
     registered_skills = {skill.name for skill in runtime.gateway.skills.all()}
     registered_tools = {tool.name for tool in runtime.gateway.tools.all()}
-
-    chat_agents = tenant_config.get("chat_agents", [])
-    if not isinstance(chat_agents, list):
-        add("tenant chat_agents", False, "chat_agents must be a list")
-    else:
-        for index, item in enumerate(chat_agents):
-            if not isinstance(item, dict):
-                add(f"tenant chat_agents[{index}]", False, "entry must be an object")
-                continue
-            name = str(item.get("name") or "")
-            mode = str(item.get("mode") or "chat")
-            if not name:
-                add(f"tenant chat_agents[{index}]", False, "name is required")
-                continue
-            if name not in registered_agents:
-                add(f"tenant chat_agents[{name}]", False, "agent is not registered")
-                continue
-            if mode != "chat":
-                add(
-                    f"tenant chat_agents[{name}]",
-                    False,
-                    "mode must be 'chat' when provided",
-                )
-                continue
-            actions_raw = item.get("actions_enabled", None)
-            if not isinstance(actions_raw, bool):
-                add(
-                    f"tenant chat_agents[{name}]",
-                    False,
-                    "actions_enabled must be an explicit boolean",
-                )
-                continue
-            kind = "action" if actions_raw else "answer"
-            add(f"tenant chat_agents[{name}]", True, f"mode={mode}, kind={kind}")
-
-    approval_required = tenant_config.get("approval_required_skills", [])
-    if not isinstance(approval_required, list):
-        add("approval_required_skills", False, "must be a list")
-    else:
-        missing = sorted(
-            str(skill) for skill in approval_required if skill not in registered_skills
-        )
-        add(
-            "approval_required_skills",
-            not missing,
-            "missing: " + ", ".join(missing) if missing else "all approval skills registered",
-        )
-
-    routing_hints = tenant_config.get("routing_hints", {})
-    if not isinstance(routing_hints, dict):
-        add("routing_hints", False, "must be an object")
-    else:
-        missing = sorted(str(skill) for skill in routing_hints if skill not in registered_skills)
-        add(
-            "routing_hints",
-            not missing,
-            "missing: " + ", ".join(missing) if missing else "all hinted skills registered",
-        )
 
     role_permissions = tenant_config.get("role_permissions", {})
     if not isinstance(role_permissions, dict):
@@ -648,7 +553,8 @@ def _rag_eval(
     return 0 if report.gate(min_hit_rate=min_hit_rate, min_mrr=min_mrr) else 1
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """构建公开 CLI 解析器，便于帮助文本和单元测试共用。"""
     parser = argparse.ArgumentParser(prog="agentkit")
     parser.add_argument(
         "--tenant",
@@ -681,7 +587,7 @@ def main() -> None:
     )
     doctor = sub.add_parser(
         "doctor",
-        help="Run deployment preflight checks (storage, packs, tenant runtime).",
+        help="Run deployment preflight checks (storage, catalog, tenant runtime).",
     )
     doctor.add_argument("--skip-db", action="store_true", help="Skip storage connectivity checks.")
     doctor.add_argument("--json", action="store_true", help="Emit JSON report.")
@@ -690,20 +596,17 @@ def main() -> None:
     new_tenant.add_argument("tenant_id", help="Tenant id (becomes tenants/<id>.json).")
     new_tenant.add_argument("--force", action="store_true", help="Overwrite if it exists.")
 
-    new_pack = sub.add_parser("new-pack", help="Scaffold a new domain pack.")
-    new_pack.add_argument("domain", help="Domain string, e.g. billing.invoices.")
-    new_pack.add_argument("--force", action="store_true", help="Overwrite if it exists.")
+    new_agent = sub.add_parser("new-agent", help="Scaffold a declarative Agent Manifest.")
+    new_agent.add_argument("agent_id", help="Agent id, e.g. finance_assistant.")
 
-    validate_packs = sub.add_parser(
-        "validate-packs",
-        help="Validate domain-pack registration contracts for plugin/CI smoke checks.",
+    new_skill = sub.add_parser("new-skill", help="Scaffold a declarative Skill package.")
+    new_skill.add_argument("package_id", help="Skill package id, e.g. invoice-query.")
+
+    validate_catalog = sub.add_parser(
+        "validate-catalog",
+        help="Validate declarative Agent, Skill and Tool manifests.",
     )
-    validate_packs.add_argument(
-        "domains",
-        nargs="*",
-        help="Optional domain(s) to validate. Defaults to every discovered pack.",
-    )
-    validate_packs.add_argument("--json", action="store_true", help="Emit JSON report.")
+    validate_catalog.add_argument("--json", action="store_true", help="Emit JSON report.")
 
     ev = sub.add_parser("eval", help="Run a golden dataset and enforce a regression gate.")
     ev.add_argument("dataset", help="Path to a .jsonl or .json golden dataset.")
@@ -763,7 +666,11 @@ def main() -> None:
     rag_eval.add_argument("--min-mrr", type=float, default=0.0)
     rag_eval.add_argument("--json", action="store_true", help="Emit JSON report.")
 
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
     if args.command == "run-demo":
         _run_demo(tenant_id=args.tenant)
     elif args.command == "web":
@@ -785,10 +692,12 @@ def main() -> None:
         raise SystemExit(_doctor(tenant_id=args.tenant, skip_db=args.skip_db, as_json=args.json))
     elif args.command == "new-tenant":
         _new_tenant(args.tenant_id, force=args.force)
-    elif args.command == "new-pack":
-        _new_pack(args.domain, force=args.force)
-    elif args.command == "validate-packs":
-        raise SystemExit(_validate_packs(domains=args.domains, as_json=args.json))
+    elif args.command == "new-agent":
+        _new_agent(args.agent_id)
+    elif args.command == "new-skill":
+        _new_skill(args.package_id)
+    elif args.command == "validate-catalog":
+        raise SystemExit(_validate_catalog(as_json=args.json))
     elif args.command == "eval":
         code = _run_eval(
             args.dataset,

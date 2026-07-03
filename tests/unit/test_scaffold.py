@@ -1,68 +1,50 @@
-"""Unit tests for new-tenant / new-pack scaffolding."""
+"""声明式 Agent、Skill 和租户骨架测试。"""
 
 from __future__ import annotations
 
-import importlib
 import json
-import sys
 
 import pytest
 
 from agentkit.runtime import scaffold
 
 
-def test_render_tenant_config_is_valid_json() -> None:
-    text = scaffold.render_tenant_config("acme")
-    data = json.loads(text)
-    assert data["tenant_id"] == "acme"
-    assert "enabled_domains" in data
+def test_render_tenant_config_uses_explicit_agents() -> None:
+    data = json.loads(scaffold.render_tenant_config("acme"))
+    assert data == {
+        "tenant_id": "acme",
+        "enabled_agents": [],
+        "role_permissions": {},
+        "principal_business_roles": {},
+        "prompt_files": {},
+        "mcp_servers": {},
+    }
 
 
-def test_create_tenant_writes_file(tmp_path) -> None:
-    path = scaffold.create_tenant("acme", root=tmp_path)
-    assert path.is_file()
-    data = json.loads(path.read_text(encoding="utf-8"))
-    assert data["tenant_id"] == "acme"
-
-
-def test_create_tenant_refuses_overwrite(tmp_path) -> None:
-    scaffold.create_tenant("acme", root=tmp_path)
+def test_create_agent_writes_single_manifest(tmp_path) -> None:
+    path = scaffold.create_agent("finance_agent", root=tmp_path / "agents")
+    assert path == tmp_path / "agents" / "finance_agent" / "agent.md"
+    assert "id: finance_agent" in path.read_text(encoding="utf-8")
     with pytest.raises(FileExistsError):
-        scaffold.create_tenant("acme", root=tmp_path)
+        scaffold.create_agent("finance_agent", root=tmp_path / "agents")
 
 
-def test_create_tenant_force_overwrites(tmp_path) -> None:
-    scaffold.create_tenant("acme", root=tmp_path)
-    path = scaffold.create_tenant("acme", root=tmp_path, force=True)
-    assert path.is_file()
-
-
-def test_create_pack_is_discoverable(tmp_path, monkeypatch) -> None:
-    """A generated pack written into a temp package must be importable and expose
-    DOMAIN + register."""
-    pkg_root = tmp_path / "extpacks"
-    (pkg_root).mkdir()
-    (pkg_root / "__init__.py").write_text("", encoding="utf-8")
-
-    pack_dir = scaffold.create_pack("billing.invoices", src_root=pkg_root)
-    assert pack_dir.is_dir()
-    assert (pack_dir / "pack.py").is_file()
-    assert (pack_dir / "__init__.py").is_file()
-
-    monkeypatch.syspath_prepend(str(tmp_path))
-    module = importlib.import_module("extpacks.billing_invoices.pack")
-    try:
-        assert module.DOMAIN == "billing.invoices"
-        assert callable(module.register)
-    finally:
-        for name in list(sys.modules):
-            if name.startswith("extpacks"):
-                del sys.modules[name]
-
-
-def test_create_pack_refuses_overwrite(tmp_path) -> None:
-    pkg_root = tmp_path / "extpacks"
-    pkg_root.mkdir()
-    scaffold.create_pack("billing.invoices", src_root=pkg_root)
+def test_create_skill_writes_portable_package(tmp_path) -> None:
+    package = scaffold.create_skill("invoice-query", root=tmp_path / "skills")
+    files = {
+        path.relative_to(package).as_posix()
+        for path in package.rglob("*")
+        if path.is_file()
+    }
+    assert files == {
+        "SKILL.md",
+        "scripts/__init__.py",
+        "skill.yaml",
+    }
     with pytest.raises(FileExistsError):
-        scaffold.create_pack("billing.invoices", src_root=pkg_root)
+        scaffold.create_skill("invoice-query", root=tmp_path / "skills")
+
+
+def test_invalid_ids_are_rejected(tmp_path) -> None:
+    with pytest.raises(ValueError):
+        scaffold.create_agent("Bad Agent", root=tmp_path)

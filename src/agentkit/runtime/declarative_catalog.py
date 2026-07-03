@@ -689,6 +689,24 @@ def _load_entrypoint(
     return handler
 
 
+def load_tool_factory(
+    catalog: DeclarativeCatalog,
+    tool_id: str,
+) -> Callable[..., Any]:
+    """加载 Tool Manifest 声明的租户级工厂，供 CLI 等运行时入口复用。"""
+    try:
+        manifest = catalog.tools[tool_id]
+    except KeyError as exc:
+        raise ValueError(f"未知 Tool: {tool_id}") from exc
+    if not manifest.factory_entrypoint:
+        raise ValueError(f"Tool 未声明 factory_entrypoint: {tool_id}")
+    return _load_entrypoint(
+        catalog.root,
+        manifest.source_path.parent,
+        manifest.factory_entrypoint,
+    )
+
+
 def _ensure_script_package(*, package_name: str, package_root: Path, scripts_dir: Path) -> None:
     if package_name not in sys.modules:
         package = ModuleType(package_name)

@@ -1,275 +1,47 @@
-"""Web SSE: /api/tasks/stream + /api/tasks/resume/stream deliver token frames."""
+"""统一 SSE API 集成测试。"""
 
 from __future__ import annotations
 
 import json
-import re
 
-import pytest
-
-import agentkit.config as config_mod
-
-_SUMMARY = "Recommended hire: the strongest candidate based on the scores."
+from agentkit.core.contracts import TaskResponse
+from agentkit.web.streaming import stream_response
 
 
-def _hr_responder(system: str, user: str) -> str:
-    s = system.lower()
-    if "intent decomposition module" in s:
-        return json.dumps(
-            {
-                "intent_type": "business_task",
-                "goal": "rank",
-                "target": {"kind": "none", "name": ""},
-                "entities": {},
-                "confidence": "high",
-                "signals": [],
-            }
-        )
-    if "routing node" in s:
-        return json.dumps({"skill_name": "candidate.rank", "reason": "m", "confidence": "high"})
-    if "planning node" in s:
-        return json.dumps(
-            {
-                "steps": [
-                    {
-                        "step_id": 1,
-                        "skill_name": "candidate.rank",
-                        "mode": "plan_execute",
-                        "depends_on": [],
-                    }
-                ],
-                "warnings": [],
-            }
-        )
-    if "plan-review node" in s or "output-review node" in s:
-        return json.dumps({"status": "approved", "reason": "ok", "findings": []})
-    if "approval-governance node" in s:
-        return json.dumps(
-            {
-                "risk_level": "low",
-                "approval_summary": "ok",
-                "concerns": [],
-                "recommended_status": "approved",
-            }
-        )
-    if "execute-preflight node" in s:
-        return json.dumps({"execution_goal": "rank", "expected_outputs": [], "risks": []})
-    if "recruiting assistant" in s:
-        return _SUMMARY
-    return "ok"
-
-
-@pytest.fixture
-def client(monkeypatch):
-    monkeypatch.setenv("AGENTKIT_WEB_AUTH_TOKEN", "secret-token")
-    monkeypatch.setenv("AGENTKIT_WEB_SECRET_KEY", "test-secret-key")
-    monkeypatch.setenv("AGENTKIT_WEB_COOKIE_SECURE", "false")
-    monkeypatch.setenv("AGENTKIT_WEB_AUTH_DISABLED", "false")
-    # Exercise the full pipeline regardless of any .env optimization flags.
-    monkeypatch.setenv("AGENTKIT_DETERMINISTIC_FASTPATH", "false")
-    monkeypatch.setenv("AGENTKIT_COMBINED_INTENT_ROUTE", "false")
-    config_mod.get_settings.cache_clear()
-
-    import agentkit.core.llm_client as llm_client
-    from agentkit.llm.fake import FakeProvider
-
-    monkeypatch.setattr(llm_client, "_get_provider", lambda: FakeProvider(responder=_hr_responder))
-
-    from agentkit.web.app import app, clear_runtime_cache
-    from agentkit.web.security import configure_security
-
-    configure_security(app)
-    clear_runtime_cache()
-    yield app.test_client()
-    clear_runtime_cache()
-    config_mod.get_settings.cache_clear()
-
-
-def _login_and_csrf(client) -> str:
-    assert client.post("/login", data={"token": "secret-token"}).status_code == 302
-    page = client.get("/chat")
-    return re.search(rb'name="csrf-token" content="([^"]+)"', page.data).group(1).decode()
-
-
-def _parse_frames(raw: str) -> list[tuple[str, dict]]:
-    frames: list[tuple[str, dict]] = []
+def _frames(raw: str) -> list[tuple[str, dict]]:
+    result = []
     for block in raw.split("\n\n"):
         event = "message"
-        data_lines: list[str] = []
-        for line in block.split("\n"):
+        data = None
+        for line in block.splitlines():
             if line.startswith("event:"):
-                event = line[len("event:") :].strip()
-            elif line.startswith("data:"):
-                data_lines.append(line[len("data:") :].lstrip(" "))
-        if data_lines:
-            frames.append((event, json.loads("\n".join(data_lines))))
-    return frames
+                event = line.split(":", 1)[1].strip()
+            if line.startswith("data:"):
+                data = json.loads(line.split(":", 1)[1].strip())
+        if data is not None:
+            result.append((event, data))
+    return result
 
 
-def test_tasks_stream_pauses_then_resume_streams_tokens(client):
-    token = _login_and_csrf(client)
-
-    # First call pauses for approval: a final frame, no token frames yet.
-    waiting = client.post(
-        "/api/tasks/stream",
-        json={"agent": "hr_recruiter", "text": "Rank candidate C-100 for JOB-001."},
-        headers={"X-CSRF-Token": token},
-    )
-    assert waiting.mimetype == "text/event-stream"
-    frames = _parse_frames(waiting.get_data(as_text=True))
-    finals = [data for event, data in frames if event == "final"]
-    assert finals, f"no final frame: {frames}"
-    out = finals[-1]["response"]["output"]
-    assert out["status"] == "waiting_for_approval"
-    thread_id = out["thread_id"]
-    assert thread_id
-
-    # Resume streams the recruiting-assistant summary token-by-token.
-    resumed = client.post(
-        "/api/tasks/resume/stream",
-        json={"thread_id": thread_id, "approved_skills": ["candidate.rank"]},
-        headers={"X-CSRF-Token": token},
-    )
-    assert resumed.mimetype == "text/event-stream"
-    frames = _parse_frames(resumed.get_data(as_text=True))
-    tokens = [data["delta"] for event, data in frames if event == "token"]
-    finals = [data for event, data in frames if event == "final"]
-
-    assert len(tokens) > 1, f"expected multiple token frames: {frames}"
-    assert "".join(tokens) == _SUMMARY
-    assert finals, "missing final frame on resume"
-    final_out = finals[-1]["response"]["output"]
-    ranked = (final_out.get("final") or {}).get("ranked_candidates") or final_out.get(
-        "ranked_candidates"
-    )
-    assert ranked, f"no ranked output after resume: {final_out}"
-
-
-def test_chat_stream_routes_action_agent_and_resumes_approval(client):
-    token = _login_and_csrf(client)
-    request_payload = {
-        "user_id": "browser-user",
-        "context": {
-            "agent": "hr_recruiter",
-            "message": "Rank candidate C-100 for JOB-001.",
-        },
+def test_stream_response_emits_single_unified_final_frame() -> None:
+    payload = {
+        "interaction_mode": "unified",
+        "agent": "customer_service",
+        "strategy": "direct",
+        "conversation_id": "c1",
+        "run_id": "r1",
+        "assistant_text": "已完成",
+        "response": TaskResponse(
+            status="completed",
+            output={"answer": "已完成"},
+            run_id="r1",
+            thread_id="t1",
+            agent="customer_service",
+            strategy="direct",
+            conversation_id="c1",
+            governance={},
+            audit_events=[],
+        ).to_dict(),
     }
-
-    waiting = client.post(
-        "/api/chat/stream",
-        json=request_payload,
-        headers={"X-CSRF-Token": token},
-    )
-    assert waiting.mimetype == "text/event-stream"
-    frames = _parse_frames(waiting.get_data(as_text=True))
-    finals = [data for event, data in frames if event == "final"]
-    assert finals, f"no final frame: {frames}"
-    assert finals[-1]["mode"] == "action"
-    assert finals[-1]["agent_kind"] == "action"
-    assert finals[-1]["conversation_id"]
-    out = finals[-1]["response"]["output"]
-    assert out["status"] == "waiting_for_approval"
-
-    resumed = client.post(
-        "/api/chat/stream",
-        json={
-            "context": {
-                "agent": "hr_recruiter",
-                "message": "Approve",
-                "approval": {
-                    "action": "approve",
-                    "thread_id": out["thread_id"],
-                    "skills": ["candidate.rank"],
-                    "request": {
-                        **request_payload,
-                        "context": {
-                            **request_payload["context"],
-                            "conversation_id": finals[-1]["conversation_id"],
-                        },
-                    },
-                },
-            },
-        },
-        headers={"X-CSRF-Token": token},
-    )
-    assert resumed.mimetype == "text/event-stream"
-    frames = _parse_frames(resumed.get_data(as_text=True))
-    tokens = [data["delta"] for event, data in frames if event == "token"]
-    finals = [data for event, data in frames if event == "final"]
-
-    assert "".join(tokens) == _SUMMARY
-    assert finals[-1]["mode"] == "action"
-    assert finals[-1]["agent_kind"] == "action"
-    assert finals[-1]["conversation_id"]
-    assert finals[-1]["response"]["output"]["governance"]["approval"]["status"] == "approved"
-
-
-def test_chat_stream_persists_action_failure(client, monkeypatch):
-    from agentkit.web.app import get_runtime
-
-    token = _login_and_csrf(client)
-    runtime = get_runtime()
-
-    def fail_handle(_request):
-        raise RuntimeError("search timed out")
-
-    monkeypatch.setattr(runtime.gateway, "handle", fail_handle)
-    failed = client.post(
-        "/api/chat/stream",
-        json={
-            "user_id": "browser-user",
-            "context": {
-                "agent": "hr_recruiter",
-                "message": "Research the latest five cases.",
-            },
-        },
-        headers={"X-CSRF-Token": token},
-    )
-
-    frames = _parse_frames(failed.get_data(as_text=True))
-    errors = [data for event, data in frames if event == "error"]
-    assert len(errors) == 1
-    assert errors[0]["error"] == "search timed out"
-    conversation_id = errors[0]["conversation_id"]
-    assert conversation_id
-
-    messages = client.get(f"/api/conversations/{conversation_id}/messages").get_json()["messages"]
-    assert [(message["role"], message["content"]) for message in messages] == [
-        ("user", "Research the latest five cases."),
-        ("assistant", "Execution failed: search timed out"),
-    ]
-
-
-def test_tasks_stream_requires_csrf(client):
-    client.post("/login", data={"token": "secret-token"})
-    resp = client.post("/api/tasks/stream", json={"agent": "hr_recruiter", "text": "x"})
-    assert resp.status_code == 400
-
-
-def test_fail_closed_output_review_suppresses_task_token_frames(client):
-    from agentkit.web.app import get_runtime
-
-    token = _login_and_csrf(client)
-    runtime = get_runtime()
-    runtime.tenant_config["output_review_policy"] = "block_on_failed"
-
-    waiting = client.post(
-        "/api/tasks/stream",
-        json={"agent": "hr_recruiter", "text": "Rank candidate C-100 for JOB-001."},
-        headers={"X-CSRF-Token": token},
-    )
-    frames = _parse_frames(waiting.get_data(as_text=True))
-    out = [data for event, data in frames if event == "final"][-1]["response"]["output"]
-
-    resumed = client.post(
-        "/api/tasks/resume/stream",
-        json={"thread_id": out["thread_id"], "approved_skills": ["candidate.rank"]},
-        headers={"X-CSRF-Token": token},
-    )
-    frames = _parse_frames(resumed.get_data(as_text=True))
-    assert [data for event, data in frames if event == "token"] == []
-    finals = [data for event, data in frames if event == "final"]
-    assert finals, "missing final frame on fail-closed task stream"
-    final_out = finals[-1]["response"]["output"]
-    assert final_out["governance"]["output_review"]["status"] == "approved"
-    assert final_out["final"]["summary"] == _SUMMARY
+    frames = _frames("".join(stream_response(lambda: payload)))
+    assert frames == [("final", payload)]
