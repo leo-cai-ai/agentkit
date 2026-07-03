@@ -8,7 +8,7 @@ from typing import Any
 
 from agentkit.core.memory.tokenizer import HeuristicTokenEstimator, TokenEstimator
 
-from .errors import ContextInputMissingError, ContextRenderError, ContextTooLargeError
+from .errors import ContextInputMissingError, ContextTooLargeError
 from .models import ContextInputModel, ContextRenderRequest, RenderedContext
 from .registry import ContextRegistry
 from .sources import ContextSourceRegistry
@@ -96,7 +96,7 @@ class ContextAssembler:
         for prepared_item in required:
             values[prepared_item.definition.name] = prepared_item.text
 
-        user = self._render_user(definition.user_template, values, request.context_id)
+        user = self._render_user(definition.user_template, values)
         if self._estimate(system, user) > effective_limit:
             raise ContextTooLargeError(
                 f"{request.context_id}: 必需上下文超过 {effective_limit} Token",
@@ -112,7 +112,6 @@ class ContextAssembler:
             candidate_user = self._render_user(
                 definition.user_template,
                 candidate_values,
-                request.context_id,
             )
             if self._estimate(system, candidate_user) <= effective_limit:
                 values = candidate_values
@@ -198,14 +197,8 @@ class ContextAssembler:
         self,
         template: str,
         values: dict[str, str],
-        context_id: str,
     ) -> str:
         rendered = _TEMPLATE_VARIABLE.sub(lambda match: values[match.group(1)], template)
-        if "{{" in rendered or "}}" in rendered:
-            raise ContextRenderError(
-                f"{context_id}: 模板包含无法解析的变量",
-                context_id=context_id,
-            )
         return f"UNTRUSTED_DATA_BEGIN\n{rendered.strip()}\nUNTRUSTED_DATA_END"
 
     def _estimate(self, system: str, user: str) -> int:

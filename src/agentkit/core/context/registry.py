@@ -199,6 +199,7 @@ class ContextRegistry:
         template: str,
         path: Path,
     ) -> None:
+        self._validate_template_syntax(template, path)
         declared = {item.name for item in model.inputs}
         referenced = set(_TEMPLATE_VARIABLE.findall(template))
         unknown = sorted(referenced - declared)
@@ -206,11 +207,18 @@ class ContextRegistry:
             raise ValueError(f"{path}: 未声明模板变量: {', '.join(unknown)}")
 
     def _validate_system_template(self, template: str, path: Path) -> None:
+        self._validate_template_syntax(template, path)
         referenced = sorted(set(_TEMPLATE_VARIABLE.findall(template)))
         if referenced:
             raise ValueError(
                 f"{path}: System 模板不能引用动态变量: {', '.join(referenced)}"
             )
+
+    @staticmethod
+    def _validate_template_syntax(template: str, path: Path) -> None:
+        residual = _TEMPLATE_VARIABLE.sub("", template)
+        if "{{" in residual or "}}" in residual:
+            raise ValueError(f"{path}: 模板语法无效")
 
     def _apply_override(
         self,

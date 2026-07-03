@@ -113,6 +113,23 @@ def test_sensitive_nested_fields_are_redacted(tmp_path: Path) -> None:
     assert rendered.user.count("[REDACTED]") == 2
 
 
+def test_nested_json_braces_are_not_treated_as_template_variables(tmp_path: Path) -> None:
+    registry = _react_registry(tmp_path)
+
+    rendered = ContextAssembler(registry).render(
+        render_request(
+            context_id="runtime.react-action",
+            values={
+                "request.goal": "保留用户输入 {{ literal }}",
+                "request.arguments": {"outer": {"inner": "value"}},
+            },
+        )
+    )
+
+    assert '"outer":{"inner":"value"}' in rendered.user
+    assert "{{ literal }}" in rendered.user
+
+
 def test_item_truncation_keeps_newest_values_and_reports_details(tmp_path: Path) -> None:
     registry = _react_registry(tmp_path)
     request = render_request(

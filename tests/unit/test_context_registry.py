@@ -39,6 +39,14 @@ def test_registry_rejects_undeclared_template_variable(tmp_path: Path) -> None:
         ContextRegistry(root=tmp_path, tenant_selector="company_alpha")
 
 
+def test_registry_rejects_malformed_template_syntax(tmp_path: Path) -> None:
+    folder = write_context_pack(tmp_path)
+    (folder / "user.md").write_text("{{ invalid-name }}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="模板语法无效"):
+        ContextRegistry(root=tmp_path, tenant_selector="company_alpha")
+
+
 def test_registry_rejects_dynamic_variables_in_system_template(tmp_path: Path) -> None:
     folder = write_context_pack(tmp_path)
     (folder / "system.md").write_text("SYSTEM {{ message }}", encoding="utf-8")
