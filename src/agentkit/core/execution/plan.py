@@ -58,6 +58,7 @@ class PlanModel(Protocol):
     def generate(
         self,
         *,
+        context: ExecutionContext,
         request: StrategyRequest,
         allowed_skills: tuple[str, ...],
         completed_artifacts: tuple[dict[str, Any], ...],
@@ -118,6 +119,7 @@ class PlanExecuteStrategy:
                 return {"result": self._result(state, "budget_exhausted", {})}
             try:
                 decision = self._model.generate(
+                    context=context,
                     request=request,
                     allowed_skills=request.capability.candidate_skills,
                     completed_artifacts=tuple(state["artifacts"]),

@@ -13,6 +13,7 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agentkit.core.artifacts import canonical_json
+from agentkit.core.contracts import SkillDefinition
 
 from .models import AutonomyBudget, StrategyRequest, StrategyResult, ToolRisk
 from .protocol import ExecutionContext
@@ -51,6 +52,8 @@ class ReactModel(Protocol):
     def decide(
         self,
         *,
+        context: ExecutionContext,
+        skill: SkillDefinition,
         request: StrategyRequest,
         observations: tuple[dict[str, Any], ...],
         allowed_tools: tuple[dict[str, Any], ...],
@@ -125,6 +128,8 @@ class ReactStrategy:
             }
             try:
                 decision = self._model.decide(
+                    context=context,
+                    skill=skill,
                     request=request,
                     observations=tuple(state["observations"]),
                     allowed_tools=allowed_tools,
