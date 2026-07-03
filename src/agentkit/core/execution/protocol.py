@@ -15,7 +15,7 @@ from agentkit.core.contracts import (
     ToolDefinition,
 )
 
-from .models import StrategyRequest, StrategyResult
+from .models import AutonomyBudget, StrategyRequest, StrategyResult
 
 AnswerHandler = Callable[["ExecutionContext", StrategyRequest], dict[str, Any]]
 
@@ -30,10 +30,15 @@ class ExecutionContext:
     tools: Mapping[str, ToolDefinition]
     tenant_config: dict[str, Any]
     artifacts: ArtifactStore
+    budget: AutonomyBudget | None = None
     invoker: Any = None
     answer_handler: AnswerHandler | None = None
     batch_size: int = 20
     max_concurrency: int = 8
+
+    @property
+    def effective_budget(self) -> AutonomyBudget:
+        return self.budget or self.agent.autonomy_budget
 
     def skill(self, name: str) -> SkillDefinition:
         if name not in self.agent.allowed_skills:
