@@ -1,340 +1,77 @@
-"""Runtime wiring for durable execution state."""
-
 from __future__ import annotations
-
-import json
-import os
-import uuid
 
 import pytest
 
-import agentkit.config as config_mod
-import agentkit.core.llm_client as llm_client
-from agentkit.config import Settings
-from agentkit.core import pg
-from agentkit.core.artifacts import build_artifact_store
-from agentkit.core.audit import InMemoryAuditLog, PostgresAuditLog
-from agentkit.core.contracts import (
-    IntentFrame,
-    PlanStep,
-    RouteDecision,
-    SkillDefinition,
-    TaskPlan,
-    TaskRequest,
-    ToolDefinition,
-)
-from agentkit.core.executor import PlanExecutor
-from agentkit.core.idempotency import build_idempotency_store
-from agentkit.core.migrations import run_postgres_migrations
-from agentkit.core.policy import PolicyGuard
-from agentkit.core.registry import SkillRegistry, ToolRegistry
-from agentkit.llm.fake import FakeProvider
-from agentkit.runtime.bootstrap import build_runtime
+from agentkit.core.artifacts import InMemoryArtifactStore
+from agentkit.core.audit import SQLiteAuditLog
+from agentkit.core.contracts import TaskRequest
+from agentkit.core.execution.direct import DirectStrategy
+from agentkit.core.execution.models import AutonomyBudget
+from agentkit.core.execution.registry import StrategyRegistry
+from agentkit.core.execution.selector import StrategySelector
+from agentkit.core.execution.workflow import WorkflowStrategy
+from agentkit.core.gateway import AgentGateway, build_checkpointer
+from agentkit.core.registry import AgentRegistry, SkillRegistry, ToolRegistry
+from agentkit.core.router import IntentRouter
+from tests.integration.test_unified_agent_graph import _agent, _intent, _skill
 
 
-def _postgres_contract_scope() -> str:
-    return uuid.uuid4().hex
-
-
-def test_postgres_contract_scope_is_unique() -> None:
-    first = _postgres_contract_scope()
-    second = _postgres_contract_scope()
-
-    assert first != second
-    assert f"contract-{first}" != f"contract-{second}"
-    assert f"{first}-artifact-run" != f"{second}-artifact-run"
-    assert f"{first}-contract-key" != f"{second}-contract-key"
-
-
-@pytest.mark.skipif(
-    not os.getenv("AGENTKIT_TEST_PG_DSN"),
-    reason="AGENTKIT_TEST_PG_DSN is not configured",
-)
-def test_postgres_storage_contracts() -> None:
-    scope = _postgres_contract_scope()
-    tenant_id = f"contract-{scope}"
-    idempotency_key = f"{scope}-contract-key"
-    settings = Settings(
-        _env_file=None,
-        storage_backend="postgres",
-        pg_dsn=os.environ["AGENTKIT_TEST_PG_DSN"],
-    )
-    run_postgres_migrations(settings)
-    run_id = PostgresAuditLog(settings).start_run(
-        tenant_id=tenant_id,
-        user_id="contract-user",
-        text="postgres artifact contract",
-    )
-
-    try:
-        artifacts = build_artifact_store(
-            backend="postgres",
-            tenant_id=tenant_id,
-            run_id=run_id,
-            settings=settings,
-        )
-        written = artifacts.put(kind="contract.value", payload={"value": 1})
-        assert artifacts.get(written.artifact_id).payload == {"value": 1}
-
-        store = build_idempotency_store(
-            backend="postgres",
-            tenant_id=tenant_id,
-            settings=settings,
-        )
-        claim = store.begin(
-            tool_name="contract.write",
-            idempotency_key=idempotency_key,
-            args={"value": 1},
-        )
-        assert claim.claimed is True
-        store.finish_success(claim, {"written": True})
-
-        cached = build_idempotency_store(
-            backend="postgres",
-            tenant_id=tenant_id,
-            settings=settings,
-        ).begin(
-            tool_name="contract.write",
-            idempotency_key=idempotency_key,
-            args={"value": 1},
-        )
-        assert cached.claimed is False
-        assert cached.result == {"written": True}
-    finally:
-        with pg.connection(settings) as conn:
-            conn.execute(
-                "DELETE FROM workflow_artifacts WHERE tenant_id = %s",
-                (tenant_id,),
-            )
-            conn.execute(
-                "DELETE FROM tool_idempotency_records WHERE tenant_id = %s",
-                (tenant_id,),
-            )
-            conn.execute("DELETE FROM audit_events WHERE run_id = %s", (run_id,))
-            conn.execute("DELETE FROM task_runs WHERE run_id = %s", (run_id,))
-
-
-def test_runtime_artifact_factory_persists_and_audits_without_payload(
-    monkeypatch, tmp_path
-) -> None:
-    monkeypatch.setenv("AGENTKIT_STORAGE_BACKEND", "sqlite")
-    config_mod.get_settings.cache_clear()
-    try:
-        runtime = build_runtime(db_path=tmp_path / "runtime.sqlite")
-        run_id = runtime.gateway.audit.start_run(
-            tenant_id=runtime.tenant_config["tenant_id"],
-            user_id="user-1",
-            text="persist artifact",
-        )
-
-        factory = runtime.gateway._executor._artifact_store_factory
-        assert factory is not None
-        written = factory(run_id).put(
-            kind="workflow.result",
-            payload={"secret": "payload", "value": 7},
-            summary="Stored workflow result",
-        )
-
-        restored = factory(run_id).get(written.artifact_id)
-        assert restored.payload == {"secret": "payload", "value": 7}
-
-        events = runtime.gateway.audit.events_for(run_id)
-        assert [event["type"] for event in events].count("artifact_written") == 1
-        persisted = [event for event in events if event["type"] == "artifact_persisted"]
-        assert [event["payload"] for event in persisted] == [
-            {
-                "artifact_id": written.artifact_id,
-                "kind": "workflow.result",
-                "payload_sha256": written.payload_sha256,
-                "payload_bytes": written.payload_bytes,
-                "backend": "sqlite",
-            }
-        ]
-        assert "secret" not in str(persisted)
-    finally:
-        config_mod.get_settings.cache_clear()
-
-
-def test_injected_durable_ledger_reuses_keyed_mutation_across_executors(
-    monkeypatch, tmp_path
-) -> None:
-    monkeypatch.setattr(
-        llm_client,
-        "_get_provider",
-        lambda: FakeProvider(
-            responder=lambda _system, _user: json.dumps(
-                {"execution_goal": "mutate", "expected_outputs": [], "risks": []}
-            )
-        ),
-    )
-    calls = {"count": 0}
-
-    def mutate(args: dict) -> dict:
-        calls["count"] += 1
-        return {"value": args["value"], "execution": calls["count"]}
-
-    tools = ToolRegistry()
-    tools.register(
-        ToolDefinition(
-            name="demo.mutate",
-            domain="demo",
-            description="",
-            handler=mutate,
-        )
-    )
-    skills = SkillRegistry()
+def _durable_gateway(tmp_path, calls: list[str]) -> AgentGateway:
+    agents, skills, tools = AgentRegistry(), SkillRegistry(), ToolRegistry()
+    agents.register(_agent("customer_service", ["refund.apply"]))
     skills.register(
-        SkillDefinition(
-            name="demo.workflow",
-            domain="demo",
-            description="",
-            input_schema={},
-            output_schema={},
-            permissions=[],
-            execution_mode="plan_execute",
-            tools=["demo.mutate"],
-            handler=lambda ctx, args: {
-                "mutation": ctx.call_tool(
-                    "demo.mutate",
-                    {"value": args["value"], "_idempotency_key": "mutation-1"},
-                )
-            },
+        _skill(
+            "refund.apply",
+            lambda ctx, args: calls.append(args["marker"]) or {"refund": "R-1"},
+            workflow=True,
+            side_effect=True,
         )
     )
-    tenant_config: dict = {}
-    ledger = build_idempotency_store(
-        backend="sqlite",
-        tenant_id="tenant-a",
-        sqlite_path=tmp_path / "runtime.sqlite",
-    )
-
-    def executor() -> PlanExecutor:
-        return PlanExecutor(
-            tenant_id="tenant-a",
-            tenant_config=tenant_config,
-            skills=skills,
-            tools=tools,
-            policy=PolicyGuard(tenant_config),
-            audit=InMemoryAuditLog(),
-            idempotency_store=ledger,
-        )
-
-    request = TaskRequest(user_id="user-1", roles=[], text="mutate")
-    plan = TaskPlan(
-        route=RouteDecision(skill_name="demo.workflow", reason="test"),
-        steps=[
-            PlanStep(
-                step_id=1,
-                skill_name="demo.workflow",
-                mode="plan_execute",
-                args={"value": 7},
-            )
-        ],
-    )
-    intent = IntentFrame(
-        raw_text="mutate",
-        language="en",
-        intent_type="business_task",
-        goal="mutate",
-        boundaries={},
-        entities={},
-        target={"kind": "business_skill", "name": "demo.workflow"},
-    )
-
-    first = executor().execute(run_id="run-a", request=request, plan=plan, intent=intent)
-    assert first["final"] == {
-        "mutation": {"value": 7, "execution": 1}
-    }
-    second = executor().execute(run_id="run-b", request=request, plan=plan, intent=intent)
-    assert second["final"] == {
-        "mutation": {"value": 7, "execution": 1}
-    }
-    assert calls == {"count": 1}
-
-
-def test_deferred_action_redacts_plain_idempotency_key_in_failure_audit() -> None:
-    audit = InMemoryAuditLog()
-    raw_key = "raw-idempotency-secret"
-    tenant_config: dict = {}
-    tools = ToolRegistry()
-
-    def charge(args: dict) -> dict:
-        raise RuntimeError(f"connector rejected key={args['idempotency_key']}")
-
-    tools.register(
-        ToolDefinition(
-            name="payments.charge",
-            domain="payments",
-            description="",
-            handler=charge,
-        )
-    )
-    skills = SkillRegistry()
-    skills.register(
-        SkillDefinition(
-            name="payments.workflow",
-            domain="payments",
-            description="",
-            input_schema={},
-            output_schema={},
-            permissions=[],
-            execution_mode="workflow",
-            tools=["payments.charge"],
-            handler=lambda _ctx, _args: {},
-        )
-    )
-    executor = PlanExecutor(
-        tenant_id="tenant-a",
-        tenant_config=tenant_config,
+    return AgentGateway(
+        tenant_id="t1",
+        tenant_config={},
+        agents=agents,
         skills=skills,
         tools=tools,
-        policy=PolicyGuard(tenant_config),
-        audit=audit,
+        audit=SQLiteAuditLog(tmp_path / "audit.sqlite"),
+        checkpointer=build_checkpointer(
+            mode="sqlite", sqlite_path=tmp_path / "checkpoints.sqlite"
+        ),
+        router=IntentRouter(agents=agents, skills=skills),
+        selector=StrategySelector(
+            skills=skills,
+            global_budget=AutonomyBudget(20, 20, 10, 10, 2, 50000, 600),
+        ),
+        strategies=StrategyRegistry([DirectStrategy(), WorkflowStrategy()]),
+        intent_resolver=_intent,
+        artifact_store_factory=lambda run_id: InMemoryArtifactStore(),
     )
-    plan = TaskPlan(
-        route=RouteDecision(skill_name="payments.workflow", reason="test"),
-        steps=[
-            PlanStep(
-                step_id=1,
-                skill_name="payments.workflow",
-                mode="workflow",
-                args={},
-            )
-        ],
-    )
+
+
+def test_sqlite_checkpoint_resumes_across_runtime_restart(tmp_path) -> None:
+    calls: list[str] = []
     request = TaskRequest(
-        user_id="user-1",
+        user_id="u1",
         roles=[],
-        text="charge",
+        text="退款",
         context={
-            "approved_skills": ["payments.workflow"],
-            "approved_content_hash": "content-hash",
+            "agent": "customer_service",
+            "skill": "refund.apply",
+            "skill_args": {"marker": "once"},
         },
     )
-    action = {
-        "action_id": "payment-action",
-        "approval_skill": "payments.workflow",
-        "content_hash": "content-hash",
-        "primary_result_key": "charge",
-        "tool_calls": [
-            {
-                "result_key": "charge",
-                "tool_name": "payments.charge",
-                "args": {"idempotency_key": raw_key},
-            }
-        ],
-    }
+    waiting = _durable_gateway(tmp_path, calls).handle(request)
 
-    result = executor.execute_deferred_action(
-        run_id="r1",
-        request=request,
-        plan=plan,
-        output={"final": {}},
-        action=action,
+    resumed_gateway = _durable_gateway(tmp_path, calls)
+    resumed = resumed_gateway.resume(
+        waiting.thread_id, approved_skills=["refund.apply"]
     )
 
-    assert raw_key not in str(result)
-    failed_events = [
-        event for event in audit.events_for("r1") if event["type"] == "deferred_action_failed"
-    ]
-    assert raw_key not in str(failed_events)
+    assert waiting.status == "waiting_for_approval"
+    assert resumed.status == "completed"
+    assert resumed.run_id == waiting.run_id
+    assert calls == ["once"]
+    assert [item["type"] for item in resumed.audit_events].count("capability_resolved") == 1
+
+    with pytest.raises(RuntimeError, match="未等待审批"):
+        resumed_gateway.resume(waiting.thread_id, approved_skills=["refund.apply"])

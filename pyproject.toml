@@ -79,6 +79,9 @@ agentkit = "agentkit.cli:main"
 pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "-ra"
+filterwarnings = [
+    "ignore:The default value of `allowed_objects` will change.*:langchain_core._api.deprecation.LangChainPendingDeprecationWarning",
+]
 
 [tool.ruff]
 line-length = 100

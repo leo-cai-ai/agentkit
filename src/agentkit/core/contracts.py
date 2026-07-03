@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from .execution.models import (
@@ -201,13 +201,25 @@ class TaskPlan:
 
 @dataclass(frozen=True)
 class TaskResponse:
+    status: str
     output: dict[str, Any]
-    plan: TaskPlan
+    run_id: str
+    thread_id: str
+    agent: str
+    strategy: str
+    conversation_id: str
+    governance: dict[str, Any]
     audit_events: list[dict[str, Any]]
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "status": self.status,
             "output": self.output,
-            "plan": asdict(self.plan),
+            "run_id": self.run_id,
+            "thread_id": self.thread_id,
+            "agent": self.agent,
+            "strategy": self.strategy,
+            "conversation_id": self.conversation_id,
+            "governance": self.governance,
             "audit_events": self.audit_events,
         }
