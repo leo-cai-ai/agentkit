@@ -30,7 +30,11 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any, Protocol
 
+from jsonschema import ValidationError as JsonSchemaValidationError
+from jsonschema import validate as validate_json
+
 from .contracts import ToolDefinition
+from .execution.models import ToolPolicy, ToolProvider, ToolRisk
 from .idempotency import (
     IdempotencyClaim,
     IdempotencyConflictError,
@@ -43,6 +47,7 @@ from .idempotency import (
 )
 from .log_context import current_run_id
 from .logging_config import get_logger
+from .tool_backends import PythonToolBackend, ToolBackendRegistry
 from .tracing import span
 
 _log = get_logger("agentkit.tools")
@@ -81,6 +86,18 @@ class ToolTimeoutError(ToolExecutionError):
     """Raised when a tool call exceeds its timeout."""
 
 
+class ToolPermissionError(ToolExecutionError):
+    """当前用户或 Agent 缺少 Tool 权限。"""
+
+
+class ToolRiskError(ToolExecutionError):
+    """Tool 风险超出当前执行策略。"""
+
+
+class ToolSchemaError(ToolExecutionError):
+    """Tool 输入不符合声明的 JSON Schema。"""
+
+
 def safe_tool_error_message(exc: BaseException, args: Mapping[str, Any]) -> str:
     """Format a tool error without exposing idempotency transport values."""
     message = str(exc)
@@ -107,6 +124,11 @@ class ToolExecutor:
         max_retries: int = 0,
         retry_base_delay: float = 0.2,
         idempotency_store: IdempotencyStore | None = None,
+        backends: ToolBackendRegistry | None = None,
+        permissions: set[str] | None = None,
+        allowed_tools: set[str] | None = None,
+        tool_policy: ToolPolicy = ToolPolicy.GOVERNED,
+        approved_side_effects: set[str] | None = None,
     ) -> None:
         self._tenant_id = tenant_id
         self._audit = audit
@@ -117,8 +139,16 @@ class ToolExecutor:
         self._retry_base_delay = float(retry_base_delay)
         self._idempotency_store = idempotency_store
         self._idempotency_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        self._backends = backends or ToolBackendRegistry(
+            {ToolProvider.PYTHON: PythonToolBackend()}
+        )
+        self._permissions = set(permissions or ())
+        self._allowed_tools = None if allowed_tools is None else set(allowed_tools)
+        self._tool_policy = tool_policy
+        self._approved_side_effects = set(approved_side_effects or ())
 
     def call(self, tool: ToolDefinition, args: dict[str, Any]) -> dict[str, Any]:
+        self._validate_access(tool, args)
         run_id = self._run_id or current_run_id()
         idempotency_store = self._idempotency_store
         if idempotency_store is not None and idempotency_store.tenant_id != self._tenant_id:
@@ -186,7 +216,7 @@ class ToolExecutor:
         ):
             for attempt in range(attempts_allowed):
                 try:
-                    result = self._invoke(tool.handler, args, timeout)
+                    result = self._invoke(tool, args, timeout)
                 except Exception as exc:  # noqa: BLE001 - normalize to ToolExecutionError
                     last_exc = exc
                     safe_error = safe_tool_error_message(exc, args)
@@ -283,24 +313,48 @@ class ToolExecutor:
 
     def _invoke(
         self,
-        handler: Any,
+        tool: ToolDefinition,
         args: dict[str, Any],
         timeout: float,
     ) -> dict[str, Any]:
+        backend = self._backends.get(tool.provider)
         if timeout <= 0:
-            return handler(args)
+            return backend.execute(tool, args)
         # Run in a worker thread within a copied context so contextvars (run id,
         # usage sink, budget guard, stream sink) propagate to LLM calls the tool
         # may make. The thread can't be force-killed on timeout, but the run is
         # unblocked and the failure is surfaced.
         ctx = contextvars.copy_context()
         pool = _shared_pool(self._max_workers)
-        future = pool.submit(ctx.run, handler, args)
+        future = pool.submit(ctx.run, backend.execute, tool, args)
         try:
             return future.result(timeout=timeout)
         except FuturesTimeoutError as exc:
             future.cancel()
             raise ToolTimeoutError(f"tool timed out after {timeout}s") from exc
+
+    def _validate_access(self, tool: ToolDefinition, args: dict[str, Any]) -> None:
+        if self._allowed_tools is not None and tool.name not in self._allowed_tools:
+            raise ToolPermissionError(f"Tool 不在当前 Skill 白名单中: {tool.name}")
+        missing = sorted(set(tool.permissions) - self._permissions)
+        if missing:
+            raise ToolPermissionError(f"缺少 Tool 权限: {', '.join(missing)}")
+        if self._tool_policy is ToolPolicy.NONE:
+            raise ToolRiskError("当前策略不允许调用 Tool")
+        if self._tool_policy is ToolPolicy.READ_ONLY and tool.risk is not ToolRisk.READ_ONLY:
+            raise ToolRiskError(f"只读策略不能调用 {tool.risk.value} Tool: {tool.name}")
+        if self._tool_policy is ToolPolicy.GOVERNED and tool.risk is ToolRisk.SIDE_EFFECT:
+            raise ToolRiskError(f"governed 策略不能直接执行副作用 Tool: {tool.name}")
+        if (
+            tool.risk is ToolRisk.SIDE_EFFECT
+            and tool.name not in self._approved_side_effects
+        ):
+            raise ToolRiskError(f"副作用 Tool 尚未获得审批: {tool.name}")
+        public_args = {key: value for key, value in args.items() if not key.startswith("_")}
+        try:
+            validate_json(instance=public_args, schema=tool.input_schema)
+        except JsonSchemaValidationError as exc:
+            raise ToolSchemaError(f"Tool 输入 Schema 校验失败: {exc.message}") from exc
 
     def _record(self, run_id: str, event_type: str, payload: dict[str, Any]) -> None:
         if self._audit is not None:

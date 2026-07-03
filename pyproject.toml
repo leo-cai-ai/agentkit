@@ -60,6 +60,10 @@ rag = [
 browser = [
     "playwright>=1.48.0,<2.0.0",
 ]
+# Model Context Protocol 客户端；Runtime 仅连接部署配置中显式声明的 Server。
+mcp = [
+    "mcp>=1.0.0,<2.0.0",
+]
 
 [build-system]
 requires = ["hatchling"]
