@@ -16,6 +16,7 @@ from .models import (
     LLMInvocationResult,
     RenderedContext,
 )
+from .sources import ContextSourceRegistry
 
 __all__ = [
     "ContextDefinition",
@@ -27,6 +28,7 @@ __all__ = [
     "ContextOutputInvalidError",
     "ContextRenderError",
     "ContextRenderRequest",
+    "ContextSourceRegistry",
     "ContextTooLargeError",
     "LLMInvocationResult",
     "RenderedContext",
