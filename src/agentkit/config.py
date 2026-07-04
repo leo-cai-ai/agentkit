@@ -238,6 +238,11 @@ class Settings(BaseSettings):
     xhs_detail_limit: int = Field(default=5, ge=0, le=20)
     xhs_detail_timeout_seconds: float = Field(default=6.0, gt=0.0)
     xhs_detail_pause_seconds: float = Field(default=0.5, ge=0.0)
+    # 媒体理解能力通过开放注册表校验，便于后续接入 OCR、多模态或 MCP Provider。
+    media_understanding_provider: str = "none"
+    media_understanding_model: str = ""
+    media_understanding_max_images: int = Field(default=3, ge=0, le=20)
+    media_understanding_min_confidence: float = Field(default=0.75, ge=0.0, le=1.0)
     web_search_browser: Literal["chromium", "firefox", "webkit"] = "chromium"
     web_search_headless: bool = True
     web_search_timeout_seconds: float = Field(default=30.0, gt=0.0)

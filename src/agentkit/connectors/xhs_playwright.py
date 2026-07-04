@@ -18,6 +18,7 @@ from agentkit.connectors.browser_search import (
 )
 from agentkit.connectors.xhs_browser_state import XHS_PHONE_VERIFICATION_PATTERN
 from agentkit.core.logging_config import get_logger
+from agentkit.core.media import MediaUnderstandingProvider
 
 _log = get_logger("agentkit.xhs.search")
 
@@ -451,9 +452,18 @@ class XhsSearchAdapter:
 class PlaywrightXhsResearchProvider:
     """Domain-provider shape backed by the reusable browser client."""
 
-    def __init__(self, client: PlaywrightSearchClient, adapter: XhsSearchAdapter) -> None:
+    def __init__(
+        self,
+        client: PlaywrightSearchClient,
+        adapter: XhsSearchAdapter,
+        *,
+        media_provider: MediaUnderstandingProvider | None = None,
+        max_media_assets: int = 3,
+    ) -> None:
         self.client = client
         self.adapter = adapter
+        self.media_provider = media_provider
+        self.max_media_assets = max_media_assets
 
     def search_top_notes(self, *, topic: str, limit: int) -> list[dict[str, Any]]:
         results = self.client.search(self.adapter, query=topic, limit=limit)

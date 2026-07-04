@@ -35,6 +35,10 @@ def _fresh_settings(monkeypatch, **env):
         "AGENTKIT_XHS_DETAIL_LIMIT",
         "AGENTKIT_XHS_DETAIL_TIMEOUT_SECONDS",
         "AGENTKIT_XHS_DETAIL_PAUSE_SECONDS",
+        "AGENTKIT_MEDIA_UNDERSTANDING_PROVIDER",
+        "AGENTKIT_MEDIA_UNDERSTANDING_MODEL",
+        "AGENTKIT_MEDIA_UNDERSTANDING_MAX_IMAGES",
+        "AGENTKIT_MEDIA_UNDERSTANDING_MIN_CONFIDENCE",
         "AGENTKIT_WEB_SEARCH_BROWSER",
         "AGENTKIT_WEB_SEARCH_HEADLESS",
         "AGENTKIT_WEB_SEARCH_TIMEOUT_SECONDS",
@@ -78,6 +82,30 @@ def test_defaults(monkeypatch):
     assert s.web_search_storage_state_root is None
     assert s.browser_publish_observation_seconds == 90.0
     assert s.artifact_max_payload_bytes == 1_048_576
+
+
+def test_media_understanding_defaults(monkeypatch):
+    settings = _fresh_settings(monkeypatch)
+
+    assert settings.media_understanding_provider == "none"
+    assert settings.media_understanding_model == ""
+    assert settings.media_understanding_max_images == 3
+    assert settings.media_understanding_min_confidence == 0.75
+
+
+def test_media_understanding_env_overrides(monkeypatch):
+    settings = _fresh_settings(
+        monkeypatch,
+        AGENTKIT_MEDIA_UNDERSTANDING_PROVIDER="registered-test-provider",
+        AGENTKIT_MEDIA_UNDERSTANDING_MODEL="vision-model",
+        AGENTKIT_MEDIA_UNDERSTANDING_MAX_IMAGES="5",
+        AGENTKIT_MEDIA_UNDERSTANDING_MIN_CONFIDENCE="0.8",
+    )
+
+    assert settings.media_understanding_provider == "registered-test-provider"
+    assert settings.media_understanding_model == "vision-model"
+    assert settings.media_understanding_max_images == 5
+    assert settings.media_understanding_min_confidence == 0.8
 
 
 def test_xhs_publish_observation_seconds_env_override(monkeypatch):

@@ -148,6 +148,18 @@ def test_xhs_provider_bundle_accepts_tenant_playwright_override(monkeypatch, tmp
     assert bundle.research.adapter.enrich_details is False
 
 
+def test_xhs_provider_bundle_rejects_unknown_media_provider(monkeypatch):
+    from agentkit.config import Settings
+
+    settings = Settings(_env_file=None)
+    monkeypatch.setattr(_PROVIDERS, "get_settings", lambda: settings)
+
+    with pytest.raises(ValueError, match="未注册的媒体理解 Provider: missing"):
+        default_provider_bundle(
+            provider_config={"media_understanding_provider": "missing"}
+        )
+
+
 def test_xhs_provider_bundle_builds_playwright_publisher(monkeypatch, tmp_path):
     from agentkit.config import Settings
     from agentkit.connectors.xhs_publisher_playwright import (

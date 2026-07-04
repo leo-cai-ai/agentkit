@@ -17,6 +17,10 @@ from agentkit.connectors.xhs_publication import (
     resolve_publish_content,
     validate_publish_media_strategy,
 )
+from agentkit.core.media import (
+    MediaUnderstandingProvider,
+    build_default_media_registry,
+)
 
 
 class XhsResearchProvider(Protocol):
@@ -129,13 +133,22 @@ def default_provider_bundle(
 ) -> XhsProviderBundle:
     settings = get_settings()
     config = provider_config or {}
+    media_provider, max_media_assets, _min_confidence = _build_media_provider(
+        settings,
+        config,
+    )
     provider_name = (
         str(config.get("research_provider", settings.xhs_research_provider)).strip().lower()
     )
     if provider_name == "mock":
         research: XhsResearchProvider = MockXhsProvider()
     elif provider_name == "playwright":
-        research = build_playwright_research_provider(settings, config)
+        research = build_playwright_research_provider(
+            settings,
+            config,
+            media_provider=media_provider,
+            max_media_assets=max_media_assets,
+        )
     else:
         raise ValueError(
             f"Unsupported XHS research provider: {provider_name!r}. "
@@ -172,6 +185,9 @@ def default_provider_bundle(
 def build_playwright_research_provider(
     settings: Any,
     config: Mapping[str, Any],
+    *,
+    media_provider: MediaUnderstandingProvider,
+    max_media_assets: int,
 ) -> XhsResearchProvider:
     from agentkit.connectors.browser_search import PlaywrightSearchClient
     from agentkit.connectors.xhs_playwright import (
@@ -191,7 +207,55 @@ def build_playwright_research_provider(
             config.get("detail_pause_seconds", settings.xhs_detail_pause_seconds)
         ),
     )
-    return PlaywrightXhsResearchProvider(PlaywrightSearchClient(browser_config), adapter)
+    return PlaywrightXhsResearchProvider(
+        PlaywrightSearchClient(browser_config),
+        adapter,
+        media_provider=media_provider,
+        max_media_assets=max_media_assets,
+    )
+
+
+def _build_media_provider(
+    settings: Any,
+    config: Mapping[str, Any],
+) -> tuple[MediaUnderstandingProvider, int, float]:
+    """解析租户覆盖并在浏览器创建前构建媒体理解 Provider。"""
+
+    provider_name = str(
+        config.get(
+            "media_understanding_provider",
+            settings.media_understanding_provider,
+        )
+    )
+    min_confidence = float(
+        config.get(
+            "media_understanding_min_confidence",
+            settings.media_understanding_min_confidence,
+        )
+    )
+    max_media_assets = int(
+        config.get(
+            "media_understanding_max_images",
+            settings.media_understanding_max_images,
+        )
+    )
+    if not 0 <= max_media_assets <= 20:
+        raise ValueError("media_understanding_max_images 必须位于 0 到 20 之间")
+    if not 0.0 <= min_confidence <= 1.0:
+        raise ValueError("media_understanding_min_confidence 必须位于 0 到 1 之间")
+    provider = build_default_media_registry().build(
+        provider_name,
+        {
+            "model": str(
+                config.get(
+                    "media_understanding_model",
+                    settings.media_understanding_model,
+                )
+            ),
+            "min_confidence": min_confidence,
+        },
+    )
+    return provider, max_media_assets, min_confidence
 
 
 def build_playwright_publishing_provider(

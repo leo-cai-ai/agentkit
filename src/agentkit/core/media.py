@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, Protocol
 
@@ -99,23 +99,48 @@ class MediaUnderstandingRegistry:
     """按稳定 ID 显式注册并解析媒体理解 Provider。"""
 
     def __init__(self) -> None:
-        self._providers: dict[str, MediaUnderstandingProvider] = {}
+        self._factories: dict[
+            str,
+            Callable[[Mapping[str, Any]], MediaUnderstandingProvider],
+        ] = {}
 
     def register(self, provider: MediaUnderstandingProvider) -> None:
         name = self._normalize(provider.name)
-        if name in self._providers:
-            raise ValueError(f"重复注册媒体理解 Provider: {name}")
-        self._providers[name] = provider
+        self.register_factory(name, lambda _config: provider)
 
-    def resolve(self, name: str) -> MediaUnderstandingProvider:
+    def register_factory(
+        self,
+        name: str,
+        factory: Callable[[Mapping[str, Any]], MediaUnderstandingProvider],
+    ) -> None:
+        """注册可读取模型、阈值等配置的 Provider 工厂。"""
+
         provider_id = self._normalize(name)
-        provider = self._providers.get(provider_id)
-        if provider is None:
-            available = ", ".join(sorted(self._providers)) or "无"
+        if provider_id in self._factories:
+            raise ValueError(f"重复注册媒体理解 Provider: {provider_id}")
+        self._factories[provider_id] = factory
+
+    def build(
+        self,
+        name: str,
+        config: Mapping[str, Any] | None = None,
+    ) -> MediaUnderstandingProvider:
+        """根据显式注册 ID 和配置构建 Provider。"""
+
+        provider_id = self._normalize(name)
+        factory = self._factories.get(provider_id)
+        if factory is None:
+            available = ", ".join(sorted(self._factories)) or "无"
             raise ValueError(
                 f"未注册的媒体理解 Provider: {provider_id}; 可用 Provider: {available}"
             )
+        provider = factory(dict(config or {}))
+        if self._normalize(provider.name) != provider_id:
+            raise ValueError(f"重复注册媒体理解 Provider: {name}")
         return provider
+
+    def resolve(self, name: str) -> MediaUnderstandingProvider:
+        return self.build(name)
 
     @staticmethod
     def _normalize(name: str) -> str:
