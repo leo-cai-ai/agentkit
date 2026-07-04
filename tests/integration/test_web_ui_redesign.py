@@ -143,6 +143,27 @@ def test_chat_has_accessible_conversation_delete_dialog(client) -> None:
     assert "@media (max-width: 47.5rem), (hover: none)" in css
 
 
+def test_chat_has_conversation_recovery_and_two_stage_delete_controls(client) -> None:
+    login(client)
+    html = client.get("/chat").get_data(as_text=True)
+    js = client.get("/static/js/app.js").get_data(as_text=True)
+    css = client.get("/static/css/pages.css").get_data(as_text=True)
+
+    assert "data-conversation-execution" in html
+    assert "data-conversation-execution-title" in html
+    assert "data-conversation-execution-reason" in html
+    assert "data-conversation-retry" in html
+    assert "data-conversation-delete-stage" in html
+    assert "/retry/stream" in js
+    assert "/terminate-and-delete" in js
+    assert "requires_second_delete_confirmation" in js
+    assert "结束任务并永久删除" in js
+    assert "正在结束任务" in js
+    assert "No messages were saved for this conversation" not in js
+    assert ".ak-conversation-execution" in css
+    assert ".ak-conversation-execution-actions" in css
+
+
 def test_history_preference_never_stores_conversation_content(client) -> None:
     js = client.get("/static/js/app.js").get_data(as_text=True)
 

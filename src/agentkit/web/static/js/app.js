@@ -25,6 +25,9 @@ let currentConversationId = null;
 let conversationCache = [];
 let chatBusy = false;
 let pendingDeleteConversationId = null;
+let pendingDeleteExecution = null;
+let currentConversationExecution = null;
+let deletionPollTimer = null;
 const HISTORY_COLLAPSED_KEY = "agentkit:chat-history-collapsed";
 const chatSessionGuard = window.AgentKitChatSession.createChatSessionGuard();
 const TRACE_ATTENTION_STATES = new Set(["waiting_approval", "failed", "blocked"]);
@@ -548,6 +551,48 @@ function conversationTitle(conv) {
   return (conv.title || "").trim() || "未命名会话";
 }
 
+function renderConversationExecution(execution) {
+  currentConversationExecution = execution || null;
+  const card = document.querySelector("[data-conversation-execution]");
+  if (!card) return;
+  const status = String(execution?.status || "idle");
+  const visible = status !== "idle" && status !== "completed";
+  card.hidden = !visible;
+  card.dataset.status = status;
+  if (!visible) {
+    setChatBusy(false);
+    return;
+  }
+  const title = card.querySelector("[data-conversation-execution-title]");
+  const reason = card.querySelector("[data-conversation-execution-reason]");
+  const retry = card.querySelector("[data-conversation-retry]");
+  const titles = {
+    failed: execution.reconciled ? "历史任务状态已修复" : "任务执行失败",
+    waiting_for_approval: "任务等待人工审批",
+    running: "任务正在执行",
+    cancelling: "正在结束任务",
+    deletion_pending: "正在结束任务",
+    cancelled: "任务已取消",
+  };
+  if (title) title.textContent = titles[status] || "任务状态已更新";
+  if (reason) reason.textContent = execution?.reason || "请查看运行追踪了解详情。";
+  if (retry) {
+    retry.hidden = !execution?.retryable;
+    retry.disabled = chatBusy;
+  }
+  setChatBusy(["cancelling", "deletion_pending"].includes(status));
+}
+
+function emptyConversationNotice(execution) {
+  const status = String(execution?.status || "idle");
+  if (status === "failed") return "本次任务未保存对话消息，可重新执行或查看运行追踪。";
+  if (status === "waiting_for_approval") return "任务正在等待人工审批。";
+  if (status === "running") return "任务仍在执行，请稍候。";
+  if (["cancelling", "deletion_pending"].includes(status)) return "正在结束任务，完成后会自动删除会话。";
+  if (status === "cancelled") return "任务已取消，可重新执行或删除会话。";
+  return "该会话暂无消息。";
+}
+
 function conversationMeta(conv) {
   if (!conv) return "开始新的对话";
   const when = formatRelativeTime(conv.updated_at || conv.created_at);
@@ -649,11 +694,10 @@ async function loadConversationMessages(conversationId) {
       !chatSessionGuard.isCurrent(requestToken) ||
       currentConversationId !== requestedConversationId
     ) return;
+    renderConversationExecution(data.execution || { status: "idle" });
     const messages = data.messages || [];
     if (!messages.length) {
-      showConversationNotice(
-        "No messages were saved for this conversation. It may have stopped before execution completed."
-      );
+      showConversationNotice(emptyConversationNotice(data.execution));
       return;
     }
     const thread = document.getElementById("chat-thread");
@@ -680,6 +724,8 @@ async function startNewConversation() {
   chatSessionGuard.cancel();
   setTraceDrawerOpen(false);
   currentConversationId = null;
+  currentConversationExecution = null;
+  renderConversationExecution({ status: "idle" });
   clearPendingResult();
   setExecutionState("空闲");
   resetChatThread("New conversation started. How can I help?");
@@ -698,24 +744,66 @@ function setConversationDeleteBusy(busy) {
     ?.toggleAttribute("disabled", busy);
 }
 
-function openConversationDeleteDialog(conversationId) {
+function setDeleteDialogStage(stage) {
+  const dialog = document.querySelector("[data-conversation-delete-dialog]");
+  if (!dialog) return;
+  dialog.dataset.conversationDeleteStage = String(stage);
+  const heading = dialog.querySelector("[data-conversation-delete-heading]");
+  const description = dialog.querySelector("[data-conversation-delete-description]");
+  const confirm = dialog.querySelector("[data-conversation-delete-confirm]");
+  if (stage === 2) {
+    if (heading) heading.textContent = "结束任务并永久删除？";
+    if (description) {
+      description.textContent = "系统会先安全结束当前任务，再永久删除会话数据。已经发生的外部 Tool 副作用无法回滚；企业审计和运行追踪仍会保留。";
+    }
+    if (confirm) confirm.textContent = "结束任务并永久删除";
+    return;
+  }
+  if (heading) heading.textContent = "删除会话？";
+  if (description) {
+    description.textContent = "删除后无法恢复。会话消息、摘要和相关长期记忆将被永久删除；企业审计和运行追踪仍会保留。";
+  }
+  if (confirm) confirm.textContent = "确认删除";
+}
+
+async function openConversationDeleteDialog(conversationId) {
   const dialog = document.querySelector("[data-conversation-delete-dialog]");
   const conversation = conversationCache.find((item) => item.id === conversationId);
   if (!dialog || !conversation) return;
   pendingDeleteConversationId = conversationId;
+  pendingDeleteExecution = null;
+  setDeleteDialogStage(1);
   dialog.querySelector("[data-conversation-delete-title]").textContent =
     conversationTitle(conversation);
   dialog.querySelector("[data-conversation-delete-error]").textContent = "";
-  setConversationDeleteBusy(false);
+  setConversationDeleteBusy(true);
   dialog.showModal();
   dialog.querySelector("[data-conversation-delete-cancel]")?.focus();
+  try {
+    const response = await fetch(
+      `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
+    );
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error || "无法读取会话状态");
+    pendingDeleteExecution = body.execution || { status: "idle" };
+    if (currentConversationId === conversationId) {
+      currentConversationExecution = pendingDeleteExecution;
+    }
+  } catch (error) {
+    dialog.querySelector("[data-conversation-delete-error]").textContent =
+      error.message || "无法读取会话状态，请重试";
+  } finally {
+    setConversationDeleteBusy(false);
+  }
 }
 
 function closeConversationDeleteDialog() {
   const dialog = document.querySelector("[data-conversation-delete-dialog]");
   if (dialog?.open) dialog.close();
   pendingDeleteConversationId = null;
+  pendingDeleteExecution = null;
   if (dialog) {
+    setDeleteDialogStage(1);
     dialog.querySelector("[data-conversation-delete-error]").textContent = "";
   }
 }
@@ -755,6 +843,119 @@ async function deleteConversation(conversationId) {
     if (error) error.textContent = "删除失败，请重试";
   } finally {
     setConversationDeleteBusy(false);
+  }
+}
+
+async function postTerminateAndDelete(conversationId) {
+  return fetch(
+    `/api/conversations/${encodeURIComponent(conversationId)}/terminate-and-delete`,
+    {
+      method: "POST",
+      headers: { "X-CSRF-Token": getCsrfToken() },
+    },
+  );
+}
+
+function scheduleDeletionPoll(conversationId) {
+  if (deletionPollTimer) window.clearTimeout(deletionPollTimer);
+  deletionPollTimer = window.setTimeout(
+    () => pollConversationDeletion(conversationId),
+    1500,
+  );
+}
+
+async function pollConversationDeletion(conversationId) {
+  try {
+    const response = await postTerminateAndDelete(conversationId);
+    const body = await response.json().catch(() => ({}));
+    if (response.status === 404 || (response.ok && body.status === "deleted")) {
+      deletionPollTimer = null;
+      applyDeletedConversation(conversationId);
+      return;
+    }
+    if (response.status === 202) {
+      if (currentConversationId === conversationId) {
+        renderConversationExecution({
+          status: "deletion_pending",
+          reason: "正在安全结束任务，完成后会自动删除会话。",
+          retryable: false,
+        });
+      }
+      scheduleDeletionPoll(conversationId);
+      return;
+    }
+    throw new Error(body.error || "结束任务失败，请重试");
+  } catch (error) {
+    deletionPollTimer = null;
+    if (currentConversationId === conversationId) {
+      renderConversationExecution({
+        status: "failed",
+        reason: error.message || "结束任务失败，请重试",
+        retryable: false,
+        requires_second_delete_confirmation: true,
+      });
+    }
+  }
+}
+
+async function terminateAndDeleteConversation(conversationId) {
+  const dialog = document.querySelector("[data-conversation-delete-dialog]");
+  const error = dialog?.querySelector("[data-conversation-delete-error]");
+  setConversationDeleteBusy(true);
+  if (error) error.textContent = "";
+  try {
+    const response = await postTerminateAndDelete(conversationId);
+    const body = await response.json().catch(() => ({}));
+    if (response.status === 404 || (response.ok && body.status === "deleted")) {
+      applyDeletedConversation(conversationId);
+      closeConversationDeleteDialog();
+      return;
+    }
+    if (response.status === 202) {
+      closeConversationDeleteDialog();
+      if (currentConversationId === conversationId) {
+        renderConversationExecution({
+          status: "deletion_pending",
+          reason: "正在安全结束任务，完成后会自动删除会话。",
+          retryable: false,
+        });
+        showConversationNotice("正在结束任务，完成后会自动删除会话。", "loading");
+      }
+      scheduleDeletionPoll(conversationId);
+      return;
+    }
+    if (error) error.textContent = body.error || "结束任务失败，请重试";
+  } catch {
+    if (error) error.textContent = "结束任务失败，请重试";
+  } finally {
+    setConversationDeleteBusy(false);
+  }
+}
+
+async function retryConversation(conversationId) {
+  if (!conversationId || chatBusy) return;
+  setChatBusy(true);
+  showConversationNotice("正在重新执行原始请求…", "loading");
+  try {
+    await streamSse(
+      `/api/conversations/${encodeURIComponent(conversationId)}/retry/stream`,
+      {},
+    );
+    if (currentConversationId !== conversationId) return;
+    await loadConversationMessages(conversationId);
+    await loadConversations("general_agent");
+  } catch (error) {
+    if (currentConversationId === conversationId) {
+      renderConversationExecution({
+        ...(currentConversationExecution || {}),
+        status: "failed",
+        reason: error.message || "重新执行失败，请重试",
+        retryable: true,
+      });
+      showConversationNotice("重新执行失败，请重试。", "error");
+    }
+  } finally {
+    if (currentConversationId === conversationId) setChatBusy(false);
   }
 }
 
@@ -1718,7 +1919,7 @@ function bindConversationHistory() {
   history?.addEventListener("click", async (event) => {
     const remove = event.target.closest("[data-delete-conversation-id]");
     if (remove) {
-      openConversationDeleteDialog(remove.dataset.deleteConversationId);
+      await openConversationDeleteDialog(remove.dataset.deleteConversationId);
       return;
     }
     const item = event.target.closest("[data-conversation-id]");
@@ -1734,9 +1935,26 @@ function bindConversationHistory() {
 
   deleteCancel?.addEventListener("click", closeConversationDeleteDialog);
   deleteConfirm?.addEventListener("click", async () => {
-    if (pendingDeleteConversationId) {
-      await deleteConversation(pendingDeleteConversationId);
+    if (!pendingDeleteConversationId || !pendingDeleteExecution) return;
+    const requiresSecond = Boolean(
+      pendingDeleteExecution.requires_second_delete_confirmation,
+    );
+    if (requiresSecond && deleteDialog?.dataset.conversationDeleteStage !== "2") {
+      setDeleteDialogStage(2);
+      deleteCancel?.focus();
+      return;
     }
+    if (requiresSecond) {
+      await terminateAndDeleteConversation(pendingDeleteConversationId);
+      return;
+    }
+    await deleteConversation(pendingDeleteConversationId);
+  });
+  document.querySelector("[data-conversation-retry]")?.addEventListener("click", () => {
+    if (currentConversationId) retryConversation(currentConversationId);
+  });
+  document.querySelector("[data-conversation-state-delete]")?.addEventListener("click", async () => {
+    if (currentConversationId) await openConversationDeleteDialog(currentConversationId);
   });
   deleteDialog?.addEventListener("cancel", (event) => {
     if (deleteDialog.dataset.busy === "true") {
@@ -1744,9 +1962,12 @@ function bindConversationHistory() {
       return;
     }
     pendingDeleteConversationId = null;
+    pendingDeleteExecution = null;
   });
   deleteDialog?.addEventListener("close", () => {
     pendingDeleteConversationId = null;
+    pendingDeleteExecution = null;
+    setDeleteDialogStage(1);
     deleteDialog.querySelector("[data-conversation-delete-error]").textContent = "";
   });
 

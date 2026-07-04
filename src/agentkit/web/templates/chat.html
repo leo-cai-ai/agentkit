@@ -100,6 +100,28 @@
           </div>
         </div>
 
+        <section
+          class="ak-conversation-execution"
+          data-conversation-execution
+          role="status"
+          aria-live="polite"
+          hidden
+        >
+          <div>
+            <span class="ak-eyebrow">任务状态</span>
+            <h3 data-conversation-execution-title></h3>
+            <p data-conversation-execution-reason></p>
+          </div>
+          <div class="ak-conversation-execution-actions">
+            <button class="secondary" type="button" data-conversation-retry hidden>
+              重新执行
+            </button>
+            <button class="secondary" type="button" data-conversation-state-delete>
+              删除会话
+            </button>
+          </div>
+        </section>
+
         <form id="chat-form" class="chat-input-row ak-chat-composer" aria-label="消息输入框">
           <div class="ak-mention-shell">
             <textarea
@@ -174,6 +196,7 @@
   <dialog
     class="ak-conversation-delete-dialog"
     data-conversation-delete-dialog
+    data-conversation-delete-stage="1"
     aria-labelledby="conversation-delete-heading"
     aria-describedby="conversation-delete-description"
   >
@@ -182,9 +205,9 @@
     </div>
     <div class="ak-delete-dialog-copy">
       <span class="ak-eyebrow">危险操作</span>
-      <h2 id="conversation-delete-heading">删除会话？</h2>
+      <h2 id="conversation-delete-heading" data-conversation-delete-heading>删除会话？</h2>
       <p class="ak-delete-dialog-conversation" data-conversation-delete-title></p>
-      <p id="conversation-delete-description">
+      <p id="conversation-delete-description" data-conversation-delete-description>
         删除后无法恢复。会话消息、摘要和相关长期记忆将被永久删除；企业审计和运行追踪仍会保留。
       </p>
       <p

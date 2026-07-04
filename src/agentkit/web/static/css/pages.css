@@ -193,6 +193,52 @@
   box-shadow: var(--ak-sys-shadow-panel);
 }
 
+.ak-conversation-execution {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ak-sys-space-4);
+  margin: 0 var(--ak-sys-space-4);
+  padding: var(--ak-sys-space-3) var(--ak-sys-space-4);
+  border: 1px solid var(--ak-sys-color-border-default);
+  border-inline-start: 3px solid var(--ak-sys-color-border-interactive);
+  border-radius: var(--ak-sys-radius-sm);
+  background: var(--ak-sys-color-bg-surface-subtle);
+}
+
+.ak-conversation-execution[hidden] {
+  display: none;
+}
+
+.ak-conversation-execution[data-status="failed"] {
+  border-color: var(--ak-sys-color-status-danger-border);
+  border-inline-start-color: var(--ak-sys-color-status-danger-fg);
+  background: var(--ak-sys-color-status-danger-bg);
+}
+
+.ak-conversation-execution[data-status="cancelling"],
+.ak-conversation-execution[data-status="deletion_pending"] {
+  border-inline-start-color: var(--ak-sys-color-status-warning-fg);
+  background: var(--ak-sys-color-status-warning-bg);
+}
+
+.ak-conversation-execution h3 {
+  margin: var(--ak-sys-space-1) 0;
+  font-size: 1rem;
+}
+
+.ak-conversation-execution p {
+  margin: 0;
+  color: var(--ak-sys-color-text-secondary);
+  line-height: 1.55;
+}
+
+.ak-conversation-execution-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--ak-sys-space-2);
+}
+
 .ak-conversation-delete-dialog[open] {
   display: grid;
 }
@@ -281,6 +327,21 @@
   .conversation-delete-button {
     opacity: 0.72;
     pointer-events: auto;
+  }
+
+  .ak-conversation-execution {
+    align-items: stretch;
+    flex-direction: column;
+    margin-inline: var(--ak-sys-space-2);
+  }
+
+  .ak-conversation-execution-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .ak-conversation-execution-actions button {
+    inline-size: 100%;
   }
 }
 
