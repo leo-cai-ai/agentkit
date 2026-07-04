@@ -231,3 +231,28 @@ def test_governance_uses_searchable_object_tabs_without_prompt_content(client) -
     assert "data-governance-detail" in html
     assert "UNTRUSTED_DATA_BEGIN" not in html
     assert "System Online" not in html
+
+
+def test_login_is_independent_and_exposes_stable_form_states(client) -> None:
+    html = client.get("/login").get_data(as_text=True)
+
+    assert 'class="ak-login-shell"' in html
+    assert "data-token-visibility-toggle" in html
+    assert 'id="login-error"' in html
+    assert 'aria-live="polite"' in html
+    assert 'aria-describedby="access-token-help"' in html
+    assert 'data-loading-label="正在验证"' in html
+    assert "ak-app-shell" not in html
+
+
+def test_shared_components_define_loading_empty_error_and_permission_states(client) -> None:
+    css = client.get("/static/css/components.css").get_data(as_text=True)
+
+    for selector in (
+        ".ak-skeleton",
+        ".ak-empty-state",
+        ".ak-error-state",
+        ".ak-permission-state",
+        ".ak-drawer",
+    ):
+        assert selector in css

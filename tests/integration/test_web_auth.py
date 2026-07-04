@@ -96,7 +96,7 @@ def test_page_stylesheets_load_in_expected_order(client):
     )
     assert "/static/css/app.css" not in login_html
     assert "/static/css/layout.css" not in login_html
-    assert 'class="login-shell"' in login_html
+    assert 'class="ak-login-shell"' in login_html
     assert 'for="access-token"' in login_html
     assert 'id="access-token"' in login_html
     assert "style=" not in login_html
@@ -377,7 +377,7 @@ def test_login_error_uses_accessible_field_state(client):
     response = client.post("/login", data={"token": "nope"})
     assert response.status_code == 401
     html = response.get_data(as_text=True)
-    assert 'id="login-error" role="alert"' in html
+    assert re.search(r'id="login-error"\s+role="alert"', html)
     assert 'aria-invalid="true"' in html
     assert 'aria-errormessage="login-error"' in html
 
