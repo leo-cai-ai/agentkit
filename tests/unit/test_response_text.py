@@ -1,4 +1,9 @@
-from agentkit.core.response_text import format_task_output_text
+import json
+
+from agentkit.core.response_text import (
+    format_task_output_text,
+    normalize_persisted_assistant_text,
+)
 
 
 def test_xhs_published_summary_uses_actual_outcome() -> None:
@@ -76,3 +81,31 @@ def test_unknown_structured_output_does_not_dump_json() -> None:
 
     assert text == "任务已完成，可在运行追踪中查看详细结果。"
     assert "internal_payload" not in text
+
+
+def test_legacy_xhs_json_message_is_normalized() -> None:
+    legacy = json.dumps(
+        {
+            "campaign_id": "XHS-30D-10000",
+            "platform": "xiaohongshu",
+            "topic": "AI时代的副业",
+            "workflow_status": "blocked",
+            "publish": {
+                "status": "blocked",
+                "review": {"reason": "证据不足"},
+            },
+        },
+        ensure_ascii=False,
+    )
+
+    assert normalize_persisted_assistant_text(legacy) == (
+        "内容审核未通过，未进入发布：证据不足"
+    )
+
+
+def test_normal_markdown_and_unrecognized_json_are_not_rewritten() -> None:
+    assert normalize_persisted_assistant_text("**正常回答**") == "**正常回答**"
+    assert normalize_persisted_assistant_text('{"example": true}') == '{"example": true}'
+    assert normalize_persisted_assistant_text('[{"campaign_id": "x"}]') == (
+        '[{"campaign_id": "x"}]'
+    )

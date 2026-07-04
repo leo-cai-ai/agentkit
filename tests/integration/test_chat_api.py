@@ -162,6 +162,45 @@ def test_conversation_endpoints_use_unified_persistence(client) -> None:
     assert messages[-1]["agent_id"] == "customer_service"
 
 
+def test_history_api_normalizes_legacy_structured_assistant_message(client) -> None:
+    from agentkit.web.app import get_runtime
+
+    token = _login(client)
+    created = client.post(
+        "/api/conversations",
+        json={"title": "旧会话"},
+        headers={"X-CSRF-Token": token},
+    )
+    conversation_id = created.get_json()["conversation_id"]
+    runtime = get_runtime()
+    runtime.conversations.add_message(
+        conversation_id=conversation_id,
+        role="assistant",
+        content=json.dumps(
+            {
+                "campaign_id": "XHS-30D-10000",
+                "platform": "xiaohongshu",
+                "topic": "AI时代的副业",
+                "workflow_status": "blocked",
+                "workflow_trace": [{"step": "xhs.trend.research"}],
+                "publish": {
+                    "status": "blocked",
+                    "review": {"reason": "证据不足"},
+                },
+            },
+            ensure_ascii=False,
+        ),
+        agent_id="xhs_growth",
+    )
+
+    response = client.get(f"/api/conversations/{conversation_id}/messages")
+    assistant = response.get_json()["messages"][-1]
+
+    assert response.status_code == 200
+    assert assistant["content"] == "内容审核未通过，未进入发布：证据不足"
+    assert "workflow_trace" not in assistant["content"]
+
+
 def test_explicit_mention_applies_to_one_turn_and_trace_keeps_parent_child(client) -> None:
     token = _login(client)
     first = client.post(

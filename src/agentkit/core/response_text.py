@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping
 from typing import Any
+
+_LEGACY_OUTPUT_MARKERS = frozenset(
+    {"campaign_id", "workflow_status", "publish", "ranked_candidates"}
+)
 
 
 def format_task_output_text(*, status: str, output: Mapping[str, Any]) -> str:
@@ -45,6 +50,26 @@ def format_task_output_text(*, status: str, output: Mapping[str, Any]) -> str:
     if status in {"blocked", "failed", "rejected"}:
         return "任务未完成，可在运行追踪中查看失败详情。"
     return "任务已完成，可在运行追踪中查看详细结果。"
+
+
+def normalize_persisted_assistant_text(content: str) -> str:
+    """只读转换旧版结构化 assistant 消息；普通文本与未知 JSON 保持不变。"""
+
+    text = str(content or "")
+    stripped = text.strip()
+    if not stripped.startswith("{"):
+        return text
+    try:
+        value = json.loads(stripped)
+    except (TypeError, ValueError):
+        return text
+    if not isinstance(value, dict) or not (_LEGACY_OUTPUT_MARKERS & value.keys()):
+        return text
+    inferred_status = str(value.get("workflow_status") or "completed")
+    publish = _mapping(value.get("publish"))
+    if publish.get("status") == "blocked":
+        inferred_status = "blocked"
+    return format_task_output_text(status=inferred_status, output=value)
 
 
 def _is_xhs_output(output: Mapping[str, Any]) -> bool:

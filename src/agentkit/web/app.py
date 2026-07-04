@@ -30,7 +30,10 @@ from agentkit.core.identity import (
     TASK_RUN,
     Principal,
 )
-from agentkit.core.response_text import format_task_output_text
+from agentkit.core.response_text import (
+    format_task_output_text,
+    normalize_persisted_assistant_text,
+)
 from agentkit.runtime.bootstrap import (
     AGENTKIT_ROOT,
     AgentKitRuntime,
@@ -673,7 +676,22 @@ def api_conversation_messages(conversation_id: str):
         or conversation.get("user_id") != user_id
     ):
         return jsonify({"error": "会话不存在"}), 404
-    return jsonify({"messages": runtime.conversations.all_messages(conversation_id)})
+    rows = runtime.conversations.all_messages(conversation_id)
+    return jsonify({"messages": _display_conversation_messages(rows)})
+
+
+def _display_conversation_messages(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    displayed: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        if item.get("role") == "assistant":
+            item["content"] = normalize_persisted_assistant_text(
+                str(item.get("content") or "")
+            )
+        displayed.append(item)
+    return displayed
 
 
 @app.get("/api/runs")

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from agentkit.core.contracts import AgentProfile
+from agentkit.core.response_text import normalize_persisted_assistant_text
 
 
 class ConversationReader(Protocol):
@@ -154,11 +155,7 @@ class ConversationContextService:
                 conversation_id=conversation_id,
                 limit=policy.memory.window_turns * 2,
             )
-            recent = tuple(
-                {"role": str(row["role"]), "content": str(row["content"])}
-                for row in rows
-                if row.get("content")
-            )
+            recent = tuple(_context_message(row) for row in rows if row.get("content"))
             summary_row = self._store.get_summary(conversation_id)
             summary = str(summary_row.get("summary_text", "")) if summary_row else ""
             if self._memory is not None:
@@ -192,6 +189,14 @@ class ConversationContextService:
             memories=memories,
             knowledge=knowledge,
         )
+
+
+def _context_message(row: Mapping[str, Any]) -> dict[str, str]:
+    role = str(row["role"])
+    content = str(row["content"])
+    if role == "assistant":
+        content = normalize_persisted_assistant_text(content)
+    return {"role": role, "content": content}
 
 
 __all__ = ["AgentConversationContext", "ConversationContextService"]
