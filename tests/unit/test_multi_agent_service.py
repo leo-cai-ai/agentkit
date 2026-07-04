@@ -72,8 +72,9 @@ class FakeInvoker:
 
 
 class FakeGateway:
-    def __init__(self, audit: InMemoryAuditLog) -> None:
+    def __init__(self, audit: InMemoryAuditLog, *, status: str = "completed") -> None:
         self.audit = audit
+        self.status = status
         self.requests: list[TaskRequest] = []
 
     def handle_delegated(self, request: TaskRequest) -> TaskResponse:
@@ -86,9 +87,9 @@ class FakeGateway:
             parent_run_id=str(request.context["parent_run_id"]),
             conversation_id=str(request.context["trace_conversation_id"]),
         )
-        self.audit.record(child_run, "run_finished", {"status": "completed"})
+        self.audit.record(child_run, "run_finished", {"status": self.status})
         return TaskResponse(
-            status="completed",
+            status=self.status,
             output={"message": "招聘分析已完成"},
             run_id=child_run,
             thread_id="child-thread",
@@ -118,7 +119,7 @@ class FakeGateway:
         )
 
 
-def _service(decision: dict | None = None):
+def _service(decision: dict | None = None, *, child_status: str = "completed"):
     agents = AgentRegistry()
     agents.register(_profile("general_agent", "通用协调", []))
     agents.register(_profile("hr_recruiter", "招聘筛选", ["candidate.rank"]))
@@ -135,7 +136,7 @@ def _service(decision: dict | None = None):
     persistence = FakePersistence()
     contexts = FakeContextService()
     invoker = FakeInvoker(decision)
-    gateway = FakeGateway(audit)
+    gateway = FakeGateway(audit, status=child_status)
     service = MultiAgentCoordinator(
         tenant_id="tenant-a",
         tenant_selector="company_alpha",
@@ -191,6 +192,25 @@ def test_explicit_mention_skips_router_and_creates_child_run() -> None:
     child = audit.get_run(response.governance["delegation"]["child_run_id"])
     assert child["parent_run_id"] == response.run_id
     assert persistence.turns[0]["assistant_agent_id"] == "hr_recruiter"
+
+
+def test_general_agent_propagates_blocked_child_status() -> None:
+    service, gateway, audit, invoker, contexts, persistence = _service(
+        child_status="blocked"
+    )
+
+    response = service.handle(
+        TaskRequest(
+            user_id="u1",
+            roles=["growth_manager"],
+            text="@招聘 审核这份内容",
+            context={"conversation_id": "conversation-existing"},
+        )
+    )
+
+    assert response.status == "blocked"
+    assert response.governance["delegation"]["status"] == "blocked"
+    assert audit.get_run(response.run_id)["status"] == "blocked"
 
 
 def test_general_router_can_delegate_without_explicit_mention() -> None:
