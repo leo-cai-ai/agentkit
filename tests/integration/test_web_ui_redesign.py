@@ -228,6 +228,7 @@ def test_agent_network_relation_flow_is_high_contrast_and_deliberate(client) -> 
 
     assert "--ak-network-flow-highlight:" in css
     assert "--ak-network-flow-live:" in css
+    assert ".ak-network-edges .ak-network-current {" in css
     assert "stroke: var(--ak-network-flow-highlight);" in css
     assert "stroke: var(--ak-network-flow-live);" in css
     assert "stroke-width: 6;" in css

@@ -317,7 +317,7 @@
   transition: opacity 160ms ease, stroke 160ms ease, stroke-width 160ms ease;
 }
 .ak-network-edges path.is-highlighted { stroke: var(--ak-sys-color-accent-strong); stroke-width: 3; }
-.ak-network-current {
+.ak-network-edges .ak-network-current {
   opacity: 0;
   pointer-events: none;
   stroke: var(--ak-network-flow-highlight);
