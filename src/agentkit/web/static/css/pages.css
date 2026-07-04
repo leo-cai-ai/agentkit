@@ -239,6 +239,8 @@
 
 /* Agent Network */
 .ak-agent-network-shell {
+  --ak-network-flow-highlight: color-mix(in srgb, var(--ak-sys-color-accent-default) 35%, white);
+  --ak-network-flow-live: color-mix(in srgb, var(--ak-sys-color-accent-strong) 55%, white);
   display: grid;
   gap: var(--ak-sys-space-3);
 }
@@ -285,12 +287,12 @@
 .ak-network-legend i {
   inline-size: 2.5rem;
   block-size: 0;
-  border-block-start: 3px dotted var(--ak-sys-color-accent-default);
+  border-block-start: 4px dotted var(--ak-network-flow-highlight);
 }
 
 .ak-network-legend i.is-active-run {
-  border-block-start-width: 5px;
-  border-block-start-color: var(--ak-sys-color-accent-strong);
+  border-block-start-width: 6px;
+  border-block-start-color: var(--ak-network-flow-live);
 }
 
 .ak-network-stage {
@@ -318,20 +320,20 @@
 .ak-network-current {
   opacity: 0;
   pointer-events: none;
-  stroke: var(--ak-sys-color-accent-default);
-  stroke-width: 4;
+  stroke: var(--ak-network-flow-highlight);
+  stroke-width: 6;
   stroke-linecap: round;
-  stroke-dasharray: 2 12;
+  stroke-dasharray: 2 18;
 }
 .ak-network-current.is-selected-relation {
-  opacity: 0.92;
-  animation: ak-network-flow 1.4s linear infinite;
+  opacity: 1;
+  animation: ak-network-flow 3.6s linear infinite;
 }
 .ak-network-current.is-active-run {
   opacity: 1;
-  stroke: var(--ak-sys-color-accent-strong);
-  stroke-width: 5;
-  animation: ak-network-flow 650ms linear infinite;
+  stroke: var(--ak-network-flow-live);
+  stroke-width: 7;
+  animation: ak-network-flow 2.1s linear infinite;
 }
 .ak-network-node { cursor: grab; transition: opacity 160ms ease; }
 .ak-network-node:active { cursor: grabbing; }
@@ -405,7 +407,7 @@
 .ak-network-fallback button[aria-current="true"] { border-color: var(--ak-sys-color-border-interactive); background: var(--ak-sys-color-bg-surface-subtle); }
 .ak-network-fallback span { color: var(--ak-sys-color-text-subtle); font-size: 0.75rem; }
 
-@keyframes ak-network-flow { to { stroke-dashoffset: -56; } }
+@keyframes ak-network-flow { to { stroke-dashoffset: -80; } }
 
 @media (min-width: 47.5625rem) {
   body.ak-history-collapsed .ak-general-chat-layout {

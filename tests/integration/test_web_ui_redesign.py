@@ -223,6 +223,18 @@ def test_agent_network_relation_flow_distinguishes_selection_from_live_runs(clie
     assert ".ak-network-current.is-active-run" in css
 
 
+def test_agent_network_relation_flow_is_high_contrast_and_deliberate(client) -> None:
+    css = client.get("/static/css/pages.css").get_data(as_text=True)
+
+    assert "--ak-network-flow-highlight:" in css
+    assert "--ak-network-flow-live:" in css
+    assert "stroke: var(--ak-network-flow-highlight);" in css
+    assert "stroke: var(--ak-network-flow-live);" in css
+    assert "stroke-width: 6;" in css
+    assert "animation: ak-network-flow 3.6s linear infinite;" in css
+    assert "animation: ak-network-flow 2.1s linear infinite;" in css
+
+
 def test_operations_has_run_filters_and_parent_child_timeline(client) -> None:
     login(client)
     html = client.get("/operations").get_data(as_text=True)
