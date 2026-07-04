@@ -693,7 +693,7 @@ Run:
 python -m pytest -q
 python -m ruff check src tests
 python -m mypy src
-python -m agentkit.cli validate-packs
+python -m agentkit.cli validate-catalog
 python -m agentkit.cli validate-contexts
 ```
 

@@ -277,7 +277,7 @@
   cursor: wait;
 }
 
-@media (hover: none) {
+@media (max-width: 47.5rem), (hover: none) {
   .conversation-delete-button {
     opacity: 0.72;
     pointer-events: auto;

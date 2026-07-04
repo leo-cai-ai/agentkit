@@ -140,7 +140,7 @@ def test_chat_has_accessible_conversation_delete_dialog(client) -> None:
     assert 'method: "DELETE"' in js
     assert '"X-CSRF-Token": getCsrfToken()' in js
     assert ".conversation-item-row:focus-within" in css
-    assert "@media (hover: none)" in css
+    assert "@media (max-width: 47.5rem), (hover: none)" in css
 
 
 def test_history_preference_never_stores_conversation_content(client) -> None:
