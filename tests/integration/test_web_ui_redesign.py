@@ -128,3 +128,19 @@ def test_history_preference_never_stores_conversation_content(client) -> None:
     assert "localStorage.setItem(HISTORY_COLLAPSED_KEY" in js
     assert 'localStorage.setItem("conversation' not in js
     assert 'localStorage.setItem("messages' not in js
+
+
+def test_chat_session_guard_loads_before_app_and_exposes_request_lifecycle(client) -> None:
+    login(client)
+    html = client.get("/chat").get_data(as_text=True)
+    guard_url = "/static/js/chat_session.js"
+    app_url = "/static/js/app.js"
+
+    assert html.index(guard_url) < html.index(app_url)
+
+    js = client.get(guard_url).get_data(as_text=True)
+    assert "createChatSessionGuard" in js
+    assert "AbortController" in js
+    assert "begin(conversationId)" in js
+    assert "isCurrent(token)" in js
+    assert "cancel()" in js

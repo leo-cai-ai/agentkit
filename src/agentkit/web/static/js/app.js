@@ -25,6 +25,7 @@ let currentConversationId = null;
 let conversationCache = [];
 let chatBusy = false;
 const HISTORY_COLLAPSED_KEY = "agentkit:chat-history-collapsed";
+const chatSessionGuard = window.AgentKitChatSession.createChatSessionGuard();
 
 // Progressive tab enhancement: without JavaScript the anchors still navigate
 // to fully visible sections; once initialized, the same markup follows the
@@ -396,7 +397,7 @@ function getCsrfToken() {
   return document.querySelector('meta[name="csrf-token"]')?.content || "";
 }
 
-async function postChat(payload) {
+async function postChat(payload, { signal } = {}) {
   const response = await fetch("/api/chat", {
     method: "POST",
     headers: {
@@ -404,6 +405,7 @@ async function postChat(payload) {
       "X-CSRF-Token": getCsrfToken(),
     },
     body: JSON.stringify(payload),
+    signal,
   });
   if (!response.ok) {
     let message = `Request failed with ${response.status}`;
@@ -443,6 +445,7 @@ async function streamSse(url, payload, handlers = {}) {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-CSRF-Token": getCsrfToken() },
     body: JSON.stringify(payload),
+    signal: handlers.signal,
   });
   const contentType = response.headers.get("Content-Type") || "";
   if (!response.ok || !contentType.includes("text/event-stream") || !response.body) {
@@ -611,16 +614,23 @@ async function loadConversations(agent) {
 
 async function loadConversationMessages(conversationId) {
   if (!conversationId) {
+    chatSessionGuard.cancel();
     resetChatThread("");
     return;
   }
   const requestedConversationId = conversationId;
+  const requestToken = chatSessionGuard.begin(requestedConversationId);
   showConversationNotice("Loading conversation...", "loading");
   try {
-    const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/messages`);
+    const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/messages`, {
+      signal: requestToken.signal,
+    });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
-    if (currentConversationId !== requestedConversationId) return;
+    if (
+      !chatSessionGuard.isCurrent(requestToken) ||
+      currentConversationId !== requestedConversationId
+    ) return;
     const messages = data.messages || [];
     if (!messages.length) {
       showConversationNotice(
@@ -637,14 +647,19 @@ async function loadConversationMessages(conversationId) {
         msg.role === "user" ? "你" : agentLabel(msg.agent_id || "general_agent"),
       );
     }
-  } catch {
-    if (currentConversationId === requestedConversationId) {
+  } catch (error) {
+    if (error.name === "AbortError") return;
+    if (
+      chatSessionGuard.isCurrent(requestToken) &&
+      currentConversationId === requestedConversationId
+    ) {
       showConversationNotice("Conversation messages could not be loaded.", "error");
     }
   }
 }
 
 async function startNewConversation() {
+  chatSessionGuard.cancel();
   currentConversationId = null;
   resetChatThread("New conversation started. How can I help?");
   renderConversationHistory();
@@ -1236,22 +1251,27 @@ function buildApprovalChatPayload(action) {
 async function runUnifiedChatTurn(message, selectedAgent) {
   const isNewConversation = !currentConversationId;
   const requestPayload = collectChatPayload(message);
+  const requestToken = chatSessionGuard.begin(currentConversationId);
   const bubble = addLiveAssistantMessage(getSelectedAgentLabel());
   let streamed = "";
   let errored = null;
   let errorConversationId = null;
   try {
     const finalData = await streamSse("/api/chat/stream", requestPayload, {
+      signal: requestToken.signal,
       onToken: (delta) => {
+        if (!chatSessionGuard.isCurrent(requestToken)) return;
         streamed += delta;
         if (bubble) bubble.p.textContent = streamed;
         scrollChatToBottom();
       },
       onError: (msg, details) => {
+        if (!chatSessionGuard.isCurrent(requestToken)) return;
         errored = msg;
         errorConversationId = details?.conversation_id || null;
       },
     });
+    if (!chatSessionGuard.isCurrent(requestToken)) return;
     if (errored && !finalData) throw new Error(errored);
     if (finalData) {
       if (finalData.response) {
@@ -1271,9 +1291,11 @@ async function runUnifiedChatTurn(message, selectedAgent) {
     setAgentStatus(selectedAgent, "completed");
     if (isNewConversation) await loadConversations(selectedAgent);
   } catch (error) {
+    if (error.name === "AbortError" || !chatSessionGuard.isCurrent(requestToken)) return;
     if (!streamed && !errored) {
       try {
-        const result = await postChat(requestPayload);
+        const result = await postChat(requestPayload, { signal: requestToken.signal });
+        if (!chatSessionGuard.isCurrent(requestToken)) return;
         if (result.response) {
           currentConversationId = result.conversation_id || currentConversationId;
           finalizeActionResult(result, requestPayload, bubble, selectedAgent, "");
@@ -1287,6 +1309,10 @@ async function runUnifiedChatTurn(message, selectedAgent) {
         }
         return;
       } catch (fallbackError) {
+        if (
+          fallbackError.name === "AbortError" ||
+          !chatSessionGuard.isCurrent(requestToken)
+        ) return;
         error = fallbackError;
       }
     }
@@ -1455,6 +1481,7 @@ function bindConversationHistory() {
 
 async function approvePendingTask() {
   if (!pendingApproval) return;
+  const requestToken = chatSessionGuard.begin(currentConversationId);
   const originalRequest = pendingApproval.request;
   const agentName = agentFromRequestPayload(originalRequest);
   const agentLabel = getSelectedAgentLabel();
@@ -1471,15 +1498,19 @@ async function approvePendingTask() {
   let succeeded = false;
   try {
     const result = await streamSse("/api/chat/stream", approvedPayload, {
+      signal: requestToken.signal,
       onToken: (delta) => {
+        if (!chatSessionGuard.isCurrent(requestToken)) return;
         streamed += delta;
         if (bubble) bubble.p.textContent = streamed;
         scrollChatToBottom();
       },
       onError: (msg) => {
+        if (!chatSessionGuard.isCurrent(requestToken)) return;
         errored = msg;
       },
     });
+    if (!chatSessionGuard.isCurrent(requestToken)) return;
     if (errored && !result) throw new Error(errored);
     const status = runtimeView(result.response).output?.status;
     setExecutionState(status === "waiting_for_approval" ? "Waiting for approval" : "Completed", status === "waiting_for_approval" ? 2 : 5, status !== "waiting_for_approval");
@@ -1492,6 +1523,7 @@ async function approvePendingTask() {
     renderResult(result, originalRequest);
     succeeded = true;
   } catch (error) {
+    if (error.name === "AbortError" || !chatSessionGuard.isCurrent(requestToken)) return;
     setExecutionState("Failed");
     setAgentStatus(agentName, "failed");
     // Show the message (incl. the truncation fallback) in the chat bubble
@@ -1509,6 +1541,7 @@ async function approvePendingTask() {
 
 async function rejectPendingTask() {
   if (!pendingApproval) return;
+  const requestToken = chatSessionGuard.begin(currentConversationId);
   const originalRequest = pendingApproval.request;
   const agentName = agentFromRequestPayload(originalRequest);
   const agentLabel = getSelectedAgentLabel();
@@ -1525,15 +1558,19 @@ async function rejectPendingTask() {
   let succeeded = false;
   try {
     const result = await streamSse("/api/chat/stream", rejectedPayload, {
+      signal: requestToken.signal,
       onToken: (delta) => {
+        if (!chatSessionGuard.isCurrent(requestToken)) return;
         streamed += delta;
         if (bubble) bubble.p.textContent = streamed;
         scrollChatToBottom();
       },
       onError: (msg) => {
+        if (!chatSessionGuard.isCurrent(requestToken)) return;
         errored = msg;
       },
     });
+    if (!chatSessionGuard.isCurrent(requestToken)) return;
     if (errored && !result) throw new Error(errored);
     setExecutionState("Rejected", 2);
     resolveApprovalActions("Rejected");
@@ -1545,6 +1582,7 @@ async function rejectPendingTask() {
     renderResult(result, originalRequest);
     succeeded = true;
   } catch (error) {
+    if (error.name === "AbortError" || !chatSessionGuard.isCurrent(requestToken)) return;
     setExecutionState("Failed");
     if (bubble) finalizeAssistantBubble(bubble, error.message);
     else alert(error.message);
