@@ -135,8 +135,12 @@ class MediaUnderstandingRegistry:
                 f"未注册的媒体理解 Provider: {provider_id}; 可用 Provider: {available}"
             )
         provider = factory(dict(config or {}))
-        if self._normalize(provider.name) != provider_id:
-            raise ValueError(f"重复注册媒体理解 Provider: {name}")
+        actual_id = self._normalize(provider.name)
+        if actual_id != provider_id:
+            raise ValueError(
+                "媒体理解 Provider 工厂返回的 ID 不匹配: "
+                f"expected={provider_id}, actual={actual_id}"
+            )
         return provider
 
     def resolve(self, name: str) -> MediaUnderstandingProvider:
