@@ -1302,6 +1302,97 @@ function bindRunFilters() {
   update();
 }
 
+function bindGovernanceRegistry() {
+  const root = document.querySelector("[data-governance-registry]");
+  if (!root) return;
+  const search = root.querySelector("[data-governance-search]");
+  const count = root.querySelector("[data-governance-count]");
+  const drawer = root.querySelector("[data-governance-detail]");
+  const closeButton = root.querySelector("[data-governance-detail-close]");
+  const rows = Array.from(root.querySelectorAll("[data-governance-row]"));
+  let returnFocus = null;
+
+  const setDetailOpen = (open, restoreFocus = false) => {
+    if (!drawer) return;
+    drawer.setAttribute("aria-hidden", String(!open));
+    drawer.inert = !open;
+    document.body.classList.toggle("ak-governance-detail-open", open);
+    if (open) closeButton?.focus();
+    if (!open && restoreFocus) returnFocus?.focus();
+  };
+
+  const openDetail = (row) => {
+    let fields = {};
+    try {
+      fields = JSON.parse(row.dataset.detail || "{}");
+    } catch {
+      fields = {};
+    }
+    returnFocus = row;
+    const title = drawer?.querySelector("[data-governance-detail-title]");
+    const domain = drawer?.querySelector("[data-governance-detail-domain]");
+    const status = drawer?.querySelector("[data-governance-detail-status]");
+    const fieldList = drawer?.querySelector("[data-governance-detail-fields]");
+    if (title) title.textContent = row.dataset.objectName || "对象详情";
+    if (domain) domain.textContent = row.dataset.objectDomain || "未声明 Domain";
+    if (status) status.textContent = row.dataset.objectStatus || "状态未知";
+    if (fieldList) {
+      fieldList.replaceChildren();
+      for (const [label, value] of Object.entries(fields)) {
+        const item = document.createElement("div");
+        item.className = "ak-key-value-row";
+        const term = document.createElement("dt");
+        term.textContent = label;
+        const description = document.createElement("dd");
+        description.textContent = String(value ?? "—");
+        item.append(term, description);
+        fieldList.appendChild(item);
+      }
+    }
+    setDetailOpen(true);
+  };
+
+  const updateSearch = () => {
+    const value = String(search?.value || "").trim().toLowerCase();
+    let visibleTotal = 0;
+    root.querySelectorAll("[data-governance-list]").forEach((list) => {
+      const listRows = Array.from(list.querySelectorAll("[data-governance-row]"));
+      let listVisible = 0;
+      for (const row of listRows) {
+        const visible = !value || String(row.dataset.searchText || "").toLowerCase().includes(value);
+        row.hidden = !visible;
+        if (visible) listVisible += 1;
+      }
+      const empty = list.querySelector("[data-governance-empty]");
+      if (empty) empty.hidden = listVisible > 0 || listRows.length === 0;
+      visibleTotal += listVisible;
+    });
+    if (count) count.textContent = value ? `${visibleTotal} 个匹配对象` : `${rows.length} 个注册对象`;
+  };
+
+  root.addEventListener("click", (event) => {
+    const row = event.target.closest("[data-governance-row]");
+    if (row) openDetail(row);
+  });
+  search?.addEventListener("input", updateSearch);
+  closeButton?.addEventListener("click", () => setDetailOpen(false, true));
+  document.addEventListener("click", (event) => {
+    if (
+      document.body.classList.contains("ak-governance-detail-open") &&
+      !drawer?.contains(event.target) &&
+      !event.target.closest("[data-governance-row]")
+    ) {
+      setDetailOpen(false);
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && document.body.classList.contains("ak-governance-detail-open")) {
+      setDetailOpen(false, true);
+    }
+  });
+  updateSearch();
+}
+
 function agentFromRequestPayload(payload) {
   return payload?.context?.agent || payload?.agent || getSelectedAgentName();
 }
@@ -1725,6 +1816,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindAgentSelector();
   bindRangeOutputs();
   bindRunFilters();
+  bindGovernanceRegistry();
   bindChatForm();
   bindMentionAutocomplete();
   bindConversationHistory();

@@ -219,3 +219,15 @@ def test_operations_has_run_filters_and_parent_child_timeline(client) -> None:
     assert "data-run-chain" in html
     assert "data-run-timeline" in html
     assert 'aria-label="清除运行过滤条件"' in html
+
+
+def test_governance_uses_searchable_object_tabs_without_prompt_content(client) -> None:
+    login(client)
+    html = client.get("/governance").get_data(as_text=True)
+
+    for panel in ("agents", "skills", "tools", "contexts", "budgets"):
+        assert f'id="governance-panel-{panel}"' in html
+    assert "data-governance-search" in html
+    assert "data-governance-detail" in html
+    assert "UNTRUSTED_DATA_BEGIN" not in html
+    assert "System Online" not in html

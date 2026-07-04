@@ -1,140 +1,127 @@
 {% extends "base.html" %}
-{% from "_components.html" import data_table %}
+{% from "_components.html" import data_table, registry_row %}
+{% from "_icons.html" import icon %}
 
-{% block page_description %}Inspect registered agents, capabilities, tools, contexts, and environment.{% endblock %}
+{% block page_description %}检索 Agent、Skill、Tool、Context 与成本预算的治理元数据。{% endblock %}
 
 {% block content %}
-  <section
-    class="ak-tabs ak-governance-tabs"
-    data-tabs
-    data-tabs-default="governance-panel-agents"
-    aria-label="Governance metadata"
-  >
-    <nav class="ak-tab-list" data-tab-list aria-label="Governance metadata sections">
-      <a
-        class="ak-tab"
-        id="governance-tab-agents"
-        href="#governance-panel-agents"
-        data-tab
-      >Agents</a>
-      <a
-        class="ak-tab"
-        id="governance-tab-capabilities"
-        href="#governance-panel-capabilities"
-        data-tab
-      >Capabilities</a>
-      <a
-        class="ak-tab"
-        id="governance-tab-configuration"
-        href="#governance-panel-configuration"
-        data-tab
-      >Configuration</a>
-      <a
-        class="ak-tab"
-        id="governance-tab-audit"
-        href="#governance-panel-audit"
-        data-tab
-      >Audit &amp; Usage</a>
-    </nav>
-
-    <section
-      class="dashboard-grid governance-grid ak-governance-grid ak-governance-tab-panel"
-      id="governance-panel-agents"
-      data-tab-panel
-      aria-labelledby="governance-tab-agents"
-    >
-      <article class="panel ak-panel ak-panel--table ak-governance-registry" aria-labelledby="agent-profiles-title">
-        <div class="panel-head ak-panel-header">
-          <h2 id="agent-profiles-title">Agent Profiles</h2>
-          <span>Runtime boundary</span>
-        </div>
-        {{ data_table(agents, label='Agent profiles') }}
-      </article>
-    </section>
-
-    <section
-      class="dashboard-grid governance-grid ak-governance-grid ak-governance-tab-panel"
-      id="governance-panel-capabilities"
-      data-tab-panel
-      aria-labelledby="governance-tab-capabilities"
-    >
-      <article class="panel ak-panel ak-panel--table ak-governance-registry" aria-labelledby="skill-registry-title">
-        <div class="panel-head ak-panel-header">
-          <h2 id="skill-registry-title">Skill Registry</h2>
-          <span>Business capability layer</span>
-        </div>
-        {{ data_table(skills, label='Skill registry') }}
-      </article>
-
-      <article class="panel ak-panel ak-panel--table ak-governance-registry" aria-labelledby="tool-registry-title">
-        <div class="panel-head ak-panel-header">
-          <h2 id="tool-registry-title">Tool Registry</h2>
-          <span>Execution contracts</span>
-        </div>
-        {{ data_table(tools, label='Tool registry') }}
-      </article>
-    </section>
-
-    <section
-      class="dashboard-grid governance-grid ak-governance-grid ak-governance-tab-panel"
-      id="governance-panel-configuration"
-      data-tab-panel
-      aria-labelledby="governance-tab-configuration"
-    >
-      <article class="panel ak-panel ak-panel--table ak-governance-wide" aria-labelledby="context-registry-title">
-        <div class="panel-head ak-panel-header">
-          <h2 id="context-registry-title">Context Registry</h2>
-          <span>Versioned LLM node contracts</span>
-        </div>
-        {{ data_table(contexts, label='Context registry') }}
-      </article>
-
-      <article class="panel ak-panel ak-governance-compact" aria-labelledby="audit-store-title">
-        <div class="panel-head ak-panel-header">
-          <h2 id="audit-store-title">Audit Persistence</h2>
-          <span>Runtime storage</span>
-        </div>
-        <dl class="ak-key-value-list">
-          <div class="ak-key-value-row">
-            <dt>Path</dt>
-            <dd>{{ db_path }}</dd>
-          </div>
-        </dl>
-      </article>
-    </section>
-
-    <section
-      class="dashboard-grid governance-grid ak-governance-grid ak-governance-tab-panel"
-      id="governance-panel-audit"
-      data-tab-panel
-      aria-labelledby="governance-tab-audit"
-    >
-      <article
-        class="panel ak-panel ak-panel--table {{ 'ak-governance-half' if cost_summary else 'ak-governance-registry' }}"
-        aria-labelledby="audit-events-title"
+  <section class="ak-governance-workspace" data-governance-registry>
+    <form class="ak-governance-search" role="search" aria-label="搜索治理对象">
+      <label for="governance-search">搜索当前注册表</label>
+      <input
+        id="governance-search"
+        type="search"
+        data-governance-search
+        placeholder="名称、Domain 或元数据"
+        autocomplete="off"
       >
-        <div class="panel-head ak-panel-header">
-          <h2 id="audit-events-title">Audit Events</h2>
-          <span>Recorded event types</span>
-        </div>
-        {{ data_table(event_counts, label='Audit event counts') }}
-      </article>
+      <span data-governance-count aria-live="polite"></span>
+    </form>
 
-      {% if cost_summary %}
-        <article class="panel ak-panel ak-governance-half" aria-labelledby="cost-summary-title">
-          <div class="panel-head ak-panel-header">
-            <h2 id="cost-summary-title">LLM Cost &amp; Tokens</h2>
-            <span>Across all recorded runs</span>
-          </div>
-          <dl class="ak-key-value-list">
-            <div class="ak-key-value-row"><dt>LLM calls</dt><dd>{{ cost_summary.calls }}</dd></div>
-            <div class="ak-key-value-row"><dt>Input tokens</dt><dd>{{ cost_summary.input_tokens }}</dd></div>
-            <div class="ak-key-value-row"><dt>Output tokens</dt><dd>{{ cost_summary.output_tokens }}</dd></div>
-            <div class="ak-key-value-row"><dt>Total tokens</dt><dd>{{ cost_summary.total_tokens }}</dd></div>
-            <div class="ak-key-value-row"><dt>Estimated cost (USD)</dt><dd>${{ '%.4f'|format(cost_summary.cost_usd) }}</dd></div>
-          </dl>
-        </article>
-      {% endif %}
+    <section
+      class="ak-tabs ak-governance-tabs"
+      data-tabs
+      data-tabs-default="governance-panel-agents"
+      aria-label="治理对象分类"
+    >
+      <nav class="ak-tab-list" data-tab-list aria-label="治理对象分类">
+        <a class="ak-tab" id="governance-tab-agents" href="#governance-panel-agents" data-tab>Agents</a>
+        <a class="ak-tab" id="governance-tab-skills" href="#governance-panel-skills" data-tab>Skills</a>
+        <a class="ak-tab" id="governance-tab-tools" href="#governance-panel-tools" data-tab>Tools</a>
+        <a class="ak-tab" id="governance-tab-contexts" href="#governance-panel-contexts" data-tab>Contexts</a>
+        <a class="ak-tab" id="governance-tab-budgets" href="#governance-panel-budgets" data-tab>成本与预算</a>
+      </nav>
+
+      <section class="ak-governance-tab-panel" id="governance-panel-agents" data-tab-panel aria-labelledby="governance-tab-agents">
+        <div class="ak-registry-list" data-governance-list>
+          {% for item in agents %}
+            {{ registry_row(item['Name'], item['Domain'], {
+              '描述': item['Description'],
+              '模型': item['Model'],
+              '允许 Skills': item['Allowed Skills']
+            }) }}
+          {% else %}<div class="ak-empty-state">暂无 Agent 元数据。</div>{% endfor %}
+          <div class="ak-empty-state" data-governance-empty hidden>没有匹配的 Agent。</div>
+        </div>
+      </section>
+
+      <section class="ak-governance-tab-panel" id="governance-panel-skills" data-tab-panel aria-labelledby="governance-tab-skills">
+        <div class="ak-registry-list" data-governance-list>
+          {% for item in skills %}
+            {{ registry_row(item['Name'], item['Domain'], {
+              '模式': item['Mode'],
+              '工具': item['Tools'],
+              '权限': item['Permissions'],
+              '脚本数': item['Scripts'],
+              '参考资料数': item['References']
+            }) }}
+          {% else %}<div class="ak-empty-state">暂无 Skill 元数据。</div>{% endfor %}
+          <div class="ak-empty-state" data-governance-empty hidden>没有匹配的 Skill。</div>
+        </div>
+      </section>
+
+      <section class="ak-governance-tab-panel" id="governance-panel-tools" data-tab-panel aria-labelledby="governance-tab-tools">
+        <div class="ak-registry-list" data-governance-list>
+          {% for item in tools %}
+            {{ registry_row(item['Name'], item['Domain'], {
+              '描述': item['Description'],
+              '支持批处理': item['Batch']
+            }) }}
+          {% else %}<div class="ak-empty-state">暂无 Tool 元数据。</div>{% endfor %}
+          <div class="ak-empty-state" data-governance-empty hidden>没有匹配的 Tool。</div>
+        </div>
+      </section>
+
+      <section class="ak-governance-tab-panel" id="governance-panel-contexts" data-tab-panel aria-labelledby="governance-tab-contexts">
+        <div class="ak-registry-list" data-governance-list>
+          {% for item in contexts %}
+            {{ registry_row(item['ID'], 'Context Pack', {
+              '版本': item['Version'],
+              '哈希': item['Hash'],
+              '覆盖哈希': item['Override Hash'],
+              '最大输入 Tokens': item['Max Input Tokens']
+            }, '版本已锁定') }}
+          {% else %}<div class="ak-empty-state">暂无 Context 元数据。</div>{% endfor %}
+          <div class="ak-empty-state" data-governance-empty hidden>没有匹配的 Context。</div>
+        </div>
+      </section>
+
+      <section class="ak-governance-tab-panel" id="governance-panel-budgets" data-tab-panel aria-labelledby="governance-tab-budgets">
+        <div class="ak-governance-budget-grid">
+          <article class="panel ak-panel ak-panel--table" aria-labelledby="audit-events-title">
+            <div class="panel-head ak-panel-header"><h2 id="audit-events-title">审计事件</h2><span>真实记录</span></div>
+            {{ data_table(event_counts, empty='暂无审计事件。', label='审计事件计数') }}
+          </article>
+          <article class="panel ak-panel" aria-labelledby="cost-summary-title">
+            <div class="panel-head ak-panel-header"><h2 id="cost-summary-title">LLM 成本与 Tokens</h2><span>已记录运行</span></div>
+            {% if cost_summary %}
+              <dl class="ak-key-value-list">
+                <div class="ak-key-value-row"><dt>LLM 调用</dt><dd>{{ cost_summary.calls }}</dd></div>
+                <div class="ak-key-value-row"><dt>输入 Tokens</dt><dd>{{ cost_summary.input_tokens }}</dd></div>
+                <div class="ak-key-value-row"><dt>输出 Tokens</dt><dd>{{ cost_summary.output_tokens }}</dd></div>
+                <div class="ak-key-value-row"><dt>总 Tokens</dt><dd>{{ cost_summary.total_tokens }}</dd></div>
+                <div class="ak-key-value-row"><dt>预估成本（USD）</dt><dd>${{ '%.4f'|format(cost_summary.cost_usd) }}</dd></div>
+              </dl>
+            {% else %}<div class="ak-empty-state">暂无成本记录。</div>{% endif %}
+          </article>
+        </div>
+      </section>
     </section>
+
+    <aside
+      id="governance-detail"
+      class="ak-governance-detail"
+      data-governance-detail
+      aria-hidden="true"
+      aria-labelledby="governance-detail-title"
+      inert
+    >
+      <header>
+        <div><span class="ak-eyebrow" data-governance-detail-domain>Governance Object</span><h2 id="governance-detail-title" data-governance-detail-title>对象详情</h2></div>
+        <button class="ak-icon-button" type="button" data-governance-detail-close aria-label="关闭对象详情">{{ icon('x') }}</button>
+      </header>
+      <p data-governance-detail-status></p>
+      <dl class="ak-key-value-list" data-governance-detail-fields></dl>
+    </aside>
   </section>
 {% endblock %}

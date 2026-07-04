@@ -331,39 +331,23 @@ def test_governance_groups_metadata_into_progressive_tabs(client):
 
     panel_ids = (
         "governance-panel-agents",
-        "governance-panel-capabilities",
-        "governance-panel-configuration",
-        "governance-panel-audit",
+        "governance-panel-skills",
+        "governance-panel-tools",
+        "governance-panel-contexts",
+        "governance-panel-budgets",
     )
     assert 'data-tabs-default="governance-panel-agents"' in html
-    assert len(re.findall(r"<a\b[^>]*\sdata-tab(?:\s|>)", html, re.DOTALL)) == 4
+    assert len(re.findall(r"<a\b[^>]*\sdata-tab(?:\s|>)", html, re.DOTALL)) == 5
     for panel_id in panel_ids:
         assert f'href="#{panel_id}"' in html
         assert f'id="{panel_id}"' in html
-    assert html.count("data-tab-panel") == 4
+    assert html.count("data-tab-panel") == 5
     assert 'data-tab-panel hidden' not in html
-
-    agents = html[
-        html.index('id="governance-panel-agents"') : html.index(
-            'id="governance-panel-capabilities"'
-        )
-    ]
-    capabilities = html[
-        html.index('id="governance-panel-capabilities"') : html.index(
-            'id="governance-panel-configuration"'
-        )
-    ]
-    configuration = html[
-        html.index('id="governance-panel-configuration"') : html.index(
-            'id="governance-panel-audit"'
-        )
-    ]
-    audit = html[html.index('id="governance-panel-audit"') :]
-    assert "Agent Profiles" in agents
-    assert capabilities.index("Skill Registry") < capabilities.index("Tool Registry")
-    assert "Context Registry" in configuration
-    assert "Audit Persistence" in configuration
-    assert "Audit Events" in audit
+    assert "data-governance-search" in html
+    assert "data-governance-row" in html
+    assert "Context Pack" in html
+    assert "LLM 成本与 Tokens" in html
+    assert "data-governance-detail" in html
 
     application_js = client.get("/static/js/app.js").get_data(as_text=True)
     for contract in (
@@ -377,6 +361,7 @@ def test_governance_groups_metadata_into_progressive_tabs(client):
         'event.key === "End"',
         "window.history.replaceState",
         'window.addEventListener("hashchange"',
+        "function bindGovernanceRegistry()",
     ):
         assert contract in application_js
 
