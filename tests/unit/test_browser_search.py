@@ -15,6 +15,11 @@ from agentkit.connectors.browser_search import (
 )
 from agentkit.connectors.xhs_browser_state import XHS_PHONE_VERIFICATION_PATTERN
 from agentkit.connectors.xhs_playwright import PlaywrightXhsResearchProvider, XhsSearchAdapter
+from agentkit.core.media import (
+    MediaEvidence,
+    MediaUnderstandingResult,
+    NoneMediaUnderstandingProvider,
+)
 
 
 @pytest.mark.parametrize(
@@ -493,7 +498,10 @@ class _ResultClient:
                 metrics={"likes": 10, "saves": 2, "comments": 3},
                 tags=("AI",),
                 source_rank=1,
-                metadata={"captured_at": "now"},
+                metadata={
+                    "captured_at": "now",
+                    "cover_url": "https://sns-webpic-qc.xhscdn.com/cover.jpg",
+                },
             )
         ]
 
@@ -508,6 +516,99 @@ def test_xhs_provider_preserves_source_provenance():
     assert note["url"].endswith("/note-1")
     assert note["captured_at"] == "now"
     assert note["tags"] == ["AI"]
+
+
+def test_xhs_provider_calls_media_provider_and_keeps_evidence():
+    class RecordingMediaProvider:
+        name = "recording"
+
+        def __init__(self) -> None:
+            self.assets = ()
+            self.context = {}
+
+        def analyze(self, assets, *, context):
+            self.assets = tuple(assets)
+            self.context = dict(context)
+            return MediaUnderstandingResult(
+                status="completed",
+                provider=self.name,
+                evidence=(
+                    MediaEvidence(
+                        asset_id=self.assets[0].asset_id,
+                        text="图片显示：工具清单",
+                        provider=self.name,
+                        model="fake-vision",
+                        confidence=0.9,
+                    ),
+                ),
+                usage={"images": len(self.assets)},
+            )
+
+    recording = RecordingMediaProvider()
+    provider = PlaywrightXhsResearchProvider(
+        _ResultClient(),
+        XhsSearchAdapter(),
+        media_provider=recording,
+        max_media_assets=1,
+    )
+
+    note = provider.search_top_notes(topic="agent", limit=1)[0]
+
+    assert len(recording.assets) == 1
+    assert recording.context == {
+        "platform": "xiaohongshu",
+        "note_id": "note-1",
+        "topic": "agent",
+    }
+    assert note["media_understanding"]["status"] == "completed"
+    assert note["media_understanding"]["evidence"][0]["text"] == "图片显示：工具清单"
+
+
+def test_xhs_provider_none_media_provider_is_explicitly_skipped():
+    provider = PlaywrightXhsResearchProvider(
+        _ResultClient(),
+        XhsSearchAdapter(),
+        media_provider=NoneMediaUnderstandingProvider(),
+        max_media_assets=1,
+    )
+
+    note = provider.search_top_notes(topic="agent", limit=1)[0]
+
+    assert note["media_understanding"] == {
+        "status": "skipped",
+        "provider": "none",
+        "evidence": [],
+        "reason": "not_configured",
+        "usage": {},
+    }
+
+
+def test_xhs_provider_isolates_media_provider_runtime_failure():
+    class FailingMediaProvider:
+        name = "failing"
+
+        def analyze(self, assets, *, context):
+            del assets, context
+            raise RuntimeError("provider unavailable")
+
+    provider = PlaywrightXhsResearchProvider(
+        _ResultClient(),
+        XhsSearchAdapter(),
+        media_provider=FailingMediaProvider(),
+        max_media_assets=1,
+    )
+
+    note = provider.search_top_notes(topic="agent", limit=1)[0]
+
+    assert note["title"] == "A title"
+    assert note["content"].startswith("First sentence")
+    assert note["media_understanding"] == {
+        "status": "failed",
+        "provider": "failing",
+        "evidence": [],
+        "reason": "RuntimeError",
+        "usage": {},
+    }
 
 
 def test_xhs_provider_preserves_safe_cover_and_detail_media_assets():

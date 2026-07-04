@@ -18,7 +18,12 @@ from agentkit.connectors.browser_search import (
 )
 from agentkit.connectors.xhs_browser_state import XHS_PHONE_VERIFICATION_PATTERN
 from agentkit.core.logging_config import get_logger
-from agentkit.core.media import MediaUnderstandingProvider
+from agentkit.core.media import (
+    MediaAsset,
+    MediaUnderstandingProvider,
+    MediaUnderstandingResult,
+    NoneMediaUnderstandingProvider,
+)
 
 _log = get_logger("agentkit.xhs.search")
 
@@ -498,12 +503,41 @@ class PlaywrightXhsResearchProvider:
     ) -> None:
         self.client = client
         self.adapter = adapter
-        self.media_provider = media_provider
-        self.max_media_assets = max_media_assets
+        self.media_provider = media_provider or NoneMediaUnderstandingProvider()
+        self.max_media_assets = max(0, max_media_assets)
 
     def search_top_notes(self, *, topic: str, limit: int) -> list[dict[str, Any]]:
         results = self.client.search(self.adapter, query=topic, limit=limit)
-        return [self._to_note(result, topic=topic) for result in results]
+        notes: list[dict[str, Any]] = []
+        for result in results:
+            note = self._to_note(result, topic=topic)
+            assets = tuple(
+                MediaAsset(**item)
+                for item in note["media_assets"][: self.max_media_assets]
+            )
+            try:
+                media_result = self.media_provider.analyze(
+                    assets,
+                    context={
+                        "platform": "xiaohongshu",
+                        "note_id": note["note_id"],
+                        "topic": topic,
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001 - Provider 边界失败时保留文本结果
+                _log.warning(
+                    "媒体理解 Provider %s 执行失败：%s",
+                    self.media_provider.name,
+                    type(exc).__name__,
+                )
+                media_result = MediaUnderstandingResult(
+                    status="failed",
+                    provider=self.media_provider.name,
+                    reason=type(exc).__name__,
+                )
+            note["media_understanding"] = media_result.to_dict()
+            notes.append(note)
+        return notes
 
     def _to_note(self, result: WebSearchResult, *, topic: str) -> dict[str, Any]:
         metrics = result.metrics

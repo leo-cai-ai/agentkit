@@ -146,6 +146,8 @@ def test_xhs_provider_bundle_accepts_tenant_playwright_override(monkeypatch, tmp
     assert isinstance(bundle.research, PlaywrightXhsResearchProvider)
     assert bundle.research.client.config.headless is False
     assert bundle.research.adapter.enrich_details is False
+    assert bundle.research.media_provider.name == "none"
+    assert bundle.research.max_media_assets == 3
 
 
 def test_xhs_provider_bundle_rejects_unknown_media_provider(monkeypatch):
