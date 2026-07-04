@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from agentkit.core.contracts import (
@@ -22,8 +24,9 @@ from agentkit.core.execution.models import (
     SkillExecutionPolicy,
     ToolPolicy,
 )
-from agentkit.core.registry import AgentRegistry, SkillRegistry
+from agentkit.core.registry import AgentRegistry, SkillRegistry, ToolRegistry
 from agentkit.core.router import CapabilityResolutionError, IntentRouter
+from agentkit.runtime.declarative_catalog import load_catalog, register_catalog
 from tests.context_support import SpyContextInvoker
 
 
@@ -250,6 +253,54 @@ def test_independent_llm_skills_are_not_collapsed() -> None:
 
     assert result.response_mode == "multi_skill"
     assert result.candidate_skills == ("order.lookup", "logistics.diagnose")
+
+
+def test_xhs_end_to_end_atomic_suggestion_collapses_to_campaign() -> None:
+    catalog = load_catalog(Path.cwd())
+    agents, skills, tools = AgentRegistry(), SkillRegistry(), ToolRegistry()
+    register_catalog(
+        catalog,
+        enabled_agent_ids={"xhs_growth"},
+        agents=agents,
+        skills=skills,
+        tools=tools,
+        tenant_config={},
+    )
+    invoker = SpyContextInvoker(
+        {
+            "primary_skill": None,
+            "candidate_skills": [
+                "xhs.trend.research",
+                "xhs.case.extract",
+                "xhs.copy.generate",
+                "xhs.publish.prepare",
+            ],
+            "reason": "趋势研究后生成并准备发布",
+            "confidence": "high",
+            "has_dependencies": True,
+        }
+    )
+    router = IntentRouter(
+        agents=agents,
+        skills=skills,
+        context_invoker=invoker,
+        tenant_id="AI-ABC",
+        tenant_selector="company_alpha",
+    )
+
+    result = router.resolve(
+        TaskRequest(
+            user_id="dev",
+            roles=[],
+            text="处理完整任务",
+            context={"agent": "xhs_growth"},
+        ),
+        intent=_intent(),
+        run_id="r-xhs-regression",
+    )
+
+    assert result.primary_skill == "xhs.growth.campaign"
+    assert result.candidate_skills == ("xhs.growth.campaign",)
 
 
 def test_router_rejects_skill_outside_agent_boundary() -> None:

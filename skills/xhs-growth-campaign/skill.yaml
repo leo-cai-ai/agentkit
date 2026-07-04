@@ -43,6 +43,16 @@ capabilities:
     description: 执行完整的小红书增长 Workflow。
     entrypoint: scripts.handlers:run_growth_campaign
     execution: {reasoning: direct, orchestration: workflow, tool_policy: governed}
+    composes:
+      - xhs.trend.research
+      - xhs.case.extract
+      - xhs.case.compare
+      - xhs.strategy.plan
+      - xhs.copy.generate
+      - xhs.copy.review
+      - xhs.copy.revise
+      - xhs.publish.prepare
+      - xhs.metrics.track
     autonomy: {max_model_calls: 16, max_tool_calls: 20, max_iterations: 8, max_plan_steps: 10, max_replans: 1, max_tokens: 40000, timeout_seconds: 600}
     review: {enabled: true, max_revisions: 1, exhausted_status: blocked}
     permissions: [content.research, content.write, content.publish]

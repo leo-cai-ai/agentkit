@@ -175,6 +175,23 @@ def test_repository_catalog_contains_general_agent_without_business_skills() -> 
     assert general.execution.allowed_strategies == (ExecutionStrategyName.DIRECT,)
 
 
+def test_xhs_campaign_declares_atomic_workflow_composition() -> None:
+    catalog = load_catalog(Path.cwd())
+    campaign = catalog.capabilities["xhs.growth.campaign"]
+
+    assert campaign.composes == (
+        "xhs.trend.research",
+        "xhs.case.extract",
+        "xhs.case.compare",
+        "xhs.strategy.plan",
+        "xhs.copy.generate",
+        "xhs.copy.review",
+        "xhs.copy.revise",
+        "xhs.publish.prepare",
+        "xhs.metrics.track",
+    )
+
+
 def _write_catalog(
     root: Path,
     *,
