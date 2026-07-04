@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from agentkit.core.audit import InMemoryAuditLog
+from agentkit.core.context.errors import ContextOutputInvalidError
 from agentkit.core.contracts import TaskRequest, TaskResponse
 from agentkit.core.multi_agent import AgentDirectory, MultiAgentCoordinator
 from agentkit.core.registry import AgentRegistry
@@ -217,6 +218,36 @@ def test_general_router_can_delegate_without_explicit_mention() -> None:
     assert gateway.requests[0].text == "查询订单 O-1 的物流"
     assert contexts.delegations[0]["agent"].name == "customer_service"
     assert gateway.requests[0].context["agent_context"]["knowledge"] == ["招聘制度"]
+
+
+def test_invalid_router_output_stops_without_fake_execution() -> None:
+    service, gateway, audit, invoker, contexts, persistence = _service()
+
+    def fail_route(_request) -> None:
+        raise ContextOutputInvalidError(
+            "runtime.agent-route: 输出不符合 Schema: 'task' is required",
+            context_id="runtime.agent-route",
+        )
+
+    invoker.invoke_json = fail_route
+    response = service.handle(
+        TaskRequest(
+            user_id="u1",
+            roles=["employee"],
+            text="研究小红书热门内容",
+            context={},
+        )
+    )
+
+    assert response.status == "needs_clarification"
+    assert response.governance["route"]["type"] == "route_failed"
+    assert "未调用任何 Agent、Skill 或 Tool" in response.output["message"]
+    assert gateway.requests == []
+    assert invoker.streaming_calls == []
+    assert any(
+        event["type"] == "agent_route_failed"
+        for event in audit.events_for(response.run_id)
+    )
 
 
 def test_approval_resume_returns_to_the_original_general_conversation() -> None:

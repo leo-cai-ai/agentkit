@@ -1,5 +1,5 @@
 id: runtime.agent-route
-version: 1
+version: 2
 owner: runtime
 templates:
   system: system.md

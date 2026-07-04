@@ -285,19 +285,32 @@ class MultiAgentCoordinator:
                     general=general,
                     context=general_context,
                 )
-            except Exception as exc:  # 路由模型失败时禁止误委派，降级为 General 回答
+            except Exception as exc:  # 路由模型失败时禁止误委派，也禁止生成虚假执行进度
                 self._audit.record(
                     parent_run_id,
                     "agent_route_failed",
                     {"error_type": type(exc).__name__, "reason": str(exc)},
                 )
-                decision = {
-                    "action": "answer",
+                route = {
+                    "type": "route_failed",
+                    "action": "clarify",
                     "target_agent": None,
-                    "task": request.text,
-                    "reason": "路由服务不可用，由 General Agent 安全降级回答",
+                    "reason": "路由决策未通过结构校验，已停止执行",
                     "confidence": "low",
                 }
+                self._audit.record(parent_run_id, "agent_route_decided", route)
+                return self._finish_general(
+                    request=request,
+                    conversation_id=conversation_id,
+                    parent_run_id=parent_run_id,
+                    status="needs_clarification",
+                    message=(
+                        "本轮路由决策未通过结构校验，因此未调用任何 Agent、Skill 或 Tool。"
+                        f"请重试，或使用明确的 @Agent 指定本轮执行者。当前可用："
+                        f"{self._available_agent_text()}"
+                    ),
+                    route=route,
+                )
             route_type = (
                 "general_delegate"
                 if decision["action"] == "delegate"

@@ -118,6 +118,16 @@ def render_golden(context_id: str) -> dict[str, object]:
     }
 
 
+def test_agent_route_prompt_exposes_contract_and_confirmation_semantics() -> None:
+    system = str(render_golden("runtime.agent-route")["system"])
+
+    for field in ("action", "target_agent", "task", "reason", "confidence"):
+        assert f'"{field}"' in system
+    assert "简短确认" in system
+    assert "恢复上一轮待执行任务" in system
+    assert "不要在 General Agent 层重复确认" in system
+
+
 @pytest.mark.parametrize("context_id", sorted(CASES))
 def test_context_render_matches_reviewed_golden(context_id: str) -> None:
     expected = json.loads(
