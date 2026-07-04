@@ -242,6 +242,7 @@ class _CdpSession:
         self.outer_html = '<button type="button" class="ce-btn bg-red">发布</button>'
         self.border = [633.0, 655.0, 753.0, 655.0, 753.0, 695.0, 633.0, 695.0]
         self.hit_backend_node_id = 99
+        self.node_location_params: dict = {}
         self.mouse_events: list[dict] = []
 
     def send(self, method: str, params: dict | None = None) -> dict:
@@ -263,6 +264,7 @@ class _CdpSession:
         if method == "DOM.getBoxModel":
             return {"model": {"border": self.border, "width": 120, "height": 40}}
         if method == "DOM.getNodeForLocation":
+            self.node_location_params = params
             return {"backendNodeId": self.hit_backend_node_id}
         if method == "DOM.pushNodesByBackendIdsToFrontend":
             return {"nodeIds": [self.hit_backend_node_id]}
@@ -510,6 +512,7 @@ def test_publish_targets_exact_button_inside_closed_shadow_host(tmp_path) -> Non
     assert page.keyboard.pressed == ["Escape"]
     assert page.blurred is True
     assert 250 in page.wait_calls
+    assert page.cdp_session.node_location_params["ignorePointerEventsNone"] is False
     assert page.button.click_options["position"] == {"x": 693.0, "y": 675.0}
 
 

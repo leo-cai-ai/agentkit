@@ -855,7 +855,7 @@ class XhsPublishAdapter:
                     "x": int(round(position["x"])),
                     "y": int(round(position["y"])),
                     "includeUserAgentShadowDOM": True,
-                    "ignorePointerEventsNone": True,
+                    "ignorePointerEventsNone": False,
                 },
             )
             hit_backend_node_id = int(hit.get("backendNodeId") or 0)
