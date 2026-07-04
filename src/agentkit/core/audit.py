@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+_BLOCKING_RUN_STATUSES = ("running", "waiting_for_approval")
+
 
 @dataclass
 class InMemoryAuditLog:
@@ -81,6 +83,21 @@ class InMemoryAuditLog:
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         run = self._runs.get(run_id)
         return dict(run) if run is not None else None
+
+    def has_blocking_run(
+        self,
+        *,
+        conversation_id: str,
+        tenant_id: str,
+        user_id: str,
+    ) -> bool:
+        return any(
+            run.get("conversation_id") == conversation_id
+            and run.get("tenant_id") == tenant_id
+            and run.get("user_id") == user_id
+            and run.get("status") in _BLOCKING_RUN_STATUSES
+            for run in self._runs.values()
+        )
 
     def child_runs(self, parent_run_id: str) -> list[dict[str, Any]]:
         return [
@@ -248,6 +265,33 @@ class SQLiteAuditLog:
                 "SELECT * FROM task_runs WHERE run_id = ?", (run_id,)
             ).fetchone()
         return dict(row) if row is not None else None
+
+    def has_blocking_run(
+        self,
+        *,
+        conversation_id: str,
+        tenant_id: str,
+        user_id: str,
+    ) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM task_runs
+                WHERE conversation_id = ?
+                  AND tenant_id = ?
+                  AND user_id = ?
+                  AND status IN (?, ?)
+                LIMIT 1
+                """,
+                (
+                    conversation_id,
+                    tenant_id,
+                    user_id,
+                    *_BLOCKING_RUN_STATUSES,
+                ),
+            ).fetchone()
+        return row is not None
 
     def child_runs(self, parent_run_id: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -585,6 +629,33 @@ class PostgresAuditLog(SQLiteAuditLog):
                     (run_id,),
                 ).fetchone()
         return _postgres_run_row(row) if row is not None else None
+
+    def has_blocking_run(
+        self,
+        *,
+        conversation_id: str,
+        tenant_id: str,
+        user_id: str,
+    ) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM task_runs
+                WHERE conversation_id = %s
+                  AND tenant_id = %s
+                  AND user_id = %s
+                  AND status IN (%s, %s)
+                LIMIT 1
+                """,
+                (
+                    conversation_id,
+                    tenant_id,
+                    user_id,
+                    *_BLOCKING_RUN_STATUSES,
+                ),
+            ).fetchone()
+        return row is not None
 
     def child_runs(self, parent_run_id: str) -> list[dict[str, Any]]:
         with self._connect() as conn:

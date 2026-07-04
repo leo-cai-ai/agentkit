@@ -1,4 +1,6 @@
-from agentkit.core.audit import InMemoryAuditLog, SQLiteAuditLog
+from contextlib import nullcontext
+
+from agentkit.core.audit import InMemoryAuditLog, PostgresAuditLog, SQLiteAuditLog
 
 
 def test_sqlite_audit_tracks_agent_parent_and_conversation(tmp_path) -> None:
@@ -76,3 +78,93 @@ def test_in_memory_audit_exposes_the_same_relationship_contract() -> None:
 
     assert audit.get_run(child_id)["parent_run_id"] == parent_id
     assert [item["run_id"] for item in audit.child_runs(parent_id)] == [child_id]
+
+
+def test_sqlite_audit_reports_only_blocking_runs_for_conversation(tmp_path) -> None:
+    audit = SQLiteAuditLog(tmp_path / "audit.sqlite")
+    run_id = audit.start_run(
+        tenant_id="tenant-a",
+        user_id="user-a",
+        text="处理中",
+        conversation_id="conversation-a",
+    )
+
+    assert audit.has_blocking_run(
+        conversation_id="conversation-a",
+        tenant_id="tenant-a",
+        user_id="user-a",
+    ) is True
+    assert audit.has_blocking_run(
+        conversation_id="conversation-a",
+        tenant_id="tenant-a",
+        user_id="other",
+    ) is False
+
+    audit.record(run_id, "run_finished", {"status": "completed"})
+    assert audit.has_blocking_run(
+        conversation_id="conversation-a",
+        tenant_id="tenant-a",
+        user_id="user-a",
+    ) is False
+
+
+def test_in_memory_audit_counts_waiting_child_run_as_blocking() -> None:
+    audit = InMemoryAuditLog()
+    parent_id = audit.start_run(
+        tenant_id="tenant-a",
+        user_id="user-a",
+        text="父任务",
+        conversation_id="conversation-a",
+    )
+    child_id = audit.start_run(
+        tenant_id="tenant-a",
+        user_id="user-a",
+        text="等待审批",
+        parent_run_id=parent_id,
+        conversation_id="conversation-a",
+    )
+    audit.record(parent_id, "run_finished", {"status": "completed"})
+    audit.record(child_id, "run_paused", {"status": "waiting_for_approval"})
+
+    assert audit.has_blocking_run(
+        conversation_id="conversation-a",
+        tenant_id="tenant-a",
+        user_id="user-a",
+    ) is True
+
+
+def test_postgres_audit_scopes_blocking_run_query(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[str, str, str, str, str]]] = []
+
+    class _Cursor:
+        def fetchone(self):
+            return (1,)
+
+    class _Connection:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+            return _Cursor()
+
+    audit = object.__new__(PostgresAuditLog)
+    audit._settings = None
+    audit._tenant_id = None
+    connection = _Connection()
+    monkeypatch.setattr(audit, "_connect", lambda: nullcontext(connection))
+
+    assert audit.has_blocking_run(
+        conversation_id="conversation-a",
+        tenant_id="tenant-a",
+        user_id="user-a",
+    ) is True
+    sql, params = calls[0]
+    assert "conversation_id = %s" in sql
+    assert "tenant_id = %s" in sql
+    assert "user_id = %s" in sql
+    assert "status IN (%s, %s)" in sql
+    assert params == (
+        "conversation-a",
+        "tenant-a",
+        "user-a",
+        "running",
+        "waiting_for_approval",
+    )
