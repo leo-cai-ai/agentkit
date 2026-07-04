@@ -45,19 +45,15 @@ class FakeConversationStore:
 class FakeAudit:
     def __init__(self, *, blocking: bool = False) -> None:
         self.blocking = blocking
-        self.cancellation_requests: list[str] = []
+        self.cancelled_events: list[str] = []
         self.finished: dict[str, str] = {}
 
     def has_blocking_run(self, **kwargs) -> bool:
         return self.blocking
 
-    def request_cancellation(self, run_id: str, *, reason: str) -> bool:
-        if run_id in self.cancellation_requests:
-            return False
-        self.cancellation_requests.append(run_id)
-        return True
-
     def record(self, run_id: str, event_type: str, payload: dict) -> None:
+        if event_type == "run_cancelled":
+            self.cancelled_events.append(run_id)
         if event_type == "run_finished":
             self.finished[run_id] = str(payload["status"])
 
@@ -219,19 +215,15 @@ def test_plain_delete_requires_termination_for_reconciled_run() -> None:
     assert store.deleted is False
 
 
-def test_terminate_waiting_conversation_cancels_and_deletes() -> None:
+def test_force_delete_failed_conversation_deletes_immediately() -> None:
     store = FakeConversationStore()
-    audit = FakeAudit()
     service = _service(
         store=store,
-        audit=audit,
         resolver=FakeResolver(
             ConversationExecution(
-                status="waiting_for_approval",
-                non_terminal_run_ids=("root", "child"),
+                status="failed",
                 requires_second_delete_confirmation=True,
-            ),
-            ConversationExecution(status="cancelled"),
+            )
         ),
     )
 
@@ -243,45 +235,60 @@ def test_terminate_waiting_conversation_cancels_and_deletes() -> None:
     )
 
     assert result.status == "deleted"
-    assert audit.cancellation_requests == ["root", "child"]
+    assert store.deleted is True
+
+
+def test_force_delete_waiting_conversation_closes_runs_before_delete() -> None:
+    store = FakeConversationStore()
+    audit = FakeAudit()
+    service = _service(
+        store=store,
+        audit=audit,
+        resolver=FakeResolver(
+            ConversationExecution(
+                status="waiting_for_approval",
+                non_terminal_run_ids=("root", "child"),
+                requires_second_delete_confirmation=True,
+            )
+        ),
+    )
+
+    result = service.terminate_and_delete(
+        conversation_id="c1",
+        tenant_id="t1",
+        user_id="u1",
+        agent="general_agent",
+    )
+
+    assert result.status == "deleted"
+    assert audit.cancelled_events == ["root", "child"]
     assert audit.finished == {"root": "cancelled", "child": "cancelled"}
     assert store.deleted is True
 
 
-def test_terminate_running_conversation_stays_pending_until_run_finishes() -> None:
+def test_force_delete_running_conversation_does_not_mutate_or_delete() -> None:
     store = FakeConversationStore()
     audit = FakeAudit()
-    resolver = FakeResolver(
-        ConversationExecution(
-            status="running",
-            non_terminal_run_ids=("root",),
-            requires_second_delete_confirmation=True,
+    service = _service(
+        store=store,
+        audit=audit,
+        resolver=FakeResolver(
+            ConversationExecution(
+                status="running",
+                non_terminal_run_ids=("root",),
+            )
         ),
-        ConversationExecution(
-            status="cancelling",
-            non_terminal_run_ids=("root",),
-            requires_second_delete_confirmation=True,
-        ),
-        ConversationExecution(status="cancelled"),
     )
-    service = _service(store=store, audit=audit, resolver=resolver)
 
-    first = service.terminate_and_delete(
-        conversation_id="c1",
-        tenant_id="t1",
-        user_id="u1",
-        agent="general_agent",
-    )
-    assert first.status == "pending"
-    assert store.conversation["status"] == "deletion_pending"
+    with pytest.raises(ConversationBusyError):
+        service.terminate_and_delete(
+            conversation_id="c1",
+            tenant_id="t1",
+            user_id="u1",
+            agent="general_agent",
+        )
+
+    assert store.conversation["status"] == "active"
     assert store.deleted is False
-
-    second = service.terminate_and_delete(
-        conversation_id="c1",
-        tenant_id="t1",
-        user_id="u1",
-        agent="general_agent",
-    )
-    assert second.status == "deleted"
-    assert store.deleted is True
-    assert audit.cancellation_requests == ["root"]
+    assert audit.cancelled_events == []
+    assert audit.finished == {}
