@@ -198,6 +198,22 @@ def test_business_result_tables_render_nested_objects_as_json(client) -> None:
     assert 'class="table-json"' in js
 
 
+def test_history_messages_render_normalized_content_not_business_json(client) -> None:
+    import re
+
+    script = client.get("/static/js/app.js").get_data(as_text=True)
+    function = re.search(
+        r"async function loadConversationMessages\(conversationId\) \{(?P<body>[\s\S]*?)\n\}",
+        script,
+    )
+
+    assert function is not None
+    body = function.group("body")
+    assert "msg.content" in body
+    assert "JSON.stringify(msg" not in body
+    assert "addChatMessage(" in body
+
+
 def test_agent_network_has_accessible_canvas_filters_and_fallback(client) -> None:
     login(client)
     html = client.get("/agents").get_data(as_text=True)

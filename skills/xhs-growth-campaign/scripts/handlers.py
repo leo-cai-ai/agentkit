@@ -244,10 +244,7 @@ def run_growth_campaign(ctx: SkillContext, args: dict) -> dict:
             else "Content review remained blocked after one revision; publication was not prepared."
         )
         if blocked
-        else (
-            f"Prepared a reviewed {base['goal']['days']}-day Xiaohongshu workflow targeting "
-            f"{base['goal']['target_followers']} new followers with {base['cadence']} publishing."
-        )
+        else ""
     )
     return {
         "campaign_id": base["campaign_id"],

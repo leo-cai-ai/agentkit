@@ -452,6 +452,8 @@ def test_xhs_growth_campaign_runs_isolated_workflow():
     )
 
     assert out["campaign_id"] == "XHS-30D-10000"
+    assert out["campaign_summary"] == ""
+    assert "10000 new followers" not in out["campaign_summary"]
     assert out["article"]["body"] == "LLM body"
     assert out["publish"]["status"] == "draft_created"
     assert out["research_quality"]["status"] == "limited"
