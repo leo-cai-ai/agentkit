@@ -194,8 +194,12 @@
       path.dataset.target = target.id;
       path.dataset.edgeType = relationship.type;
       path.setAttribute("d", edgePath(source, target));
-      path.classList.toggle("is-active-run", relationship.active === true);
-      edgeLayer.appendChild(path);
+      path.classList.add("ak-network-edge");
+      const current = path.cloneNode(false);
+      current.classList.remove("ak-network-edge");
+      current.classList.add("ak-network-current");
+      current.classList.toggle("is-active-run", relationship.active === true);
+      edgeLayer.append(path, current);
     }
     viewport.appendChild(edgeLayer);
 
@@ -218,8 +222,12 @@
     canvas.querySelectorAll(".ak-network-node").forEach((element) => {
       element.classList.toggle("is-selected", element.dataset.nodeId === nodeId);
     });
-    canvas.querySelectorAll(".ak-network-edges path").forEach((edge) => {
+    canvas.querySelectorAll(".ak-network-edge").forEach((edge) => {
       edge.classList.toggle("is-highlighted", edge.dataset.source === nodeId || edge.dataset.target === nodeId);
+    });
+    canvas.querySelectorAll(".ak-network-current").forEach((edge) => {
+      const selected = edge.dataset.source === nodeId || edge.dataset.target === nodeId;
+      edge.classList.toggle("is-selected-relation", selected);
     });
     list.querySelectorAll("[data-network-list-node]").forEach((button) => {
       button.setAttribute("aria-current", button.dataset.networkListNode === nodeId ? "true" : "false");

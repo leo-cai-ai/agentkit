@@ -399,6 +399,7 @@ def test_operations_uses_run_browser_and_collapsible_json(client, monkeypatch, t
         "context_prepared_with_a_long_event_name",
         {
             "nested": {"items": [1, True, None], "label": "测试"},
+            "text": "你好",
             "unsafe": "</pre><script>alert(1)</script>",
         },
     )
@@ -430,9 +431,11 @@ def test_operations_uses_run_browser_and_collapsible_json(client, monkeypatch, t
     assert 'class="ak-run-timeline ak-event-timeline"' in html
     assert 'class="ak-json-details"' in html
     assert 'class="ak-json-viewer" tabindex="0"' in html
-    assert '"nested": {' in html
+    assert "&#34;nested&#34;: {" in html
+    assert "你好" in html
+    assert "\\u4f60\\u597d" not in html
     assert "<script>alert(1)</script>" not in html
-    assert "\\u003cscript\\u003ealert" in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
 
     pages_css = client.get("/static/css/pages.css").get_data(as_text=True)
     assert ".ak-operations-workspace" in pages_css

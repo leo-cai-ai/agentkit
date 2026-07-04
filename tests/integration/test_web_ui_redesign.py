@@ -207,6 +207,22 @@ def test_agent_network_reserves_icon_column_before_node_title(client) -> None:
     assert 'document.createElementNS(svg.namespaceURI, "title")' in js
 
 
+def test_agent_network_relation_flow_distinguishes_selection_from_live_runs(client) -> None:
+    login(client)
+    html = client.get("/agents").get_data(as_text=True)
+    js = client.get("/static/js/agent_graph.js").get_data(as_text=True)
+    css = client.get("/static/css/pages.css").get_data(as_text=True)
+
+    assert "data-network-legend" in html
+    assert "当前选中关系" in html
+    assert "实时运行" in html
+    assert "ak-network-current" in js
+    assert "is-selected-relation" in js
+    assert "relationship.active === true" in js
+    assert ".ak-network-current.is-selected-relation" in css
+    assert ".ak-network-current.is-active-run" in css
+
+
 def test_operations_has_run_filters_and_parent_child_timeline(client) -> None:
     login(client)
     html = client.get("/operations").get_data(as_text=True)

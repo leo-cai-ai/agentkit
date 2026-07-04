@@ -268,6 +268,31 @@
   background: var(--ak-sys-color-accent-soft);
 }
 
+.ak-network-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ak-sys-space-2) var(--ak-sys-space-4);
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.6875rem;
+}
+
+.ak-network-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ak-sys-space-2);
+}
+
+.ak-network-legend i {
+  inline-size: 2.5rem;
+  block-size: 0;
+  border-block-start: 3px dotted var(--ak-sys-color-accent-default);
+}
+
+.ak-network-legend i.is-active-run {
+  border-block-start-width: 5px;
+  border-block-start-color: var(--ak-sys-color-accent-strong);
+}
+
 .ak-network-stage {
   position: relative;
   min-block-size: 42rem;
@@ -290,9 +315,23 @@
   transition: opacity 160ms ease, stroke 160ms ease, stroke-width 160ms ease;
 }
 .ak-network-edges path.is-highlighted { stroke: var(--ak-sys-color-accent-strong); stroke-width: 3; }
-.ak-network-edges path.is-active-run {
-  stroke-dasharray: 8 8;
-  animation: ak-network-flow 1.8s linear infinite;
+.ak-network-current {
+  opacity: 0;
+  pointer-events: none;
+  stroke: var(--ak-sys-color-accent-default);
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-dasharray: 2 12;
+}
+.ak-network-current.is-selected-relation {
+  opacity: 0.92;
+  animation: ak-network-flow 1.4s linear infinite;
+}
+.ak-network-current.is-active-run {
+  opacity: 1;
+  stroke: var(--ak-sys-color-accent-strong);
+  stroke-width: 5;
+  animation: ak-network-flow 650ms linear infinite;
 }
 .ak-network-node { cursor: grab; transition: opacity 160ms ease; }
 .ak-network-node:active { cursor: grabbing; }
@@ -366,7 +405,7 @@
 .ak-network-fallback button[aria-current="true"] { border-color: var(--ak-sys-color-border-interactive); background: var(--ak-sys-color-bg-surface-subtle); }
 .ak-network-fallback span { color: var(--ak-sys-color-text-subtle); font-size: 0.75rem; }
 
-@keyframes ak-network-flow { to { stroke-dashoffset: -32; } }
+@keyframes ak-network-flow { to { stroke-dashoffset: -56; } }
 
 @media (min-width: 47.5625rem) {
   body.ak-history-collapsed .ak-general-chat-layout {
@@ -1840,7 +1879,8 @@ button.conversation-new {
     transition: none;
   }
 
-  .ak-network-edges path.is-active-run {
+  .ak-network-current.is-selected-relation,
+  .ak-network-current.is-active-run {
     animation: none;
   }
 
