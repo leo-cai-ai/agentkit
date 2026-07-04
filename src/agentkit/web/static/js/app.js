@@ -753,6 +753,12 @@ function bindAgentSelector() {
   update(false);
 }
 
+function renderTableValue(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "object") return JSON.stringify(value, null, 2);
+  return String(value);
+}
+
 function tableHtml(rows, label = "Data") {
   if (!rows || rows.length === 0) {
     return '<div class="empty-state ak-empty-state">No records to display.</div>';
@@ -764,8 +770,11 @@ function tableHtml(rows, label = "Data") {
       const cells = columns
         .map((column) => {
           const value = row[column];
-          const rendered = Array.isArray(value) ? value.join(", ") : value ?? "";
-          return `<td>${escapeHtml(rendered)}</td>`;
+          const rendered = escapeHtml(renderTableValue(value));
+          if (typeof value === "object" && value !== null) {
+            return `<td><pre class="table-json">${rendered}</pre></td>`;
+          }
+          return `<td>${rendered}</td>`;
         })
         .join("");
       return `<tr>${cells}</tr>`;

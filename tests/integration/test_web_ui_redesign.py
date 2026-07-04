@@ -190,6 +190,14 @@ def test_trace_auto_open_is_limited_to_human_attention_states(client) -> None:
     assert "general_delegate" not in function.group("body")
 
 
+def test_business_result_tables_render_nested_objects_as_json(client) -> None:
+    js = client.get("/static/js/app.js").get_data(as_text=True)
+
+    assert "function renderTableValue" in js
+    assert "JSON.stringify(value, null, 2)" in js
+    assert 'class="table-json"' in js
+
+
 def test_agent_network_has_accessible_canvas_filters_and_fallback(client) -> None:
     login(client)
     html = client.get("/agents").get_data(as_text=True)

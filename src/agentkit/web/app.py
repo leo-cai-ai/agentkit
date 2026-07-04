@@ -565,6 +565,15 @@ def _web_response(response: TaskResponse) -> dict[str, Any]:
 
 def format_response_text(response: TaskResponse) -> str:
     output = response.output
+    if response.status == "blocked":
+        publish = output.get("publish")
+        publish = publish if isinstance(publish, dict) else {}
+        review = publish.get("review")
+        review = review if isinstance(review, dict) else {}
+        reason = str(
+            review.get("reason") or publish.get("reason") or "未通过质量门禁"
+        )
+        return f"内容审核未通过，未进入发布：{reason}"
     for key in ("answer", "message", "summary", "campaign_summary"):
         if output.get(key):
             return str(output[key])
