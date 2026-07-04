@@ -89,6 +89,8 @@ def test_compact_navigation_explains_icons_with_tooltips(client) -> None:
     css = client.get("/static/css/layout.css").get_data(as_text=True)
 
     assert html.count("data-nav-label=") == 4
+    assert html.count('aria-label="聊天"') == 1
+    assert html.count('aria-label="Agent Network"') == 1
     assert 'data-nav-label="聊天"' in html
     assert 'data-nav-label="Agent Network"' in html
     assert "content: attr(data-nav-label)" in css
