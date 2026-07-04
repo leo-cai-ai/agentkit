@@ -191,7 +191,14 @@ class XhsSearchAdapter:
             self.search_url(query),
             timeout_ms=self._remaining_ms(deadline),
         )
-        self._wait_for_results(page, timeout_ms=self._remaining_ms(deadline))
+        try:
+            self._wait_for_results(page, timeout_ms=self._remaining_ms(deadline))
+        except BrowserPageChanged:
+            _log.warning(
+                "小红书搜索结果首次加载超时，使用同一浏览器会话重新加载一次。"
+            )
+            self._navigate(page, self.search_url(query), timeout_ms=timeout_ms)
+            self._wait_for_results(page, timeout_ms=timeout_ms)
 
         candidate_limit = min(max(limit * 3, limit), 60)
         raw_results = self._extract_raw_results(page, candidate_limit)
@@ -236,13 +243,25 @@ class XhsSearchAdapter:
         try:
             page.wait_for_selector(_RESULT_LINK_SELECTOR, state="attached", timeout=timeout_ms)
         except Exception as exc:  # noqa: BLE001 - classify timeout from optional dependency
-            self._raise_for_page_state(page)
+            state = self._page_state(page)
+            self._raise_for_page_state(page, state=state)
+            if state.get("resultCount"):
+                return
             raise BrowserPageChanged(
                 "Xiaohongshu search results did not appear before the timeout."
             ) from exc
 
-    def _raise_for_page_state(self, page: Any) -> None:
-        state = dict(page.evaluate(_PAGE_STATE) or {})
+    @staticmethod
+    def _page_state(page: Any) -> dict[str, Any]:
+        return dict(page.evaluate(_PAGE_STATE) or {})
+
+    def _raise_for_page_state(
+        self,
+        page: Any,
+        *,
+        state: dict[str, Any] | None = None,
+    ) -> None:
+        state = state if state is not None else self._page_state(page)
         if state.get("challenge") or state.get("phoneVerification"):
             raise BrowserChallengeRequired(
                 "Xiaohongshu requires human verification, possibly an SMS code. Open the "

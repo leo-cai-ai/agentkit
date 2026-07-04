@@ -316,6 +316,68 @@ def test_xhs_adapter_continues_when_target_url_committed_before_goto_timeout():
     assert results[0].result_id == "high"
 
 
+def test_xhs_adapter_accepts_results_that_appear_at_wait_timeout_boundary():
+    adapter = XhsSearchAdapter(enrich_details=False)
+    page = _XhsPage(
+        state={
+            "resultCount": 2,
+            "detailCount": 0,
+            "login": False,
+            "challenge": False,
+            "phoneVerification": False,
+        },
+        fail_wait=True,
+    )
+
+    results = adapter.search(
+        page,
+        query="AI Agent",
+        limit=1,
+        timeout_ms=5000,
+        max_scrolls=0,
+        scroll_pause_ms=0,
+    )
+
+    assert results[0].result_id == "high"
+
+
+def test_xhs_adapter_reloads_once_after_transient_empty_search_timeout():
+    class RecoveringPage(_XhsPage):
+        def __init__(self) -> None:
+            super().__init__(
+                state={
+                    "resultCount": 0,
+                    "detailCount": 0,
+                    "login": False,
+                    "challenge": False,
+                    "phoneVerification": False,
+                }
+            )
+            self.wait_attempts = 0
+
+        def wait_for_selector(self, *_args, **_kwargs) -> None:
+            self.wait_attempts += 1
+            if self.wait_attempts == 1:
+                raise TimeoutError("transient empty search page")
+            self.state["resultCount"] = 2
+
+    adapter = XhsSearchAdapter(enrich_details=False)
+    page = RecoveringPage()
+
+    results = adapter.search(
+        page,
+        query="AI Agent",
+        limit=1,
+        timeout_ms=5000,
+        max_scrolls=0,
+        scroll_pause_ms=0,
+    )
+
+    assert results[0].result_id == "high"
+    assert page.wait_attempts == 2
+    assert len(page.goto_calls) == 2
+
+
 @pytest.mark.parametrize(
     ("state", "error_type"),
     [
