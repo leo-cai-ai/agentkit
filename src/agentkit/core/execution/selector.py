@@ -81,8 +81,12 @@ class StrategySelector:
 
         self._validate_strategy(agent, resolution, selected)
         budget = self._global_budget.restrict(agent.autonomy_budget)
-        for skill in skills:
-            budget = skill.autonomy.apply_to(budget)
+        is_multi_skill_plan = (
+            selected is ExecutionStrategyName.PLAN_EXECUTE and len(skills) > 1
+        )
+        if not is_multi_skill_plan:
+            for skill in skills:
+                budget = skill.autonomy.apply_to(budget)
         return StrategySelection(
             strategy=selected,
             orchestration=_strategy_orchestration(selected),

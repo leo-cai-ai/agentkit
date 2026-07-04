@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol, TypedDict, cast
 
 from jsonschema import validate as validate_json
@@ -83,9 +83,16 @@ class PlanState(TypedDict):
 
 
 class PlanValidationError(ValueError):
-    def __init__(self, message: str, *, status: str = "plan_invalid") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: str = "plan_invalid",
+        details: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.status = status
+        self.details = dict(details or {})
 
 
 class PlanExecuteStrategy:
@@ -157,7 +164,9 @@ class PlanExecuteStrategy:
             except PlanValidationError as exc:
                 return {
                     "result": self._result(
-                        state, exc.status, {"reason": str(exc)}
+                        state,
+                        exc.status,
+                        {"reason": str(exc), **exc.details},
                     )
                 }
             return {}
@@ -244,7 +253,34 @@ class PlanExecuteStrategy:
                         complexity=ComplexityAssessment(candidate_skills=(skill.name,)),
                     ),
                 )
-                child = strategy.execute(context=context, request=child_request)
+                remaining_model_calls = budget.max_model_calls - state["model_calls"]
+                remaining_tool_calls = budget.max_tool_calls - state["tool_calls"]
+                remaining_tokens = budget.max_tokens - state["token_count"]
+                remaining_timeout = state["deadline_at"] - self._clock()
+                if (
+                    min(
+                        remaining_model_calls,
+                        remaining_tool_calls,
+                        remaining_tokens,
+                    )
+                    <= 0
+                    or remaining_timeout <= 0
+                ):
+                    return {"result": self._result(state, "budget_exhausted", {})}
+                remaining = AutonomyBudget(
+                    max_model_calls=remaining_model_calls,
+                    max_tool_calls=remaining_tool_calls,
+                    max_iterations=budget.max_iterations,
+                    max_plan_steps=budget.max_plan_steps,
+                    max_replans=max(0, budget.max_replans - state["replans"]),
+                    max_tokens=remaining_tokens,
+                    timeout_seconds=remaining_timeout,
+                )
+                child_context = replace(
+                    context,
+                    budget=skill.autonomy.apply_to(remaining),
+                )
+                child = strategy.execute(context=child_context, request=child_request)
             except Exception as exc:  # noqa: BLE001 - Step 失败由 Replan Policy 处理
                 return {
                     "failure": {
@@ -285,8 +321,11 @@ class PlanExecuteStrategy:
                 "completed": completed,
                 "artifacts": [*state["artifacts"], *child.artifacts, artifact],
                 "frozen_steps": frozen,
-                "tool_calls": state["tool_calls"]
-                + int(child.metrics.get("tool_calls", 0)),
+                "model_calls": state["model_calls"]
+                + int(child.metrics.get("model_calls", 0)),
+                "tool_calls": state["tool_calls"] + int(child.metrics.get("tool_calls", 0)),
+                "token_count": state["token_count"]
+                + int(child.metrics.get("token_count", 0)),
                 "failure": None,
                 "current_step": None,
             }
@@ -390,8 +429,16 @@ class PlanExecuteStrategy:
         completed: dict[str, dict[str, Any]],
         frozen_steps: list[str],
     ) -> None:
-        if len(plan.steps) > budget.max_plan_steps:
-            raise PlanValidationError("Plan 步骤数超过预算")
+        actual_steps = len(plan.steps)
+        if actual_steps > budget.max_plan_steps:
+            raise PlanValidationError(
+                "Plan 步骤数超过预算："
+                f"生成 {actual_steps}，最多允许 {budget.max_plan_steps}",
+                details={
+                    "actual_steps": actual_steps,
+                    "max_plan_steps": budget.max_plan_steps,
+                },
+            )
         ids = [step.id for step in plan.steps]
         if len(ids) != len(set(ids)):
             raise PlanValidationError("Plan Step ID 必须唯一")

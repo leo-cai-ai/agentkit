@@ -7,10 +7,12 @@ from agentkit.core.contracts import SkillDefinition, TaskRequest
 from agentkit.core.execution.direct import DirectStrategy
 from agentkit.core.execution.models import (
     AutonomyBudget,
+    AutonomyLimits,
     CapabilityResolution,
     ComplexityAssessment,
     OrchestrationMode,
     StrategyRequest,
+    StrategyResult,
     ToolPolicy,
 )
 from agentkit.core.execution.plan import (
@@ -34,6 +36,27 @@ class FakePlanModel:
         if not self._plans:
             raise AssertionError("FakePlanModel 没有剩余计划")
         return PlanModelDecision(plan=self._plans.pop(0), token_count=1)
+
+
+class CapturingStrategy:
+    name = "direct"
+
+    def __init__(self) -> None:
+        self.budgets: list[AutonomyBudget] = []
+
+    def execute(self, *, context, request) -> StrategyResult:
+        self.budgets.append(context.effective_budget)
+        return StrategyResult(status="completed", output={"ok": True})
+
+
+class MetricsStrategy(CapturingStrategy):
+    def execute(self, *, context, request) -> StrategyResult:
+        self.budgets.append(context.effective_budget)
+        return StrategyResult(
+            status="completed",
+            output={"ok": True},
+            metrics={"model_calls": 2, "tool_calls": 1, "token_count": 100},
+        )
 
 
 def _step(
@@ -143,6 +166,89 @@ def test_plan_executes_dependency_dag_and_artifact_arguments() -> None:
     assert executed == ["order", "shipping", "resolve"]
     assert result.output["steps"]["shipping"]["tracking_id"] == "T-1"
     assert len(result.artifacts) == 3
+
+
+def test_plan_step_applies_skill_budget_inside_outer_envelope() -> None:
+    capture = CapturingStrategy()
+    skill = replace(
+        _skill("order.lookup", lambda ctx, args: {"ok": True}),
+        autonomy=AutonomyLimits(
+            max_model_calls=2,
+            max_plan_steps=1,
+            max_tokens=500,
+        ),
+    )
+    strategy = PlanExecuteStrategy(
+        model=FakePlanModel(_plan(_step("order", "order.lookup"))),
+        strategies=StrategyRegistry([capture]),
+    )
+    outer = AutonomyBudget(10, 10, 10, 8, 1, 5000, 60)
+
+    result = strategy.execute(
+        context=_plan_context(skill, budget=outer),
+        request=_plan_request("order.lookup"),
+    )
+
+    assert result.status == "completed"
+    assert capture.budgets[0].max_model_calls == 2
+    assert capture.budgets[0].max_plan_steps == 1
+    assert capture.budgets[0].max_tokens == 500
+
+
+def test_plan_carries_child_consumption_into_next_step_budget() -> None:
+    capture = MetricsStrategy()
+    one = _skill("one", lambda ctx, args: {})
+    two = _skill("two", lambda ctx, args: {})
+    strategy = PlanExecuteStrategy(
+        model=FakePlanModel(
+            _plan(
+                _step("one", "one"),
+                _step("two", "two", depends_on=["one"]),
+            )
+        ),
+        strategies=StrategyRegistry([capture]),
+    )
+
+    result = strategy.execute(
+        context=_plan_context(
+            one,
+            two,
+            budget=AutonomyBudget(6, 5, 10, 4, 1, 1000, 60),
+        ),
+        request=_plan_request("one", "two"),
+    )
+
+    assert result.status == "completed"
+    assert [item.max_model_calls for item in capture.budgets] == [5, 3]
+    assert [item.max_tool_calls for item in capture.budgets] == [5, 4]
+    assert [item.max_tokens for item in capture.budgets] == [999, 899]
+
+
+def test_plan_step_budget_error_reports_actual_and_limit() -> None:
+    skills = [_skill(f"s{index}", lambda ctx, args: {}) for index in range(3)]
+    model = FakePlanModel(
+        _plan(
+            *[
+                _step(f"step-{index}", skill.name)
+                for index, skill in enumerate(skills)
+            ]
+        )
+    )
+
+    result = _strategy(model).execute(
+        context=_plan_context(
+            *skills,
+            budget=AutonomyBudget(10, 10, 10, 2, 1, 5000, 60),
+        ),
+        request=_plan_request(*(skill.name for skill in skills)),
+    )
+
+    assert result.status == "plan_invalid"
+    assert result.output == {
+        "reason": "Plan 步骤数超过预算：生成 3，最多允许 2",
+        "actual_steps": 3,
+        "max_plan_steps": 2,
+    }
 
 
 def test_plan_rejects_cycle() -> None:

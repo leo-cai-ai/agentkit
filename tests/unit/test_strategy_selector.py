@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from agentkit.core.execution.models import (
     AutonomyBudget,
+    AutonomyLimits,
     CapabilityResolution,
     ComplexityAssessment,
     ExecutionStrategyName,
@@ -34,6 +37,17 @@ def _selector(*, suggestion=None) -> StrategySelector:
     skills.register(_skill("order.lookup"))
     skills.register(_skill("logistics.diagnose"))
     skills.register(_skill("refund.apply"))
+    return StrategySelector(
+        skills=skills,
+        global_budget=AutonomyBudget(20, 20, 10, 10, 2, 50000, 600),
+        suggestion=suggestion,
+    )
+
+
+def _selector_with_skills(*skill_definitions, suggestion=None) -> StrategySelector:
+    skills = SkillRegistry()
+    for skill in skill_definitions:
+        skills.register(skill)
     return StrategySelector(
         skills=skills,
         global_budget=AutonomyBudget(20, 20, 10, 10, 2, 50000, 600),
@@ -103,3 +117,29 @@ def test_effective_budget_is_restricted_by_agent_and_skill() -> None:
 
     assert selected.budget.max_model_calls == 8
     assert selected.budget.max_tool_calls == 16
+
+
+def test_multi_skill_plan_uses_global_and_agent_envelope() -> None:
+    selector = _selector_with_skills(
+        replace(
+            _skill("order.lookup"),
+            autonomy=AutonomyLimits(max_plan_steps=1),
+        ),
+        replace(
+            _skill("logistics.diagnose"),
+            autonomy=AutonomyLimits(max_plan_steps=2),
+        ),
+    )
+    resolution = _resolution(
+        ComplexityAssessment(
+            candidate_skills=("order.lookup", "logistics.diagnose"),
+            estimated_steps=2,
+            has_dependencies=True,
+        ),
+        primary=None,
+    )
+
+    selected = selector.select(agent=_agent(), resolution=resolution)
+
+    assert selected.strategy is ExecutionStrategyName.PLAN_EXECUTE
+    assert selected.budget.max_plan_steps == 8
