@@ -68,6 +68,10 @@
     "publishing_media_strategy": "xhs_text_image",
     "text_image_style": "涂鸦",
     "text_image_generation_timeout_seconds": 120,
+    "media_understanding_provider": "none",
+    "media_understanding_model": "",
+    "media_understanding_max_images": 3,
+    "media_understanding_min_confidence": 0.75,
     "title_max_chars": 20,
     "body_max_chars": 1000
   },
