@@ -38,7 +38,7 @@ def _responder(system: str, user: str) -> str:
 
 
 @pytest.fixture
-def client(monkeypatch):
+def client(monkeypatch, tmp_path):
     monkeypatch.setenv("AGENTKIT_WEB_AUTH_TOKEN", "secret-token")
     monkeypatch.setenv("AGENTKIT_WEB_SECRET_KEY", "test-secret-key")
     monkeypatch.setenv("AGENTKIT_WEB_COOKIE_SECURE", "false")
@@ -46,11 +46,13 @@ def client(monkeypatch):
     config_mod.get_settings.cache_clear()
 
     import agentkit.core.llm_client as llm_client
+    import agentkit.runtime.bootstrap as bootstrap_mod
     from agentkit.llm.fake import FakeProvider
     from agentkit.web.app import app, clear_runtime_cache
     from agentkit.web.security import configure_security
 
     monkeypatch.setattr(llm_client, "_get_provider", lambda: FakeProvider(responder=_responder))
+    monkeypatch.setattr(bootstrap_mod, "DATA_DIR", tmp_path)
     configure_security(app)
     clear_runtime_cache()
     yield app.test_client()
@@ -62,6 +64,18 @@ def _login(client) -> str:
     assert client.post("/login", data={"token": "secret-token"}).status_code == 302
     page = client.get("/chat")
     return re.search(rb'name="csrf-token" content="([^"]+)"', page.data).group(1).decode()
+
+
+def _sse_final(response) -> dict:
+    frames = response.get_data(as_text=True).split("\n\n")
+    for frame in frames:
+        if not frame.startswith("event: final\n"):
+            continue
+        data = next(
+            line[6:] for line in frame.splitlines() if line.startswith("data: ")
+        )
+        return json.loads(data)
+    raise AssertionError("SSE response did not contain a final event")
 
 
 def test_chat_api_always_returns_unified_gateway_contract(client) -> None:
@@ -299,6 +313,230 @@ def test_delete_conversation_requires_csrf(client) -> None:
     _login(client)
     response = client.delete("/api/conversations/missing")
     assert response.status_code == 400
+
+
+def test_empty_orphaned_conversation_returns_reconciled_execution(client) -> None:
+    from agentkit.web.app import get_runtime
+
+    _login(client)
+    runtime = get_runtime()
+    tenant_id = str(runtime.tenant_config["tenant_id"])
+    conversation_id = runtime.conversations.create_conversation(
+        tenant_id=tenant_id,
+        agent="general_agent",
+        user_id="console-admin",
+        title="失败会话",
+    )
+    parent_id = runtime.gateway.audit.start_run(
+        tenant_id=tenant_id,
+        user_id="console-admin",
+        text="你好",
+        agent_id="general_agent",
+        conversation_id=conversation_id,
+    )
+    child_id = runtime.gateway.audit.start_run(
+        tenant_id=tenant_id,
+        user_id="console-admin",
+        text="子任务",
+        agent_id="customer_service",
+        parent_run_id=parent_id,
+        conversation_id=conversation_id,
+    )
+    runtime.gateway.audit.record(
+        parent_id,
+        "run_paused",
+        {"status": "waiting_for_approval", "child_run_id": child_id},
+    )
+    runtime.gateway.audit.record(
+        child_id,
+        "run_failed",
+        {"error": "private stack and browser diagnostics"},
+    )
+    runtime.gateway.audit.record(child_id, "run_finished", {"status": "failed"})
+
+    response = client.get(f"/api/conversations/{conversation_id}/messages")
+    body = response.get_json()
+
+    assert response.status_code == 200
+    assert body["messages"] == []
+    assert body["execution"]["status"] == "failed"
+    assert body["execution"]["latest_run_id"] == parent_id
+    assert body["execution"]["original_request"] == "你好"
+    assert body["execution"]["retryable"] is True
+    assert body["execution"]["reconciled"] is True
+    assert body["execution"]["requires_second_delete_confirmation"] is True
+    assert "private stack" not in body["execution"]["reason"]
+    assert runtime.gateway.audit.get_run(parent_id)["status"] == "failed"
+
+
+def test_retry_creates_a_new_run_in_the_same_conversation(client) -> None:
+    from agentkit.web.app import get_runtime
+
+    token = _login(client)
+    runtime = get_runtime()
+    tenant_id = str(runtime.tenant_config["tenant_id"])
+    conversation_id = runtime.conversations.create_conversation(
+        tenant_id=tenant_id,
+        agent="general_agent",
+        user_id="console-admin",
+        title="可重试会话",
+    )
+    old_run_id = runtime.gateway.audit.start_run(
+        tenant_id=tenant_id,
+        user_id="console-admin",
+        text="你好",
+        agent_id="general_agent",
+        conversation_id=conversation_id,
+    )
+    runtime.gateway.audit.record(old_run_id, "run_finished", {"status": "failed"})
+
+    response = client.post(
+        f"/api/conversations/{conversation_id}/retry/stream",
+        headers={"X-CSRF-Token": token},
+    )
+    final = _sse_final(response)
+
+    assert response.status_code == 200
+    assert final["conversation_id"] == conversation_id
+    assert final["run_id"] != old_run_id
+    assert runtime.gateway.audit.get_run(old_run_id)["status"] == "failed"
+
+
+def test_reconciled_conversation_requires_termination_endpoint(client) -> None:
+    from agentkit.web.app import get_runtime
+
+    token = _login(client)
+    runtime = get_runtime()
+    tenant_id = str(runtime.tenant_config["tenant_id"])
+    conversation_id = runtime.conversations.create_conversation(
+        tenant_id=tenant_id,
+        agent="general_agent",
+        user_id="console-admin",
+    )
+    run_id = runtime.gateway.audit.start_run(
+        tenant_id=tenant_id,
+        user_id="console-admin",
+        text="失败任务",
+        agent_id="general_agent",
+        conversation_id=conversation_id,
+    )
+    runtime.gateway.audit.record(
+        run_id,
+        "run_reconciled",
+        {"from_status": "running", "to_status": "failed"},
+    )
+    runtime.gateway.audit.record(run_id, "run_finished", {"status": "failed"})
+
+    ordinary = client.delete(
+        f"/api/conversations/{conversation_id}",
+        headers={"X-CSRF-Token": token},
+    )
+    terminated = client.post(
+        f"/api/conversations/{conversation_id}/terminate-and-delete",
+        headers={"X-CSRF-Token": token},
+    )
+
+    assert ordinary.status_code == 409
+    assert terminated.status_code == 200
+    assert terminated.get_json()["status"] == "deleted"
+    assert runtime.conversations.get_conversation(conversation_id) is None
+
+
+def test_running_conversation_termination_returns_pending(client) -> None:
+    from agentkit.web.app import get_runtime
+
+    token = _login(client)
+    runtime = get_runtime()
+    tenant_id = str(runtime.tenant_config["tenant_id"])
+    conversation_id = runtime.conversations.create_conversation(
+        tenant_id=tenant_id,
+        agent="general_agent",
+        user_id="console-admin",
+    )
+    run_id = runtime.gateway.audit.start_run(
+        tenant_id=tenant_id,
+        user_id="console-admin",
+        text="长任务",
+        agent_id="general_agent",
+        conversation_id=conversation_id,
+    )
+
+    response = client.post(
+        f"/api/conversations/{conversation_id}/terminate-and-delete",
+        headers={"X-CSRF-Token": token},
+    )
+
+    assert response.status_code == 202
+    assert response.get_json()["status"] == "pending"
+    assert runtime.gateway.audit.get_run(run_id)["status"] == "cancellation_requested"
+    assert runtime.conversations.get_conversation(conversation_id)["status"] == (
+        "deletion_pending"
+    )
+
+
+def test_conversation_list_finalizes_pending_deletion_after_run_stops(client) -> None:
+    from agentkit.web.app import get_runtime
+
+    token = _login(client)
+    runtime = get_runtime()
+    tenant_id = str(runtime.tenant_config["tenant_id"])
+    conversation_id = runtime.conversations.create_conversation(
+        tenant_id=tenant_id,
+        agent="general_agent",
+        user_id="console-admin",
+    )
+    run_id = runtime.gateway.audit.start_run(
+        tenant_id=tenant_id,
+        user_id="console-admin",
+        text="长任务",
+        agent_id="general_agent",
+        conversation_id=conversation_id,
+    )
+    pending = client.post(
+        f"/api/conversations/{conversation_id}/terminate-and-delete",
+        headers={"X-CSRF-Token": token},
+    )
+    assert pending.status_code == 202
+    runtime.gateway.audit.record(run_id, "run_finished", {"status": "cancelled"})
+
+    response = client.get("/api/conversations")
+    rows = response.get_json()["conversations"]
+
+    assert response.status_code == 200
+    assert all(row["id"] != conversation_id for row in rows)
+    assert runtime.conversations.get_conversation(conversation_id) is None
+
+
+def test_pending_deletion_conversation_rejects_new_chat_turn(client) -> None:
+    from agentkit.web.app import get_runtime
+
+    token = _login(client)
+    runtime = get_runtime()
+    tenant_id = str(runtime.tenant_config["tenant_id"])
+    conversation_id = runtime.conversations.create_conversation(
+        tenant_id=tenant_id,
+        agent="general_agent",
+        user_id="console-admin",
+    )
+    assert runtime.conversations.transition_conversation_status(
+        conversation_id,
+        expected=("active",),
+        status="deletion_pending",
+    )
+
+    response = client.post(
+        "/api/chat",
+        json={"message": "继续执行", "conversation_id": conversation_id},
+        headers={"X-CSRF-Token": token},
+    )
+
+    assert response.status_code == 400
+    assert "正在删除" in response.get_json()["error"]
+    assert runtime.gateway.audit.runs_for_conversation(
+        conversation_id=conversation_id,
+        tenant_id=tenant_id,
+        user_id="console-admin",
+    ) == []
 
 
 def test_explicit_mention_applies_to_one_turn_and_trace_keeps_parent_child(client) -> None:

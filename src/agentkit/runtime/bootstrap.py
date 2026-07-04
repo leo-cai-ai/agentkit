@@ -54,6 +54,7 @@ from agentkit.runtime.conversation_persistence import (
     ConversationPersistenceService,
     ExtractingMemoryWriter,
 )
+from agentkit.runtime.conversation_runs import ConversationRunStateResolver
 from agentkit.runtime.declarative_catalog import (
     load_catalog,
     register_catalog,
@@ -81,6 +82,7 @@ class AgentKitRuntime:
     contexts: ContextRegistry
     context_invoker: ContextInvocationService
     conversation_deletion: ConversationDeletionService
+    conversation_runs: ConversationRunStateResolver
     manifest: dict[str, Any] | None = None
     # 迁移期间保留属性形状，但不再存在第二套 Chat Runtime。
     chat_service: MultiAgentCoordinator | None = None
@@ -231,12 +233,17 @@ def build_runtime(
     )
     strategies = _build_strategies(checkpointer)
     conversation_store = build_conversation_store(settings, db_path)
+    conversation_runs = ConversationRunStateResolver(
+        audit=audit,
+        timeout_seconds=float(settings.autonomy_timeout_seconds),
+    )
     embeddings = build_embedding_provider(settings)
     vector_store = build_vector_store(settings, conversation_store)
     memory = MemoryRetriever(vector_store=vector_store, embeddings=embeddings)
     conversation_deletion = ConversationDeletionService(
         store=conversation_store,
         audit=audit,
+        resolver=conversation_runs,
         external_memory_store=(
             None if isinstance(vector_store, SqliteVectorStore) else vector_store
         ),
@@ -339,6 +346,7 @@ def build_runtime(
         contexts=context_registry,
         context_invoker=context_invoker,
         conversation_deletion=conversation_deletion,
+        conversation_runs=conversation_runs,
         manifest=manifest,
         chat_service=chat_service,
     )

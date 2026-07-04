@@ -509,10 +509,22 @@ def _run_chat(
     principal = principal if principal is not None else current_principal()
     if runtime.chat_service is None:
         raise RuntimeError("多 Agent 聊天服务未初始化")
+    task = _chat_task_request(payload, runtime=runtime, principal=principal)
+    conversation_id = str(task.context.get("conversation_id") or "")
+    if conversation_id:
+        conversation = runtime.conversations.get_conversation(conversation_id)
+        if (
+            conversation is None
+            or conversation.get("tenant_id") != str(runtime.tenant_config["tenant_id"])
+            or conversation.get("agent") != "general_agent"
+            or conversation.get("user_id") != task.user_id
+        ):
+            raise ValueError("会话不存在或无权访问")
+        if conversation.get("status") != "active":
+            raise ValueError("会话正在删除，不能继续执行")
     approval = _approval(payload)
     if approval is not None:
         thread_id, approved, rejected = approval
-        task = _chat_task_request(payload, runtime=runtime, principal=principal)
         response = runtime.chat_service.resume(
             thread_id,
             user_id=task.user_id,
@@ -522,9 +534,7 @@ def _run_chat(
             decision_context={"principal": principal.to_public_dict()},
         )
     else:
-        response = runtime.chat_service.handle(
-            _chat_task_request(payload, runtime=runtime, principal=principal)
-        )
+        response = runtime.chat_service.handle(task)
     return _web_response(response)
 
 
@@ -645,12 +655,34 @@ def api_tasks_resume_stream():
 @require_permission(CHAT_USE)
 def api_conversations():
     runtime = get_runtime()
+    tenant_id = str(runtime.tenant_config["tenant_id"])
+    user_id = _effective_user_id({}, get_ui_config(runtime.tenant_config))
     rows = runtime.conversations.list_conversations(
-        tenant_id=str(runtime.tenant_config["tenant_id"]),
+        tenant_id=tenant_id,
         agent="general_agent",
-        user_id=_effective_user_id({}, get_ui_config(runtime.tenant_config)),
+        user_id=user_id,
     )
-    return jsonify({"conversations": rows})
+    visible: list[dict[str, Any]] = []
+    for row in rows:
+        if row.get("status") != "deletion_pending":
+            visible.append(row)
+            continue
+        try:
+            deleted = runtime.conversation_deletion.finalize_pending(
+                conversation_id=str(row["id"]),
+                tenant_id=tenant_id,
+                user_id=user_id,
+                agent="general_agent",
+            )
+        except Exception:  # noqa: BLE001 - 列表读取不能因后台清理失败而整体不可用
+            app.logger.exception(
+                "pending conversation deletion finalization failed",
+                extra={"conversation_id": row.get("id")},
+            )
+            deleted = False
+        if not deleted:
+            visible.append(row)
+    return jsonify({"conversations": visible})
 
 
 @app.post("/api/conversations")
@@ -696,6 +728,70 @@ def api_delete_conversation(conversation_id: str):
     )
 
 
+@app.post("/api/conversations/<conversation_id>/terminate-and-delete")
+@require_permission(CHAT_USE)
+def api_terminate_and_delete_conversation(conversation_id: str):
+    runtime = get_runtime()
+    user_id = _effective_user_id({}, get_ui_config(runtime.tenant_config))
+    try:
+        result = runtime.conversation_deletion.terminate_and_delete(
+            conversation_id=conversation_id,
+            tenant_id=str(runtime.tenant_config["tenant_id"]),
+            user_id=user_id,
+            agent="general_agent",
+        )
+    except ConversationNotFoundError:
+        return jsonify({"error": "会话不存在"}), 404
+    except ConversationBusyError:
+        return jsonify({"error": "会话状态已变化，请刷新后重试"}), 409
+    except Exception:  # noqa: BLE001 - API 边界隐藏存储与取消内部细节
+        app.logger.exception(
+            "conversation termination failed",
+            extra={"conversation_id": conversation_id},
+        )
+        return jsonify({"error": "结束任务失败，请稍后重试"}), 503
+    status_code = 200 if result.status == "deleted" else 202
+    return (
+        jsonify(
+            {
+                "status": result.status,
+                "conversation_id": result.conversation_id,
+            }
+        ),
+        status_code,
+    )
+
+
+@app.post("/api/conversations/<conversation_id>/retry/stream")
+@require_permission(CHAT_USE)
+def api_retry_conversation_stream(conversation_id: str):
+    runtime = get_runtime()
+    principal = current_principal()
+    user_id = _effective_user_id({}, get_ui_config(runtime.tenant_config))
+    conversation = runtime.conversations.get_conversation(conversation_id)
+    if (
+        conversation is None
+        or conversation.get("tenant_id") != str(runtime.tenant_config["tenant_id"])
+        or conversation.get("agent") != "general_agent"
+        or conversation.get("user_id") != user_id
+    ):
+        return jsonify({"error": "会话不存在"}), 404
+    if conversation.get("status") != "active":
+        return jsonify({"error": "该会话正在删除，不能重新执行"}), 409
+    execution = runtime.conversation_runs.resolve(
+        conversation_id=conversation_id,
+        tenant_id=str(runtime.tenant_config["tenant_id"]),
+        user_id=user_id,
+    )
+    if not execution.retryable or not execution.original_request:
+        return jsonify({"error": "该会话当前不能重新执行"}), 409
+    payload = {
+        "message": execution.original_request,
+        "context": {"conversation_id": conversation_id},
+    }
+    return _sse(lambda: _run_chat(payload, runtime=runtime, principal=principal))
+
+
 @app.get("/api/conversations/<conversation_id>/messages")
 @require_permission(CHAT_USE)
 def api_conversation_messages(conversation_id: str):
@@ -710,7 +806,19 @@ def api_conversation_messages(conversation_id: str):
     ):
         return jsonify({"error": "会话不存在"}), 404
     rows = runtime.conversations.all_messages(conversation_id)
-    return jsonify({"messages": _display_conversation_messages(rows)})
+    execution = runtime.conversation_runs.resolve(
+        conversation_id=conversation_id,
+        tenant_id=str(runtime.tenant_config["tenant_id"]),
+        user_id=user_id,
+    )
+    if conversation.get("status") == "deletion_pending":
+        execution = replace(execution, status="deletion_pending", retryable=False)
+    return jsonify(
+        {
+            "messages": _display_conversation_messages(rows),
+            "execution": execution.to_dict(),
+        }
+    )
 
 
 def _display_conversation_messages(
