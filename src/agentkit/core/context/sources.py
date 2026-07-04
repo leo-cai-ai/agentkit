@@ -32,6 +32,7 @@ DEFAULT_SOURCES = frozenset(
         "execution.remaining_budget",
         "skill.ranking_result",
         "skill.article",
+        "skill.review",
         "skill.research_quality",
         "skill.article_evidence",
         "skill.article_patterns",

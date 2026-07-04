@@ -52,3 +52,9 @@ def test_multi_agent_routing_sources_are_registered() -> None:
 
     registry.require_source("routing.candidate_agents")
     registry.require_source("routing.decision")
+
+
+def test_structured_skill_review_source_is_registered() -> None:
+    registry = ContextSourceRegistry.default()
+
+    registry.require_source("skill.review")

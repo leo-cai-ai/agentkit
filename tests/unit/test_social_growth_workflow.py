@@ -7,6 +7,7 @@ import pytest
 from agentkit.core.artifacts import InMemoryArtifactStore
 from agentkit.core.contracts import SkillContext, TaskRequest, ToolDefinition
 from agentkit.core.execution.models import AutonomyBudget, AutonomyLimits
+from agentkit.core.review import ReviewPolicy
 from agentkit.runtime.declarative_catalog import (
     load_capability_handler,
     load_catalog,
@@ -49,6 +50,9 @@ def _campaign_context(
     context_invoker: object,
     *,
     publishing_mode: str = "draft",
+    request_text: str = (
+        "Research top 3 Xiaohongshu cases and prepare copy for 30 days 1w followers."
+    ),
 ) -> tuple[SkillContext, InMemoryArtifactStore]:
     mock_xhs = MockXhsProvider()
     mock_metrics = MockXhsMetricsProvider()
@@ -60,6 +64,7 @@ def _campaign_context(
     )
     skill = SimpleNamespace(
         autonomy=AutonomyLimits(),
+        review=ReviewPolicy(enabled=True, max_revisions=1),
         skill_instructions="测试小红书 Skill 指令",
     )
     return (
@@ -101,10 +106,7 @@ def _campaign_context(
             request=TaskRequest(
                 user_id="u",
                 roles=["growth_manager"],
-                text=(
-                    "Research top 3 Xiaohongshu cases and prepare copy "
-                    "for 30 days 1w followers."
-                ),
+                text=request_text,
             ),
             context_invoker=context_invoker,
             artifacts=artifacts,
@@ -350,3 +352,63 @@ def test_xhs_article_and_review_use_distinct_contexts() -> None:
         "skill.xhs-growth-campaign.article-generate",
         "skill.xhs-growth-campaign.content-review",
     ]
+
+
+def test_xhs_review_failure_revises_once_then_prepares_publication() -> None:
+    spy = SpyContextInvoker(
+        "TITLE: AI副业避坑\nBODY: 根据热门博主经历，轻松月入过万。",
+        {
+            "status": "failed",
+            "reason": "存在无证据收益表述",
+            "findings": [{"severity": "error", "message": "删除无证据收益表述"}],
+        },
+        "TITLE: AI副业避坑\nBODY: 仅根据可见搜索卡片提出以下原创建议。" * 4,
+        {"status": "approved", "reason": "表述已限定", "findings": []},
+    )
+    ctx, _artifacts = _campaign_context(
+        spy,
+        publishing_mode="direct",
+        request_text="围绕 AI 副业生成并发布小红书文案",
+    )
+
+    result = run_growth_campaign(ctx, {"topic": "AI副业", "top_n": 5})
+
+    assert result["revision_count"] == 1
+    assert result["review"]["status"] == "approved_with_warnings"
+    assert result["article"]["body"].startswith("仅根据可见搜索卡片")
+    assert result["publish"]["status"] == "awaiting_approval"
+    assert "deferred_action" in result
+    assert [request.context_id for request in spy.requests] == [
+        "skill.xhs-growth-campaign.article-generate",
+        "skill.xhs-growth-campaign.content-review",
+        "skill.xhs-growth-campaign.article-revise",
+        "skill.xhs-growth-campaign.content-review",
+    ]
+
+
+def test_xhs_review_blocks_after_single_revision_is_exhausted() -> None:
+    failed_review = {
+        "status": "failed",
+        "reason": "证据仍不足",
+        "findings": [{"severity": "error", "message": "仍含无证据事实"}],
+    }
+    spy = SpyContextInvoker(
+        "TITLE: AI副业\nBODY: 初稿正文 " * 20,
+        failed_review,
+        "TITLE: AI副业\nBODY: 修订正文 " * 20,
+        failed_review,
+    )
+    ctx, _artifacts = _campaign_context(
+        spy,
+        publishing_mode="direct",
+        request_text="围绕 AI 副业生成并发布小红书文案",
+    )
+
+    result = run_growth_campaign(ctx, {"topic": "AI副业", "top_n": 5})
+
+    assert result["revision_count"] == 1
+    assert result["workflow_status"] == "blocked"
+    assert result["publish"]["status"] == "blocked"
+    assert result["metrics"]["status"] == "not_started"
+    assert "deferred_action" not in result
+    assert result["campaign_summary"].startswith("内容审核未通过")

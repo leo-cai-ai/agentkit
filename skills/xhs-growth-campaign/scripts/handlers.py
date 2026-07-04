@@ -13,6 +13,7 @@ from typing import Any
 
 from agentkit.core.context.models import ContextRenderRequest
 from agentkit.core.contracts import SkillContext
+from agentkit.core.review import ReviewDecision, ReviewLoop, ReviewPolicy
 from agentkit.core.workflow import WorkflowRunner
 
 DOMAIN = "marketing.social_growth"
@@ -24,6 +25,7 @@ COMPARE_SKILL = "xhs.case.compare"
 STRATEGY_SKILL = "xhs.strategy.plan"
 COPY_SKILL = "xhs.copy.generate"
 REVIEW_SKILL = "xhs.copy.review"
+REVISE_SKILL = "xhs.copy.revise"
 PUBLISH_SKILL = "xhs.publish.prepare"
 METRICS_SKILL = "xhs.metrics.track"
 
@@ -35,6 +37,7 @@ XHS_WORKFLOW_SKILLS = [
     STRATEGY_SKILL,
     COPY_SKILL,
     REVIEW_SKILL,
+    REVISE_SKILL,
     PUBLISH_SKILL,
     METRICS_SKILL,
 ]
@@ -138,26 +141,69 @@ def run_growth_campaign(ctx: SkillContext, args: dict) -> dict:
         allowed_tools=[],
         artifact_kind="xhs.copy.generate",
     )
-    review = runner.run_step(
-        step_name=REVIEW_SKILL,
-        handler=review_copy,
-        args={
-            **base,
-            "article": copy.output["article"],
-            "strategy": strategy.output["strategy"],
-            "top_cases": research.output["top_cases"],
-            "research_quality": research.output["research_quality"],
-        },
-        allowed_tools=[],
-        artifact_kind="xhs.copy.review",
+    def review_candidate(article: dict, attempt: int) -> ReviewDecision:
+        reviewed = runner.run_step(
+            step_name=REVIEW_SKILL,
+            handler=review_copy,
+            args={
+                **base,
+                "article": article,
+                "strategy": strategy.output["strategy"],
+                "top_cases": research.output["top_cases"],
+                "research_quality": research.output["research_quality"],
+            },
+            allowed_tools=[],
+            artifact_kind="xhs.copy.review",
+            metadata={"attempt": attempt},
+        )
+        raw_review = dict(reviewed.output["review"])
+        status = (
+            "passed"
+            if raw_review.get("status") in {"approved", "approved_with_warnings"}
+            else "revisable"
+        )
+        return ReviewDecision(
+            status=status,
+            reason=str(raw_review.get("reason") or raw_review.get("status") or ""),
+            findings=tuple(raw_review.get("findings") or ()),
+            metadata={"review": raw_review},
+        )
+
+    def revise_candidate(
+        article: dict,
+        decision: ReviewDecision,
+        attempt: int,
+    ) -> dict:
+        revised = runner.run_step(
+            step_name=REVISE_SKILL,
+            handler=revise_copy,
+            args={
+                **base,
+                "article": article,
+                "review": decision.metadata["review"],
+                "research_quality": research.output["research_quality"],
+            },
+            allowed_tools=[],
+            artifact_kind="xhs.copy.revise",
+            metadata={"attempt": attempt},
+        )
+        return dict(revised.output["article"])
+
+    review_loop = ReviewLoop(ctx.skill.review or ReviewPolicy())
+    review_result = review_loop.run(
+        dict(copy.output["article"]),
+        review=review_candidate,
+        revise=revise_candidate,
     )
+    article = dict(review_result.candidate)
+    review = dict(review_result.decision.metadata["review"])
     publish = runner.run_step(
         step_name=PUBLISH_SKILL,
         handler=prepare_publish,
         args={
             **base,
-            "article": copy.output["article"],
-            "review": review.output["review"],
+            "article": article,
+            "review": review,
         },
         allowed_tools=["xhs.rpa.create_publish_package"],
         artifact_kind="xhs.publish.prepare",
@@ -165,8 +211,8 @@ def run_growth_campaign(ctx: SkillContext, args: dict) -> dict:
     deferred_action = build_publish_deferred_action(
         ctx=ctx,
         base=base,
-        article=copy.output["article"],
-        review=review.output["review"],
+        article=article,
+        review=review,
         publish=publish.output["publish"],
     )
     if publish.output["publish"].get("status") == "blocked":
@@ -189,6 +235,20 @@ def run_growth_campaign(ctx: SkillContext, args: dict) -> dict:
         )
         metrics_output = metrics.output["metrics"]
 
+    blocked = review_result.decision.status == "blocked"
+    language = detect_language(ctx.request.text)
+    campaign_summary = (
+        (
+            "内容审核未通过，自动修订一次后仍未达到发布标准，未进入发布。"
+            if language == "zh-CN"
+            else "Content review remained blocked after one revision; publication was not prepared."
+        )
+        if blocked
+        else (
+            f"Prepared a reviewed {base['goal']['days']}-day Xiaohongshu workflow targeting "
+            f"{base['goal']['target_followers']} new followers with {base['cadence']} publishing."
+        )
+    )
     return {
         "campaign_id": base["campaign_id"],
         "platform": "xiaohongshu",
@@ -197,17 +257,19 @@ def run_growth_campaign(ctx: SkillContext, args: dict) -> dict:
         "top_n": base["top_n"],
         "growth_goal": base["goal"],
         "cadence": base["cadence"],
-        "campaign_summary": (
-            f"Prepared a reviewed {base['goal']['days']}-day Xiaohongshu workflow targeting "
-            f"{base['goal']['target_followers']} new followers with {base['cadence']} publishing."
-        ),
+        "campaign_summary": campaign_summary,
+        "workflow_status": "blocked" if blocked else "completed",
         "workflow_trace": runner.compact_trace(),
         "top_cases": research.output["top_cases"],
         "research_quality": research.output["research_quality"],
         "comparison": compared.output["comparison"],
         "strategy": strategy.output["strategy"],
-        "article": copy.output["article"],
-        "review": review.output["review"],
+        "article": article,
+        "review": review,
+        "review_history": [
+            dict(decision.metadata["review"]) for decision in review_result.history
+        ],
+        "revision_count": review_result.revision_count,
         "publish": publish.output["publish"],
         "metrics": metrics_output,
         **({"deferred_action": deferred_action} if deferred_action else {}),
@@ -434,6 +496,42 @@ def generate_copy(ctx: SkillContext, args: dict) -> dict:
     }
 
 
+def revise_copy(ctx: SkillContext, args: dict) -> dict:
+    """根据审核意见修订一次，并保留来源与内部治理字段。"""
+
+    original = dict(args.get("article") or {})
+    generated = ctx.context_invoker.invoke_streaming(
+        ContextRenderRequest(
+            context_id="skill.xhs-growth-campaign.article-revise",
+            tenant_id=ctx.tenant_id,
+            tenant_selector=ctx.tenant_selector,
+            run_id=ctx.run_id,
+            agent=ctx.agent,
+            skill=ctx.skill,
+            values={
+                "skill.article": original,
+                "skill.review": dict(args.get("review") or {}),
+                "skill.research_quality": dict(args.get("research_quality") or {}),
+                "request.language": detect_language(ctx.request.text),
+            },
+            global_token_limit=_context_token_limit(ctx),
+        )
+    ).value
+    title, body = _parse_generated_article(
+        str(generated),
+        fallback_title=str(original.get("title") or args.get("topic") or ""),
+    )
+    revised = dict(original)
+    title_limit = int(ctx.tenant_config.get("social_growth", {}).get("title_max_chars", 20))
+    revised["title"] = title[:title_limit]
+    revised["body"] = body
+    revised["generated_by"] = "llm_revision"
+    return {
+        "summary": f"Revised copy once for {args.get('topic', '')}.",
+        "article": revised,
+    }
+
+
 def review_copy(ctx: SkillContext, args: dict) -> dict:
     article = dict(args.get("article", {}))
     top_cases = list(args.get("top_cases", []))
@@ -504,10 +602,20 @@ def review_copy(ctx: SkillContext, args: dict) -> dict:
         status = "approved_with_warnings"
     else:
         status = "approved"
+    reason = ""
+    if llm_review:
+        reason = str(llm_review.get("reason") or "")
+    if not reason and status == "failed":
+        reason = "; ".join(
+            str(item.get("message") or "")
+            for item in findings
+            if item.get("severity") == "error"
+        )
     return {
         "summary": f"Copy review status: {status}.",
         "review": {
             "status": status,
+            "reason": reason,
             "findings": findings,
             "brand_safe": status != "failed",
             "requires_human_approval": True,
