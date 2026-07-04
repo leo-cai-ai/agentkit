@@ -1,5 +1,7 @@
 from contextlib import nullcontext
 
+import pytest
+
 from agentkit.core.audit import InMemoryAuditLog, PostgresAuditLog, SQLiteAuditLog
 
 
@@ -160,11 +162,86 @@ def test_postgres_audit_scopes_blocking_run_query(monkeypatch) -> None:
     assert "conversation_id = %s" in sql
     assert "tenant_id = %s" in sql
     assert "user_id = %s" in sql
-    assert "status IN (%s, %s)" in sql
+    assert "status IN (%s, %s, %s)" in sql
     assert params == (
         "conversation-a",
         "tenant-a",
         "user-a",
         "running",
         "waiting_for_approval",
+        "cancellation_requested",
     )
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda tmp_path: InMemoryAuditLog(),
+        lambda tmp_path: SQLiteAuditLog(tmp_path / "audit.sqlite"),
+    ],
+)
+def test_audit_lists_scoped_conversation_runs_and_persists_cancellation(
+    factory, tmp_path
+) -> None:
+    audit = factory(tmp_path)
+    parent_id = audit.start_run(
+        tenant_id="tenant-a",
+        user_id="user-a",
+        text="原始请求",
+        agent_id="general_agent",
+        conversation_id="conversation-a",
+    )
+    child_id = audit.start_run(
+        tenant_id="tenant-a",
+        user_id="user-a",
+        text="子任务",
+        agent_id="xhs_growth",
+        parent_run_id=parent_id,
+        conversation_id="conversation-a",
+    )
+    audit.start_run(
+        tenant_id="tenant-a",
+        user_id="other-user",
+        text="其他用户任务",
+        agent_id="general_agent",
+        conversation_id="conversation-a",
+    )
+
+    runs = audit.runs_for_conversation(
+        conversation_id="conversation-a",
+        tenant_id="tenant-a",
+        user_id="user-a",
+    )
+
+    assert [run["run_id"] for run in runs] == [parent_id, child_id]
+    assert all(run.get("started_at") is not None for run in runs)
+    assert audit.request_cancellation(parent_id, reason="conversation deletion") is True
+    assert audit.request_cancellation(parent_id, reason="conversation deletion") is False
+    assert audit.cancellation_requested(parent_id) is True
+    assert audit.get_run(parent_id)["status"] == "cancellation_requested"
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda tmp_path: InMemoryAuditLog(),
+        lambda tmp_path: SQLiteAuditLog(tmp_path / "audit.sqlite"),
+    ],
+)
+def test_terminal_run_cannot_return_to_non_terminal_state(factory, tmp_path) -> None:
+    audit = factory(tmp_path)
+    run_id = audit.start_run(
+        tenant_id="tenant-a",
+        user_id="user-a",
+        text="任务",
+        conversation_id="conversation-a",
+    )
+    audit.record(run_id, "run_finished", {"status": "failed"})
+
+    audit.record(run_id, "run_resumed", {})
+    audit.record(run_id, "run_paused", {"status": "waiting_for_approval"})
+    audit.record(run_id, "cancellation_requested", {"reason": "late request"})
+
+    run = audit.get_run(run_id)
+    assert run["status"] == "failed"
+    assert run.get("finished_at") is not None
