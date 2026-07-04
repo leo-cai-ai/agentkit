@@ -1,3 +1,4 @@
+{% from "_icons.html" import icon %}
 <!doctype html>
 <html lang="en">
   <head>
@@ -29,22 +30,22 @@
             class="{{ 'active' if active == 'chat' else '' }}"
             {% if active == 'chat' %}aria-current="page"{% endif %}
             href="{{ url_for('chat_console') }}"
-          >聊天</a>
+          >{{ icon("message-circle") }}<span>聊天</span></a>
           <a
             class="{{ 'active' if active == 'agents' else '' }}"
             {% if active == 'agents' %}aria-current="page"{% endif %}
             href="{{ url_for('agent_network') }}"
-          >Agent Network</a>
+          >{{ icon("topology-star") }}<span>Agent Network</span></a>
           <a
             class="{{ 'active' if active == 'operations' else '' }}"
             {% if active == 'operations' %}aria-current="page"{% endif %}
             href="{{ url_for('operations') }}"
-          >运行追踪</a>
+          >{{ icon("activity") }}<span>运行追踪</span></a>
           <a
             class="{{ 'active' if active == 'governance' else '' }}"
             {% if active == 'governance' %}aria-current="page"{% endif %}
             href="{{ url_for('governance') }}"
-          >治理指标</a>
+          >{{ icon("shield-check") }}<span>治理</span></a>
         </nav>
         <div class="sidebar-card ak-tenant-summary">
           <span>当前租户</span>

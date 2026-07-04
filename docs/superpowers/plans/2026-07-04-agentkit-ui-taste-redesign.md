@@ -137,7 +137,7 @@ def test_authenticated_shell_uses_icon_macro_without_inline_paths(client) -> Non
 }
 ```
 
-固定使用 Tabler Icons `v3.44.0` 对应 Commit `a32f193adf0d48972066722e9ac18bf40b0821a7`。从 `icons/outline/<name>.svg` 读取并本地化以下图标：`message-circle`、`topology-star`、`activity`、`shield-check`、`plus`、`chevron-left`、`chevron-down`、`menu-2`、`send-2`、`x`、`search`、`user-circle`、`alert-triangle`。Sprite 的每个 Symbol 必须保留 `viewBox="0 0 24 24"`，Path 使用上游 Path，统一 `fill="none"`、`stroke="currentColor"`、`stroke-width="1.75"`。同时把该 Commit 的根目录 `LICENSE` 原文保存为 `TABLER-LICENSE.txt`。不得凭记忆重画 Path。
+固定使用 Tabler Icons `v3.44.0` 对应 Commit `6d128ed935d4546607b1e4d5d08c8b27bdbe7758`。从 `icons/outline/<name>.svg` 读取并本地化以下图标：`message-circle`、`topology-star`、`activity`、`shield-check`、`plus`、`chevron-left`、`chevron-down`、`menu-2`、`send-2`、`x`、`search`、`user-circle`、`alert-triangle`。Sprite 的每个 Symbol 必须保留 `viewBox="0 0 24 24"`，Path 使用上游 Path，统一 `fill="none"`、`stroke="currentColor"`、`stroke-width="1.75"`。同时把该 Commit 的根目录 `LICENSE` 原文保存为 `TABLER-LICENSE.txt`。不得凭记忆重画 Path。
 
 新增 `_icons.html`：
 

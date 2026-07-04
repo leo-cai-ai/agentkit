@@ -5,6 +5,15 @@
    Page layout and business behavior belong to their page-level modules.
    ===================================================================== */
 
+.ak-icon {
+  inline-size: 1rem;
+  block-size: 1rem;
+  flex: 0 0 auto;
+  display: inline-block;
+  overflow: visible;
+  vertical-align: -0.125em;
+}
+
 .ak-button {
   min-block-size: var(--ak-sys-size-control-md);
   display: inline-flex;

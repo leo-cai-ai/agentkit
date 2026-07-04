@@ -1,0 +1,10 @@
+{% macro icon(name, label=None, class_name="") -%}
+  <svg
+    class="ak-icon{% if class_name %} {{ class_name }}{% endif %}"
+    viewBox="0 0 24 24"
+    {% if label %}role="img" aria-label="{{ label }}"{% else %}aria-hidden="true"{% endif %}
+    focusable="false"
+  >
+    <use href="{{ url_for('static', filename='icons/tabler-sprite.svg') }}#icon-{{ name }}"></use>
+  </svg>
+{%- endmacro %}
