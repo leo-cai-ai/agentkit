@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import sqlite3
 import time
 from datetime import UTC, datetime
@@ -735,20 +736,108 @@ class XhsPublishAdapter:
         if not box or box.get("width", 0) <= 0 or box.get("height", 0) <= 0:
             raise BrowserPageChanged("Xiaohongshu publish control has no clickable bounds")
 
-        width = float(box["width"])
-        height = float(box["height"])
-        right_button_width = min(120.0, width / 2.0)
-
-        # xhs-publish-btn 的 closed shadow root 包含左侧暂存和右侧发布按钮。
-        # 已确认右侧按钮宽度为 120 像素；窄宿主退化为右半区域的中心。
-        position = {
-            "x": max(width / 2.0, width - right_button_width / 2.0),
-            "y": height / 2.0,
-        }
         host_box = {name: float(box[name]) for name in ("x", "y", "width", "height")}
-        _log.info("Xiaohongshu publish click target: host=%s position=%s", host_box, position)
-        control.click(position=position)
-        return {"host_box": host_box, "position": position}
+        target = self._closed_shadow_publish_target(page)
+        if target is None:
+            raise BrowserPageChanged(
+                "Xiaohongshu closed shadow publish button could not be identified exactly"
+            )
+        session, position = target
+        _log.info(
+            "Xiaohongshu publish click target: method=cdp host=%s absolute_position=%s",
+            host_box,
+            position,
+        )
+        self._dispatch_cdp_click(session, position=position)
+        return {
+            "method": "cdp",
+            "host_box": host_box,
+            "position": position,
+            "relative_position": {
+                "x": position["x"] - host_box["x"],
+                "y": position["y"] - host_box["y"],
+            },
+        }
+
+    @staticmethod
+    def _closed_shadow_publish_target(page: Any) -> tuple[Any, dict[str, float]] | None:
+        context = getattr(page, "context", None)
+        session_factory = getattr(context, "new_cdp_session", None)
+        if not callable(session_factory):
+            return None
+        try:
+            session = session_factory(page)
+            session.send("DOM.enable")
+            nodes = session.send(
+                "DOM.getFlattenedDocument",
+                {"depth": -1, "pierce": True},
+            ).get("nodes", [])
+            candidates: list[dict[str, float]] = []
+            for node in nodes:
+                if str(node.get("nodeName") or "").lower() != "button":
+                    continue
+                raw_attributes = list(node.get("attributes") or [])
+                attributes = dict(zip(raw_attributes[::2], raw_attributes[1::2], strict=False))
+                classes = set(str(attributes.get("class") or "").split())
+                if "bg-red" not in classes or "disabled" in attributes:
+                    continue
+                if str(attributes.get("aria-disabled") or "").lower() == "true":
+                    continue
+                backend_node_id = node.get("backendNodeId")
+                if backend_node_id is None:
+                    continue
+                outer_html = str(
+                    session.send(
+                        "DOM.getOuterHTML",
+                        {"backendNodeId": backend_node_id},
+                    ).get("outerHTML", "")
+                )
+                text = html.unescape(re.sub(r"<!--.*?-->|<[^>]+>", " ", outer_html, flags=re.S))
+                if " ".join(text.split()) != "发布":
+                    continue
+                model = session.send(
+                    "DOM.getBoxModel",
+                    {"backendNodeId": backend_node_id},
+                ).get("model", {})
+                border = list(model.get("border") or [])
+                if len(border) != 8:
+                    continue
+                candidates.append(
+                    {
+                        "x": sum(float(value) for value in border[0::2]) / 4.0,
+                        "y": sum(float(value) for value in border[1::2]) / 4.0,
+                    }
+                )
+            if len(candidates) != 1:
+                return None
+            return session, candidates[0]
+        except Exception:  # noqa: BLE001 - 精确定位失败时必须安全停止，不能猜坐标
+            return None
+
+    @staticmethod
+    def _dispatch_cdp_click(session: Any, *, position: dict[str, float]) -> None:
+        coordinates = {"x": position["x"], "y": position["y"]}
+        session.send("Input.dispatchMouseEvent", {"type": "mouseMoved", **coordinates})
+        session.send(
+            "Input.dispatchMouseEvent",
+            {
+                "type": "mousePressed",
+                "button": "left",
+                "buttons": 1,
+                "clickCount": 1,
+                **coordinates,
+            },
+        )
+        session.send(
+            "Input.dispatchMouseEvent",
+            {
+                "type": "mouseReleased",
+                "button": "left",
+                "buttons": 0,
+                "clickCount": 1,
+                **coordinates,
+            },
+        )
 
     def _poll_evaluate(
         self,

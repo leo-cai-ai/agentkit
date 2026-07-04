@@ -228,6 +228,51 @@ class _ResponseLocator(_Locator):
         self.page.emit_response(self.response)
 
 
+class _CdpSession:
+    def __init__(self, page) -> None:
+        self.page = page
+        self.outer_html = '<button type="button" class="ce-btn bg-red">发布</button>'
+        self.border = [633.0, 655.0, 753.0, 655.0, 753.0, 695.0, 633.0, 695.0]
+        self.mouse_events: list[dict] = []
+
+    def send(self, method: str, params: dict | None = None) -> dict:
+        params = dict(params or {})
+        if method == "DOM.enable":
+            return {}
+        if method == "DOM.getFlattenedDocument":
+            return {
+                "nodes": [
+                    {
+                        "nodeName": "BUTTON",
+                        "backendNodeId": 99,
+                        "attributes": ["type", "button", "class", "ce-btn bg-red"],
+                    }
+                ]
+            }
+        if method == "DOM.getOuterHTML":
+            return {"outerHTML": self.outer_html}
+        if method == "DOM.getBoxModel":
+            return {"model": {"border": self.border, "width": 120, "height": 40}}
+        if method == "Input.dispatchMouseEvent":
+            self.mouse_events.append(params)
+            if params.get("type") == "mouseReleased":
+                self.page.button.click(
+                    position={"x": params.get("x"), "y": params.get("y")},
+                    method="cdp",
+                )
+            return {}
+        raise AssertionError(f"unexpected CDP method: {method}")
+
+
+class _BrowserContext:
+    def __init__(self, page) -> None:
+        self.session = _CdpSession(page)
+
+    def new_cdp_session(self, page):
+        assert page is self.session.page
+        return self.session
+
+
 class _PublishPage:
     def __init__(self, *, login: bool = False, phone_verification: bool = False) -> None:
         self.login = login
@@ -240,6 +285,8 @@ class _PublishPage:
         self.title = _Locator()
         self.body = _Locator()
         self.button = _Locator(attributes={"is-publish": "true", "submit-disabled": "false"})
+        self.context = _BrowserContext(self)
+        self.cdp_session = self.context.session
         self.tab = _Locator()
         self.optional = _Locator(count=0)
         self.viewport: dict = {}
@@ -393,7 +440,10 @@ def test_playwright_publish_adapter_prepares_and_submits_exact_content(tmp_path)
     assert page.title.value == package["title"]
     assert "#亲子游" in page.body.value
     assert page.button.clicked is True
-    assert page.button.click_options["position"] == {"x": 620.0, "y": 45.0}
+    assert page.button.click_options == {
+        "position": {"x": 693.0, "y": 675.0},
+        "method": "cdp",
+    }
     assert result["status"] == "published"
 
 
@@ -414,7 +464,7 @@ def test_publish_stops_before_click_when_title_does_not_persist(tmp_path) -> Non
     assert page.button.clicked is False
 
 
-def test_publish_targets_right_side_of_closed_shadow_host(tmp_path) -> None:
+def test_publish_targets_exact_button_inside_closed_shadow_host(tmp_path) -> None:
     page = _PublishPage()
     page.button.box = {"x": 100.0, "y": 200.0, "width": 252.0, "height": 40.0}
     adapter = XhsPublishAdapter(asset_root=tmp_path / "assets")
@@ -427,7 +477,31 @@ def test_publish_targets_right_side_of_closed_shadow_host(tmp_path) -> None:
         timeout_ms=1000,
     )
 
-    assert page.button.click_options["position"] == {"x": 192.0, "y": 20.0}
+    assert [event["type"] for event in page.cdp_session.mouse_events] == [
+        "mouseMoved",
+        "mousePressed",
+        "mouseReleased",
+    ]
+    assert page.button.click_options["position"] == {"x": 693.0, "y": 675.0}
+
+
+def test_publish_refuses_to_guess_when_closed_shadow_publish_button_is_missing(tmp_path) -> None:
+    page = _PublishPage()
+    page.cdp_session.outer_html = (
+        '<button type="button" class="custom-button bg-red upload-button">上传图片</button>'
+    )
+    adapter = XhsPublishAdapter(asset_root=tmp_path / "assets")
+    media = tmp_path / "cover.png"
+    media.write_bytes(b"png")
+
+    with pytest.raises(BrowserPageChanged, match="closed shadow publish button"):
+        adapter.publish(
+            page,
+            package={"title": "标题", "body": "正文", "media_paths": [str(media)]},
+            timeout_ms=1000,
+        )
+
+    assert page.button.clicked is False
 
 
 def test_unknown_publish_outcome_includes_redacted_network_evidence_and_waits(tmp_path) -> None:
@@ -659,6 +733,7 @@ class _FramedPublishPage(_PublishPage):
     def __init__(self) -> None:
         super().__init__()
         self.frame = _PublishPage()
+        self.button = self.frame.button
         self.frames = [self.frame]
 
     def locator(self, _selector: str):
