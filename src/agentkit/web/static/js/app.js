@@ -24,6 +24,7 @@ let pendingInput = null;
 let currentConversationId = null;
 let conversationCache = [];
 let chatBusy = false;
+let pendingDeleteConversationId = null;
 const HISTORY_COLLAPSED_KEY = "agentkit:chat-history-collapsed";
 const chatSessionGuard = window.AgentKitChatSession.createChatSessionGuard();
 const TRACE_ATTENTION_STATES = new Set(["waiting_approval", "failed", "blocked"]);
@@ -577,6 +578,9 @@ function renderConversationHistory() {
     items.replaceChildren();
     for (const conversation of groups[groupName]) {
       const active = conversation.id === currentConversationId;
+      const row = document.createElement("div");
+      row.className = "conversation-item-row";
+
       const button = document.createElement("button");
       button.type = "button";
       button.className = "conversation-item";
@@ -591,7 +595,20 @@ function renderConversationHistory() {
       meta.className = "conversation-item-meta";
       meta.textContent = conversationMeta(conversation);
       button.append(title, meta);
-      items.appendChild(button);
+
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "conversation-delete-button";
+      remove.dataset.deleteConversationId = conversation.id;
+      remove.setAttribute(
+        "aria-label",
+        `删除会话：${conversationTitle(conversation)}`,
+      );
+      const icon = document.querySelector("[data-conversation-delete-icon]");
+      if (icon) remove.append(icon.content.cloneNode(true));
+
+      row.append(button, remove);
+      items.appendChild(row);
     }
     section.hidden = groups[groupName].length === 0;
   }
@@ -667,6 +684,78 @@ async function startNewConversation() {
   setExecutionState("空闲");
   resetChatThread("New conversation started. How can I help?");
   renderConversationHistory();
+}
+
+function setConversationDeleteBusy(busy) {
+  const dialog = document.querySelector("[data-conversation-delete-dialog]");
+  if (!dialog) return;
+  dialog.dataset.busy = String(busy);
+  dialog
+    .querySelector("[data-conversation-delete-confirm]")
+    ?.toggleAttribute("disabled", busy);
+  dialog
+    .querySelector("[data-conversation-delete-cancel]")
+    ?.toggleAttribute("disabled", busy);
+}
+
+function openConversationDeleteDialog(conversationId) {
+  const dialog = document.querySelector("[data-conversation-delete-dialog]");
+  const conversation = conversationCache.find((item) => item.id === conversationId);
+  if (!dialog || !conversation) return;
+  pendingDeleteConversationId = conversationId;
+  dialog.querySelector("[data-conversation-delete-title]").textContent =
+    conversationTitle(conversation);
+  dialog.querySelector("[data-conversation-delete-error]").textContent = "";
+  setConversationDeleteBusy(false);
+  dialog.showModal();
+  dialog.querySelector("[data-conversation-delete-cancel]")?.focus();
+}
+
+function closeConversationDeleteDialog() {
+  const dialog = document.querySelector("[data-conversation-delete-dialog]");
+  if (dialog?.open) dialog.close();
+  pendingDeleteConversationId = null;
+  if (dialog) {
+    dialog.querySelector("[data-conversation-delete-error]").textContent = "";
+  }
+}
+
+function applyDeletedConversation(conversationId) {
+  conversationCache = conversationCache.filter((item) => item.id !== conversationId);
+  if (currentConversationId === conversationId) startNewConversation();
+  else renderConversationHistory();
+}
+
+async function deleteConversation(conversationId) {
+  const dialog = document.querySelector("[data-conversation-delete-dialog]");
+  const error = dialog?.querySelector("[data-conversation-delete-error]");
+  setConversationDeleteBusy(true);
+  if (error) error.textContent = "";
+  try {
+    const response = await fetch(
+      `/api/conversations/${encodeURIComponent(conversationId)}`,
+      {
+        method: "DELETE",
+        headers: { "X-CSRF-Token": getCsrfToken() },
+      },
+    );
+    const body = await response.json().catch(() => ({}));
+    if (response.status === 404) {
+      applyDeletedConversation(conversationId);
+      closeConversationDeleteDialog();
+      return;
+    }
+    if (!response.ok) {
+      if (error) error.textContent = body.error || "删除失败，请重试";
+      return;
+    }
+    applyDeletedConversation(conversationId);
+    closeConversationDeleteDialog();
+  } catch {
+    if (error) error.textContent = "删除失败，请重试";
+  } finally {
+    setConversationDeleteBusy(false);
+  }
 }
 
 function shouldAutoOpenTrace(view) {
@@ -1570,6 +1659,9 @@ function bindConversationHistory() {
   const history = document.querySelector("[data-conversation-list]");
   const collapseButton = document.querySelector("[data-conversation-sidebar-toggle]");
   const openButton = document.querySelector("[data-conversation-sidebar-open]");
+  const deleteDialog = document.querySelector("[data-conversation-delete-dialog]");
+  const deleteCancel = deleteDialog?.querySelector("[data-conversation-delete-cancel]");
+  const deleteConfirm = deleteDialog?.querySelector("[data-conversation-delete-confirm]");
   const mobileQuery = window.matchMedia("(max-width: 47.5rem)");
 
   const readCollapsedPreference = () => {
@@ -1624,6 +1716,11 @@ function bindConversationHistory() {
   });
 
   history?.addEventListener("click", async (event) => {
+    const remove = event.target.closest("[data-delete-conversation-id]");
+    if (remove) {
+      openConversationDeleteDialog(remove.dataset.deleteConversationId);
+      return;
+    }
     const item = event.target.closest("[data-conversation-id]");
     if (!item) return;
     currentConversationId = item.dataset.conversationId || null;
@@ -1633,6 +1730,24 @@ function bindConversationHistory() {
     renderConversationHistory();
     await loadConversationMessages(currentConversationId);
     if (mobileQuery.matches) closeMobileDrawer(true);
+  });
+
+  deleteCancel?.addEventListener("click", closeConversationDeleteDialog);
+  deleteConfirm?.addEventListener("click", async () => {
+    if (pendingDeleteConversationId) {
+      await deleteConversation(pendingDeleteConversationId);
+    }
+  });
+  deleteDialog?.addEventListener("cancel", (event) => {
+    if (deleteDialog.dataset.busy === "true") {
+      event.preventDefault();
+      return;
+    }
+    pendingDeleteConversationId = null;
+  });
+  deleteDialog?.addEventListener("close", () => {
+    pendingDeleteConversationId = null;
+    deleteDialog.querySelector("[data-conversation-delete-error]").textContent = "";
   });
 
   collapseButton?.addEventListener("click", () => {

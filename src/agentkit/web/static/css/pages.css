@@ -116,6 +116,14 @@
   gap: var(--ak-sys-space-1);
 }
 
+.conversation-item-row {
+  min-inline-size: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--ak-sys-space-1);
+  align-items: center;
+}
+
 .ak-history-items .conversation-item {
   inline-size: 100%;
   min-inline-size: 0;
@@ -134,6 +142,146 @@
 .ak-history-items .conversation-item[aria-current="page"] {
   border-color: var(--ak-sys-color-border-interactive);
   background: var(--ak-sys-color-bg-surface-subtle);
+}
+
+.conversation-delete-button {
+  inline-size: 2rem;
+  block-size: 2rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--ak-sys-radius-sm);
+  color: var(--ak-sys-color-text-muted);
+  background: transparent;
+  opacity: 0;
+  pointer-events: none;
+  cursor: pointer;
+}
+
+.conversation-item-row:hover .conversation-delete-button,
+.conversation-item-row:focus-within .conversation-delete-button {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.conversation-delete-button:hover {
+  color: var(--ak-sys-color-status-danger-fg);
+  border-color: var(--ak-sys-color-status-danger-border);
+  background: var(--ak-sys-color-status-danger-bg);
+}
+
+.conversation-delete-button:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+  outline: var(--ak-sys-focus-width) solid var(--ak-sys-color-focus-ring);
+  outline-offset: var(--ak-sys-focus-offset);
+}
+
+.ak-conversation-delete-dialog {
+  inline-size: min(30rem, calc(100vw - 2rem));
+  display: none;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--ak-sys-space-4);
+  margin: auto;
+  padding: var(--ak-sys-space-5);
+  border: 1px solid var(--ak-sys-color-status-danger-border);
+  border-radius: var(--ak-sys-radius-md);
+  color: var(--ak-sys-color-text-primary);
+  background: var(--ak-sys-color-bg-elevated);
+  box-shadow: var(--ak-sys-shadow-panel);
+}
+
+.ak-conversation-delete-dialog[open] {
+  display: grid;
+}
+
+.ak-conversation-delete-dialog::backdrop {
+  background: rgb(3 7 18 / 0.72);
+  backdrop-filter: blur(3px);
+}
+
+.ak-delete-dialog-icon {
+  inline-size: 2.5rem;
+  block-size: 2.5rem;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--ak-sys-color-status-danger-border);
+  border-radius: var(--ak-sys-radius-sm);
+  color: var(--ak-sys-color-status-danger-fg);
+  background: var(--ak-sys-color-status-danger-bg);
+}
+
+.ak-delete-dialog-copy {
+  min-inline-size: 0;
+}
+
+.ak-delete-dialog-copy h2 {
+  margin: var(--ak-sys-space-1) 0 var(--ak-sys-space-2);
+}
+
+.ak-delete-dialog-copy p {
+  margin: 0;
+  color: var(--ak-sys-color-text-secondary);
+  line-height: 1.6;
+}
+
+.ak-delete-dialog-conversation {
+  margin-block-end: var(--ak-sys-space-2) !important;
+  color: var(--ak-sys-color-text-primary) !important;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.ak-delete-dialog-error:not(:empty) {
+  margin-block-start: var(--ak-sys-space-3);
+  padding: var(--ak-sys-space-2) var(--ak-sys-space-3);
+  border: 1px solid var(--ak-sys-color-status-danger-border);
+  border-radius: var(--ak-sys-radius-sm);
+  color: var(--ak-sys-color-status-danger-fg);
+  background: var(--ak-sys-color-status-danger-bg);
+}
+
+.ak-delete-dialog-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--ak-sys-space-2);
+}
+
+.ak-danger-button {
+  min-block-size: var(--ak-sys-size-control-md);
+  padding-inline: var(--ak-sys-space-4);
+  border: 1px solid var(--ak-sys-color-status-danger-fg);
+  border-radius: var(--ak-sys-radius-sm);
+  color: var(--ak-sys-color-text-inverse);
+  background: var(--ak-sys-color-status-danger-fg);
+  font: inherit;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.ak-danger-button:hover {
+  filter: brightness(1.08);
+}
+
+.ak-danger-button:focus-visible {
+  outline: var(--ak-sys-focus-width) solid var(--ak-sys-color-focus-ring);
+  outline-offset: var(--ak-sys-focus-offset);
+}
+
+.ak-danger-button:disabled,
+.ak-conversation-delete-dialog button:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+@media (hover: none) {
+  .conversation-delete-button {
+    opacity: 0.72;
+    pointer-events: auto;
+  }
 }
 
 .ak-history-empty {

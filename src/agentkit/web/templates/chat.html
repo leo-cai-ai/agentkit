@@ -169,4 +169,43 @@
   </section>
 
   <section id="result-region" class="result-region ak-result-region" hidden></section>
+
+  <template data-conversation-delete-icon>{{ icon("trash") }}</template>
+  <dialog
+    class="ak-conversation-delete-dialog"
+    data-conversation-delete-dialog
+    aria-labelledby="conversation-delete-heading"
+    aria-describedby="conversation-delete-description"
+  >
+    <div class="ak-delete-dialog-icon" aria-hidden="true">
+      {{ icon("trash") }}
+    </div>
+    <div class="ak-delete-dialog-copy">
+      <span class="ak-eyebrow">危险操作</span>
+      <h2 id="conversation-delete-heading">删除会话？</h2>
+      <p class="ak-delete-dialog-conversation" data-conversation-delete-title></p>
+      <p id="conversation-delete-description">
+        删除后无法恢复。会话消息、摘要和相关长期记忆将被永久删除；企业审计和运行追踪仍会保留。
+      </p>
+      <p
+        class="ak-delete-dialog-error"
+        data-conversation-delete-error
+        role="status"
+        aria-live="polite"
+      ></p>
+    </div>
+    <div class="ak-delete-dialog-actions">
+      <button
+        class="secondary"
+        type="button"
+        data-conversation-delete-cancel
+        autofocus
+      >取消</button>
+      <button
+        class="ak-danger-button"
+        type="button"
+        data-conversation-delete-confirm
+      >确认删除</button>
+    </div>
+  </dialog>
 {% endblock %}

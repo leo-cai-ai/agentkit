@@ -123,6 +123,26 @@ def test_conversation_history_uses_navigation_buttons(client) -> None:
     assert 'button.setAttribute("aria-current", "page")' in js
 
 
+def test_chat_has_accessible_conversation_delete_dialog(client) -> None:
+    login(client)
+    html = client.get("/chat").get_data(as_text=True)
+    js = client.get("/static/js/app.js").get_data(as_text=True)
+    css = client.get("/static/css/pages.css").get_data(as_text=True)
+
+    assert "data-conversation-delete-dialog" in html
+    assert "data-conversation-delete-confirm" in html
+    assert "data-conversation-delete-cancel" in html
+    assert "data-conversation-delete-icon" in html
+    assert "删除后无法恢复" in html
+    assert 'row.className = "conversation-item-row"' in js
+    assert "remove.dataset.deleteConversationId" in js
+    assert "deleteConversation(conversationId)" in js
+    assert 'method: "DELETE"' in js
+    assert '"X-CSRF-Token": getCsrfToken()' in js
+    assert ".conversation-item-row:focus-within" in css
+    assert "@media (hover: none)" in css
+
+
 def test_history_preference_never_stores_conversation_content(client) -> None:
     js = client.get("/static/js/app.js").get_data(as_text=True)
 
