@@ -17,6 +17,7 @@ EXPECTED = {
     "runtime.rag-rerank": "json",
     "skill.candidate-rank.summary": "text",
     "skill.xhs-growth-campaign.article-generate": "text",
+    "skill.xhs-growth-campaign.article-revise": "text",
     "skill.xhs-growth-campaign.content-review": "json",
 }
 
@@ -47,7 +48,7 @@ def test_business_contexts_use_unambiguous_directory() -> None:
     business = [
         item for item in registry.manifest() if str(item["id"]).startswith("skill.")
     ]
-    assert len(business) == 3
+    assert len(business) == 4
     assert all(
         registry.get(str(item["id"])).model.owner_skill for item in business
     )

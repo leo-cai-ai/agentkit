@@ -565,9 +565,8 @@ def _web_response(response: TaskResponse) -> dict[str, Any]:
 
 def format_response_text(response: TaskResponse) -> str:
     output = response.output
-    if response.status == "blocked":
-        publish = output.get("publish")
-        publish = publish if isinstance(publish, dict) else {}
+    publish = output.get("publish")
+    if response.status == "blocked" and isinstance(publish, dict):
         review = publish.get("review")
         review = review if isinstance(review, dict) else {}
         reason = str(
