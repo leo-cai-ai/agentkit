@@ -74,6 +74,47 @@ class PgConversationStore(ConversationStore):
             ).fetchall()
         return [_conversation_row(row) for row in rows]
 
+    def delete_conversation(self, conversation_id: str) -> dict[str, int]:
+        """原子删除会话及其聊天数据和来源长期记忆。"""
+        counts = {
+            "conversations": 0,
+            "messages": 0,
+            "summaries": 0,
+            "memories": 0,
+        }
+        with self._connect() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM conversations WHERE id = %s",
+                (conversation_id,),
+            ).fetchone()
+            if exists is None:
+                return counts
+            counts["summaries"] = int(
+                conn.execute(
+                    "DELETE FROM conversation_summaries WHERE conversation_id = %s",
+                    (conversation_id,),
+                ).rowcount
+            )
+            counts["messages"] = int(
+                conn.execute(
+                    "DELETE FROM messages WHERE conversation_id = %s",
+                    (conversation_id,),
+                ).rowcount
+            )
+            counts["memories"] = int(
+                conn.execute(
+                    "DELETE FROM conversation_memories WHERE source_conversation_id = %s",
+                    (conversation_id,),
+                ).rowcount
+            )
+            counts["conversations"] = int(
+                conn.execute(
+                    "DELETE FROM conversations WHERE id = %s",
+                    (conversation_id,),
+                ).rowcount
+            )
+        return counts
+
     def add_message(
         self,
         *,
@@ -232,6 +273,24 @@ class PgConversationStore(ConversationStore):
                 ),
             )
         return memory_id
+
+    def delete_memories_by_source(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        source_conversation_id: str,
+    ) -> int:
+        """删除当前用户从指定会话提取的长期记忆。"""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM conversation_memories
+                WHERE tenant_id = %s AND user_id = %s AND source_conversation_id = %s
+                """,
+                (tenant_id, user_id, source_conversation_id),
+            )
+            return int(cursor.rowcount)
 
     def iter_memories(
         self,

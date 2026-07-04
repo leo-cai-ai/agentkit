@@ -7,6 +7,7 @@ driver error, and lazy backend selection (no connection on construction).
 from __future__ import annotations
 
 import sys
+from contextlib import nullcontext
 
 import pytest
 
@@ -75,3 +76,41 @@ def test_build_vector_store_unknown_backend_rejected() -> None:
 
     with pytest.raises(ValueError, match="Unsupported vector_store_backend"):
         build_vector_store(_Cfg(), store=None)  # type: ignore[arg-type]
+
+
+def test_pgvector_deletes_memories_by_tenant_user_and_source(monkeypatch) -> None:
+    import agentkit.core.memory.pg_vector_store as pg_vector_store
+    from agentkit.core.memory.pg_vector_store import PgVectorStore
+
+    calls: list[tuple[str, tuple[str, str, str]]] = []
+
+    class _Cursor:
+        rowcount = 2
+
+    class _Connection:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+            return _Cursor()
+
+    store = PgVectorStore()
+    store._ready = True
+    connection = _Connection()
+    monkeypatch.setattr(
+        pg_vector_store,
+        "connection",
+        lambda settings: nullcontext(connection),
+    )
+
+    deleted = store.delete_by_source(
+        tenant_id="tenant-a",
+        user_id="user-a",
+        source_conversation_id="conversation-a",
+    )
+
+    assert deleted == 2
+    assert len(calls) == 1
+    sql, params = calls[0]
+    assert "tenant_id = %s" in sql
+    assert "user_id = %s" in sql
+    assert "source_conversation_id = %s" in sql
+    assert params == ("tenant-a", "user-a", "conversation-a")

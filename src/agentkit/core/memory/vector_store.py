@@ -87,6 +87,16 @@ class VectorStore(Protocol):
         """Return up to ``k`` hits with ``score >= min_score``, best first."""
         ...
 
+    def delete_by_source(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        source_conversation_id: str,
+    ) -> int:
+        """删除指定用户从一个会话提取的全部长期记忆。"""
+        ...
+
 
 class SqliteVectorStore:
     """Default VectorStore: linear cosine scan over the SQLite ``memories`` table."""
@@ -135,6 +145,19 @@ class SqliteVectorStore:
                 scored.append(VectorHit(id=str(row["id"]), text=str(row["text"]), score=score))
         scored.sort(key=lambda hit: hit.score, reverse=True)
         return scored[:k]
+
+    def delete_by_source(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        source_conversation_id: str,
+    ) -> int:
+        return self._store.delete_memories_by_source(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            source_conversation_id=source_conversation_id,
+        )
 
 
 def build_vector_store(settings: object, store: ConversationStore) -> VectorStore:
