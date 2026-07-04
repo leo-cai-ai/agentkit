@@ -40,6 +40,10 @@ from agentkit.runtime.bootstrap import (
     build_runtime,
     resolve_tenant_id,
 )
+from agentkit.runtime.conversation_deletion import (
+    ConversationBusyError,
+    ConversationNotFoundError,
+)
 from agentkit.web.identity import current_principal, require_permission
 from agentkit.web.security import configure_security
 from agentkit.web.streaming import stream_response
@@ -661,6 +665,35 @@ def api_create_conversation():
         title=str(payload.get("title") or "New conversation"),
     )
     return jsonify({"conversation_id": conversation_id}), 201
+
+
+@app.delete("/api/conversations/<conversation_id>")
+@require_permission(CHAT_USE)
+def api_delete_conversation(conversation_id: str):
+    runtime = get_runtime()
+    user_id = _effective_user_id({}, get_ui_config(runtime.tenant_config))
+    try:
+        result = runtime.conversation_deletion.delete(
+            conversation_id=conversation_id,
+            tenant_id=str(runtime.tenant_config["tenant_id"]),
+            user_id=user_id,
+            agent="general_agent",
+        )
+    except ConversationNotFoundError:
+        return jsonify({"error": "会话不存在"}), 404
+    except ConversationBusyError:
+        return jsonify(
+            {"error": "该会话仍有任务正在执行或等待审批，请先结束任务"}
+        ), 409
+    except Exception:  # noqa: BLE001 - API 边界隐藏存储与向量后端内部细节
+        app.logger.exception(
+            "conversation deletion failed",
+            extra={"conversation_id": conversation_id},
+        )
+        return jsonify({"error": "会话删除失败，请稍后重试"}), 503
+    return jsonify(
+        {"status": "deleted", "conversation_id": result.conversation_id}
+    )
 
 
 @app.get("/api/conversations/<conversation_id>/messages")

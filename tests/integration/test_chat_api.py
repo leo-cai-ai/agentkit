@@ -201,6 +201,106 @@ def test_history_api_normalizes_legacy_structured_assistant_message(client) -> N
     assert "workflow_trace" not in assistant["content"]
 
 
+def test_delete_conversation_removes_history_but_keeps_run_trace(client) -> None:
+    from agentkit.web.app import get_runtime
+
+    token = _login(client)
+    result = client.post(
+        "/api/chat",
+        json={"message": "你好"},
+        headers={"X-CSRF-Token": token},
+    ).get_json()
+    conversation_id = result["conversation_id"]
+    run_id = result["run_id"]
+
+    response = client.delete(
+        f"/api/conversations/{conversation_id}",
+        headers={"X-CSRF-Token": token},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "status": "deleted",
+        "conversation_id": conversation_id,
+    }
+    runtime = get_runtime()
+    assert runtime.conversations.get_conversation(conversation_id) is None
+    assert runtime.gateway.audit.get_run(run_id) is not None
+
+
+@pytest.mark.parametrize("status", ["running", "waiting_for_approval"])
+def test_delete_conversation_rejects_blocking_run(client, status) -> None:
+    from agentkit.web.app import get_runtime
+
+    token = _login(client)
+    runtime = get_runtime()
+    conversation_id = runtime.conversations.create_conversation(
+        tenant_id=str(runtime.tenant_config["tenant_id"]),
+        agent="general_agent",
+        user_id="console-admin",
+    )
+    run_id = runtime.gateway.audit.start_run(
+        tenant_id=str(runtime.tenant_config["tenant_id"]),
+        user_id="console-admin",
+        text="处理中",
+        conversation_id=conversation_id,
+    )
+    if status == "waiting_for_approval":
+        runtime.gateway.audit.record(
+            run_id,
+            "run_paused",
+            {"status": "waiting_for_approval"},
+        )
+
+    response = client.delete(
+        f"/api/conversations/{conversation_id}",
+        headers={"X-CSRF-Token": token},
+    )
+
+    assert response.status_code == 409
+    assert "正在执行或等待审批" in response.get_json()["error"]
+    assert runtime.conversations.get_conversation(conversation_id) is not None
+
+
+@pytest.mark.parametrize(
+    ("agent", "user_id"),
+    [("other_agent", "console-admin"), ("general_agent", "other-user")],
+)
+def test_delete_conversation_hides_foreign_scope(client, agent, user_id) -> None:
+    from agentkit.web.app import get_runtime
+
+    token = _login(client)
+    runtime = get_runtime()
+    conversation_id = runtime.conversations.create_conversation(
+        tenant_id=str(runtime.tenant_config["tenant_id"]),
+        agent=agent,
+        user_id=user_id,
+    )
+
+    response = client.delete(
+        f"/api/conversations/{conversation_id}",
+        headers={"X-CSRF-Token": token},
+    )
+
+    assert response.status_code == 404
+    assert runtime.conversations.get_conversation(conversation_id) is not None
+
+
+def test_delete_missing_conversation_returns_not_found(client) -> None:
+    token = _login(client)
+    response = client.delete(
+        "/api/conversations/missing",
+        headers={"X-CSRF-Token": token},
+    )
+    assert response.status_code == 404
+
+
+def test_delete_conversation_requires_csrf(client) -> None:
+    _login(client)
+    response = client.delete("/api/conversations/missing")
+    assert response.status_code == 400
+
+
 def test_explicit_mention_applies_to_one_turn_and_trace_keeps_parent_child(client) -> None:
     token = _login(client)
     first = client.post(
