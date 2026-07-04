@@ -235,6 +235,9 @@ def test_authenticated_shell_preserves_structure_and_accessibility(client):
         'name="message"',
         'id="execution-state"',
         'id="step-list"',
+        'id="chat-trace-drawer"',
+        "data-trace-trigger",
+        "data-trace-drawer",
         'id="result-region"',
         "data-conversation-sidebar",
         "data-conversation-sidebar-toggle",
@@ -254,6 +257,7 @@ def test_authenticated_shell_preserves_structure_and_accessibility(client):
     ):
         assert contract in chat_html
     assert "agent-status-panel" not in chat_html
+    assert "ak-trace-panel" not in chat_html
     assert '<input name="message"' not in chat_html
     assert 'name="agent"' not in chat_html
 

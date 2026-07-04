@@ -70,7 +70,16 @@
           </button>
           <h2 id="chat-workforce-title">General Agent</h2>
         </div>
-        <span>统一协调入口</span>
+        <div class="ak-chat-heading-actions">
+          <span>统一协调入口</span>
+          <button
+            class="secondary ak-trace-trigger"
+            type="button"
+            data-trace-trigger
+            aria-controls="chat-trace-drawer"
+            aria-expanded="false"
+          >本轮追踪</button>
+        </div>
       </div>
 
       <section class="chat-surface ak-chat-surface">
@@ -122,19 +131,40 @@
       </section>
     </article>
 
-    <aside class="panel ak-panel live-panel ak-trace-panel" aria-labelledby="execution-state-title">
-      <div class="panel-head ak-panel-header">
-        <h2 id="execution-state-title">执行追踪</h2>
-        <span id="execution-state">空闲</span>
+    <aside
+      id="chat-trace-drawer"
+      class="ak-trace-drawer"
+      data-trace-drawer
+      aria-hidden="true"
+      aria-labelledby="chat-trace-title"
+      inert
+    >
+      <header class="ak-trace-drawer-header">
+        <div>
+          <span class="ak-eyebrow">Execution Trace</span>
+          <h2 id="chat-trace-title">本轮追踪</h2>
+        </div>
+        <button class="ak-icon-button" type="button" data-trace-close aria-label="关闭追踪">
+          {{ icon("x") }}
+        </button>
+      </header>
+      <div class="ak-trace-drawer-content" data-trace-content>
+        <div class="ak-trace-state">
+          <span>当前状态</span>
+          <strong id="execution-state" aria-live="polite">空闲</strong>
+        </div>
+        <ol class="step-list" id="step-list">
+          <li>General 理解请求</li>
+          <li>选择或校验 Agent</li>
+          <li>执行审批策略</li>
+          <li>运行 Skills / Tools</li>
+          <li>写入审计与记忆</li>
+        </ol>
+        <section class="ak-trace-details" data-trace-details aria-label="执行证据">
+          <p class="ak-empty-state">运行后将在这里显示计划、审计事件和原始证据。</p>
+        </section>
+        <a class="secondary ak-network-link" href="{{ url_for('agent_network') }}">查看 Agent Network</a>
       </div>
-      <ol class="step-list" id="step-list">
-        <li>General 理解请求</li>
-        <li>选择或校验 Agent</li>
-        <li>执行审批策略</li>
-        <li>运行 Skills / Tools</li>
-        <li>写入审计与记忆</li>
-      </ol>
-      <a class="secondary ak-network-link" href="{{ url_for('agent_network') }}">查看 Agent Network</a>
     </aside>
   </section>
 

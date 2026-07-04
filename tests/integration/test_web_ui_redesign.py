@@ -144,3 +144,32 @@ def test_chat_session_guard_loads_before_app_and_exposes_request_lifecycle(clien
     assert "begin(conversationId)" in js
     assert "isCurrent(token)" in js
     assert "cancel()" in js
+
+
+def test_chat_trace_drawer_is_present_but_closed_by_default(client) -> None:
+    login(client)
+    html = client.get("/chat").get_data(as_text=True)
+
+    assert "data-trace-drawer" in html
+    assert "data-trace-trigger" in html
+    assert 'aria-controls="chat-trace-drawer"' in html
+    assert 'id="chat-trace-drawer"' in html
+    assert 'aria-hidden="true"' in html
+    assert "inert" in html
+    assert "ak-trace-panel" not in html
+
+
+def test_trace_auto_open_is_limited_to_human_attention_states(client) -> None:
+    import re
+
+    js = client.get("/static/js/app.js").get_data(as_text=True)
+
+    assert "function shouldAutoOpenTrace" in js
+    assert 'new Set(["waiting_approval", "failed", "blocked"])' in js
+    function = re.search(
+        r"function shouldAutoOpenTrace\(view\) \{(?P<body>.*?)\n\}",
+        js,
+        re.DOTALL,
+    )
+    assert function is not None
+    assert "general_delegate" not in function.group("body")

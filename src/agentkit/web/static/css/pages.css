@@ -10,7 +10,7 @@
 /* General Agent Chat */
 .ak-general-chat-layout {
   display: grid;
-  grid-template-columns: minmax(14rem, 16rem) minmax(32rem, 1fr) minmax(14rem, 16rem);
+  grid-template-columns: minmax(14rem, 16rem) minmax(32rem, 1fr);
   gap: var(--ak-sys-space-grid);
   align-items: stretch;
   min-block-size: calc(100dvh - 9.5rem);
@@ -162,6 +162,18 @@
   display: flex;
   align-items: center;
   gap: var(--ak-sys-space-2);
+}
+
+.ak-chat-heading-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--ak-sys-space-3);
+}
+
+.ak-trace-trigger {
+  min-block-size: var(--ak-sys-size-control-md);
+  padding-inline: var(--ak-sys-space-3);
 }
 
 .ak-mention-shell {
@@ -320,7 +332,7 @@
 
 @media (min-width: 47.5625rem) {
   body.ak-history-collapsed .ak-general-chat-layout {
-    grid-template-columns: minmax(32rem, 1fr) minmax(14rem, 16rem);
+    grid-template-columns: minmax(32rem, 1fr);
   }
 
   body.ak-history-collapsed .ak-chat-history {
@@ -334,7 +346,6 @@
 
 @media (max-width: 1180px) {
   .ak-general-chat-layout { grid-template-columns: minmax(12rem, 0.7fr) minmax(28rem, 2fr); }
-  .ak-trace-panel { display: none; }
 
   body.ak-history-collapsed .ak-general-chat-layout {
     grid-template-columns: minmax(0, 1fr);
@@ -377,6 +388,10 @@
 
   .ak-history-open {
     display: inline-flex;
+  }
+
+  .ak-chat-heading-actions > span {
+    display: none;
   }
 
   .ak-chat-help { display: none; }

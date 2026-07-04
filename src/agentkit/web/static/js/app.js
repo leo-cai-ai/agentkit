@@ -26,6 +26,7 @@ let conversationCache = [];
 let chatBusy = false;
 const HISTORY_COLLAPSED_KEY = "agentkit:chat-history-collapsed";
 const chatSessionGuard = window.AgentKitChatSession.createChatSessionGuard();
+const TRACE_ATTENTION_STATES = new Set(["waiting_approval", "failed", "blocked"]);
 
 // Progressive tab enhancement: without JavaScript the anchors still navigate
 // to fully visible sections; once initialized, the same markup follows the
@@ -660,9 +661,37 @@ async function loadConversationMessages(conversationId) {
 
 async function startNewConversation() {
   chatSessionGuard.cancel();
+  setTraceDrawerOpen(false);
   currentConversationId = null;
+  clearPendingResult();
+  setExecutionState("空闲");
   resetChatThread("New conversation started. How can I help?");
   renderConversationHistory();
+}
+
+function shouldAutoOpenTrace(view) {
+  const status = String(view?.status || "").toLowerCase().replace("waiting_for_approval", "waiting_approval");
+  return Boolean(view?.waitingForApproval || view?.requiresHumanAction || TRACE_ATTENTION_STATES.has(status));
+}
+
+function setTraceDrawerOpen(open, { restoreFocus = false, focus = false } = {}) {
+  const drawer = document.querySelector("[data-trace-drawer]");
+  const trigger = document.querySelector("[data-trace-trigger]");
+  if (!drawer || !trigger) return;
+  drawer.setAttribute("aria-hidden", String(!open));
+  drawer.inert = !open;
+  trigger.setAttribute("aria-expanded", String(open));
+  document.body.classList.toggle("ak-trace-open", open);
+  if (open) {
+    document.body.classList.remove("ak-history-drawer-open");
+    if (focus) drawer.querySelector("[data-trace-close]")?.focus();
+  } else if (restoreFocus) {
+    trigger.focus();
+  }
+}
+
+function updateTraceFromView(view) {
+  if (shouldAutoOpenTrace(view)) setTraceDrawerOpen(true);
 }
 
 function setExecutionState(label, activeIndex = -1, done = false) {
@@ -932,17 +961,19 @@ function renderResult(payload, requestPayload = null, options = {}) {
     ? `<p class="response-text">${escapeHtml(conversationMessage)}</p>${approvalActionHtml(waitingForApproval, approval)}`
     : renderBusinessOutput(final);
 
-  region.hidden = false;
-  region.innerHTML = `
-    ${hidePrimaryPanel ? "" : `
-      <article class="panel ak-panel result-card ak-result-card" aria-labelledby="result-primary-title">
-        <div class="panel-head ak-panel-header">
-          <h2 id="result-primary-title">${primaryTitle}</h2>
-          <span>${escapeHtml(primarySubtitle)}</span>
-        </div>
-        ${primaryBody}
-      </article>
-    `}
+  region.hidden = hidePrimaryPanel;
+  region.innerHTML = hidePrimaryPanel ? "" : `
+    <article class="panel ak-panel result-card ak-result-card" aria-labelledby="result-primary-title">
+      <div class="panel-head ak-panel-header">
+        <h2 id="result-primary-title">${primaryTitle}</h2>
+        <span>${escapeHtml(primarySubtitle)}</span>
+      </div>
+      ${primaryBody}
+    </article>
+  `;
+  const traceDetails = document.querySelector("[data-trace-details]");
+  if (traceDetails) {
+    traceDetails.innerHTML = `
     <section class="result-grid ak-result-grid">
       <article class="panel ak-panel ak-panel--table" aria-labelledby="execution-plan-title">
         <div class="panel-head ak-panel-header"><h2 id="execution-plan-title">Execution Plan</h2><span>LangGraph route</span></div>
@@ -965,8 +996,14 @@ function renderResult(payload, requestPayload = null, options = {}) {
         </div>
       </article>
     </section>
-  `;
-  if (options.scroll !== false) {
+    `;
+  }
+  updateTraceFromView({
+    status: outputStatus,
+    waitingForApproval,
+    requiresHumanAction: outputStatus === "needs_clarification",
+  });
+  if (!region.hidden && options.scroll !== false) {
     region.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 }
@@ -1054,6 +1091,10 @@ function clearPendingResult() {
   if (!region) return;
   region.innerHTML = "";
   region.hidden = true;
+  const traceDetails = document.querySelector("[data-trace-details]");
+  if (traceDetails) {
+    traceDetails.innerHTML = '<p class="ak-empty-state">运行后将在这里显示计划、审计事件和原始证据。</p>';
+  }
 }
 
 function bindRangeOutputs() {
@@ -1123,6 +1164,7 @@ function appendAgentTrace(node, response) {
   if (!route.type && !delegation.child_run_id) return;
   const details = document.createElement("details");
   details.className = "ak-agent-trace";
+  details.dataset.delegationSummary = "";
   const summary = document.createElement("summary");
   summary.textContent = delegation.child_run_id ? "查看 Agent 委派追踪" : "查看 General 决策摘要";
   const list = document.createElement("dl");
@@ -1323,6 +1365,7 @@ async function runUnifiedChatTurn(message, selectedAgent) {
     }
     setExecutionState("Failed");
     setAgentStatus(selectedAgent, "failed");
+    updateTraceFromView({ status: "failed" });
   }
 }
 
@@ -1448,6 +1491,9 @@ function bindConversationHistory() {
     const item = event.target.closest("[data-conversation-id]");
     if (!item) return;
     currentConversationId = item.dataset.conversationId || null;
+    setTraceDrawerOpen(false);
+    clearPendingResult();
+    setExecutionState("历史会话");
     renderConversationHistory();
     await loadConversationMessages(currentConversationId);
     if (mobileQuery.matches) closeMobileDrawer(true);
@@ -1476,6 +1522,30 @@ function bindConversationHistory() {
   mobileQuery.addEventListener?.("change", () => {
     document.body.classList.remove("ak-history-drawer-open");
     syncSidebarControls();
+  });
+}
+
+function bindTraceDrawer() {
+  const drawer = document.querySelector("[data-trace-drawer]");
+  const trigger = document.querySelector("[data-trace-trigger]");
+  const closeButton = drawer?.querySelector("[data-trace-close]");
+  if (!drawer || !trigger || !closeButton) return;
+
+  trigger.addEventListener("click", () => setTraceDrawerOpen(true, { focus: true }));
+  closeButton.addEventListener("click", () => setTraceDrawerOpen(false, { restoreFocus: true }));
+  document.addEventListener("click", (event) => {
+    if (
+      document.body.classList.contains("ak-trace-open") &&
+      !drawer.contains(event.target) &&
+      !trigger.contains(event.target)
+    ) {
+      setTraceDrawerOpen(false);
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && document.body.classList.contains("ak-trace-open")) {
+      setTraceDrawerOpen(false, { restoreFocus: true });
+    }
   });
 }
 
@@ -1526,6 +1596,7 @@ async function approvePendingTask() {
     if (error.name === "AbortError" || !chatSessionGuard.isCurrent(requestToken)) return;
     setExecutionState("Failed");
     setAgentStatus(agentName, "failed");
+    updateTraceFromView({ status: "failed" });
     // Show the message (incl. the truncation fallback) in the chat bubble
     // rather than a jarring alert popup.
     if (bubble) finalizeAssistantBubble(bubble, error.message);
@@ -1584,6 +1655,7 @@ async function rejectPendingTask() {
   } catch (error) {
     if (error.name === "AbortError" || !chatSessionGuard.isCurrent(requestToken)) return;
     setExecutionState("Failed");
+    updateTraceFromView({ status: "failed" });
     if (bubble) finalizeAssistantBubble(bubble, error.message);
     else alert(error.message);
   } finally {
@@ -1619,6 +1691,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindChatForm();
   bindMentionAutocomplete();
   bindConversationHistory();
+  bindTraceDrawer();
   bindApprovalActions();
   bindTabs();
 });
