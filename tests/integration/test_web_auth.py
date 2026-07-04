@@ -236,11 +236,13 @@ def test_authenticated_shell_preserves_structure_and_accessibility(client):
         'id="execution-state"',
         'id="step-list"',
         'id="result-region"',
-        "data-conversation-trigger",
-        "data-conversation-menu",
+        "data-conversation-sidebar",
+        "data-conversation-sidebar-toggle",
+        "data-conversation-sidebar-open",
+        "data-conversation-list",
         'aria-label="消息"',
-        'aria-controls="conversation-menu"',
-        'id="conversation-menu"',
+        'aria-controls="conversation-history"',
+        'id="conversation-history"',
         'id="agent-directory"',
         'data-agent-mention-menu',
         'class="chat-thread ak-chat-thread"',
@@ -294,7 +296,8 @@ def test_agent_network_uses_live_registry_topology(client):
     assert "table-wrap ak-table-wrap" in application_js
     assert "data-table ak-data-table" in application_js
     for contract in (
-        'aria-selected="${active}"',
+        'button.setAttribute("aria-current", "page")',
+        "function renderConversationHistory()",
         'event.key === "ArrowDown"',
         'event.key === "Home"',
         'card.dataset.state = label',

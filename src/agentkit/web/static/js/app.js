@@ -24,6 +24,7 @@ let pendingInput = null;
 let currentConversationId = null;
 let conversationCache = [];
 let chatBusy = false;
+const HISTORY_COLLAPSED_KEY = "agentkit:chat-history-collapsed";
 
 // Progressive tab enhancement: without JavaScript the anchors still navigate
 // to fully visible sections; once initialized, the same markup follows the
@@ -548,69 +549,55 @@ function conversationMeta(conv) {
   return when ? `更新于 ${when}` : "已保存会话";
 }
 
-function setConversationTrigger(conv) {
-  const titleEl = document.querySelector("[data-conversation-current]");
-  const metaEl = document.querySelector("[data-conversation-current-meta]");
-  if (titleEl) titleEl.textContent = conversationTitle(conv);
-  if (metaEl) metaEl.textContent = conversationMeta(conv);
-}
-
-function renderConversationMenu() {
-  const menu = document.querySelector("[data-conversation-menu]");
-  if (!menu) return;
-  const newConversationActive = !currentConversationId;
-  const items = [
-    `<li class="conversation-item" role="option" tabindex="${newConversationActive ? "0" : "-1"}" aria-selected="${newConversationActive}" data-conversation-id="" data-active="${newConversationActive}">
-       <span class="conversation-item-title">新会话</span>
-       <span class="conversation-item-meta">开始新的对话</span>
-     </li>`,
-  ];
-  for (const conv of conversationCache) {
-    const active = conv.id === currentConversationId;
-    items.push(
-      `<li class="conversation-item" role="option" tabindex="${active ? "0" : "-1"}" aria-selected="${active}" data-conversation-id="${escapeHtml(conv.id)}" data-active="${active}">
-         <span class="conversation-item-title">${escapeHtml(conversationTitle(conv))}</span>
-         <span class="conversation-item-meta">${escapeHtml(conversationMeta(conv))}</span>
-       </li>`
-    );
+function groupConversations(conversations, now = Date.now()) {
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+  const groups = { today: [], older: [] };
+  for (const conversation of conversations) {
+    const rawTimestamp = Number(conversation.updated_at || conversation.created_at || 0);
+    const timestamp = rawTimestamp < 1e12 ? rawTimestamp * 1000 : rawTimestamp;
+    const group = timestamp >= startOfToday.getTime() ? "today" : "older";
+    groups[group].push(conversation);
   }
-  menu.innerHTML = items.join("");
+  return groups;
 }
 
-function closeConversationMenu(restoreFocus = false) {
-  const picker = document.querySelector("[data-conversation-picker]");
-  const menu = document.querySelector("[data-conversation-menu]");
-  const trigger = document.querySelector("[data-conversation-trigger]");
-  picker?.classList.remove("open");
-  if (menu) menu.hidden = true;
-  trigger?.setAttribute("aria-expanded", "false");
-  if (restoreFocus) trigger?.focus();
-}
+function renderConversationHistory() {
+  const history = document.querySelector("[data-conversation-list]");
+  if (!history) return;
+  const groups = groupConversations(conversationCache);
+  for (const groupName of ["today", "older"]) {
+    const section = history.querySelector(`[data-conversation-group="${groupName}"]`);
+    const items = section?.querySelector("[data-conversation-items]");
+    if (!section || !items) continue;
+    items.replaceChildren();
+    for (const conversation of groups[groupName]) {
+      const active = conversation.id === currentConversationId;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "conversation-item";
+      button.dataset.conversationId = conversation.id;
+      button.dataset.active = String(active);
+      if (active) button.setAttribute("aria-current", "page");
 
-function openConversationMenu(focusPosition = "active") {
-  const picker = document.querySelector("[data-conversation-picker]");
-  const menu = document.querySelector("[data-conversation-menu]");
-  const trigger = document.querySelector("[data-conversation-trigger]");
-  if (!menu) return;
-  renderConversationMenu();
-  picker?.classList.add("open");
-  menu.hidden = false;
-  trigger?.setAttribute("aria-expanded", "true");
-  const options = Array.from(menu.querySelectorAll('[role="option"]'));
-  const target = focusPosition === "last"
-    ? options.at(-1)
-    : options.find((option) => option.getAttribute("aria-selected") === "true") || options[0];
-  target?.focus();
-}
-
-function syncConversationTrigger() {
-  const conv = conversationCache.find((c) => c.id === currentConversationId);
-  setConversationTrigger(conv || null);
+      const title = document.createElement("span");
+      title.className = "conversation-item-title";
+      title.textContent = conversationTitle(conversation);
+      const meta = document.createElement("span");
+      meta.className = "conversation-item-meta";
+      meta.textContent = conversationMeta(conversation);
+      button.append(title, meta);
+      items.appendChild(button);
+    }
+    section.hidden = groups[groupName].length === 0;
+  }
+  const empty = history.querySelector("[data-conversation-empty]");
+  if (empty) empty.hidden = conversationCache.length > 0;
 }
 
 async function loadConversations(agent) {
-  const menu = document.querySelector("[data-conversation-menu]");
-  if (!menu) return;
+  const history = document.querySelector("[data-conversation-list]");
+  if (!history) return;
   try {
     const response = await fetch("/api/conversations");
     if (!response.ok) return;
@@ -619,8 +606,7 @@ async function loadConversations(agent) {
   } catch {
     conversationCache = [];
   }
-  syncConversationTrigger();
-  renderConversationMenu();
+  renderConversationHistory();
 }
 
 async function loadConversationMessages(conversationId) {
@@ -661,8 +647,7 @@ async function loadConversationMessages(conversationId) {
 async function startNewConversation() {
   currentConversationId = null;
   resetChatThread("New conversation started. How can I help?");
-  closeConversationMenu();
-  syncConversationTrigger();
+  renderConversationHistory();
 }
 
 function setExecutionState(label, activeIndex = -1, done = false) {
@@ -1375,82 +1360,96 @@ function bindChatForm() {
   syncChatComposerState();
 }
 
-function bindConversationBar() {
+function bindConversationHistory() {
+  const sidebar = document.querySelector("[data-conversation-sidebar]");
+  const history = document.querySelector("[data-conversation-list]");
+  const collapseButton = document.querySelector("[data-conversation-sidebar-toggle]");
+  const openButton = document.querySelector("[data-conversation-sidebar-open]");
+  const mobileQuery = window.matchMedia("(max-width: 47.5rem)");
+
+  const readCollapsedPreference = () => {
+    try {
+      return localStorage.getItem(HISTORY_COLLAPSED_KEY) === "true";
+    } catch {
+      return false;
+    }
+  };
+
+  const syncSidebarControls = () => {
+    const expanded = mobileQuery.matches
+      ? document.body.classList.contains("ak-history-drawer-open")
+      : !document.body.classList.contains("ak-history-collapsed");
+    collapseButton?.setAttribute("aria-expanded", String(expanded));
+    openButton?.setAttribute("aria-expanded", String(expanded));
+  };
+
+  const setHistoryCollapsed = (collapsed, persist = true) => {
+    document.body.classList.toggle("ak-history-collapsed", collapsed);
+    if (persist) {
+      try {
+        localStorage.setItem(HISTORY_COLLAPSED_KEY, String(collapsed));
+      } catch {
+        // 隐私模式或存储策略禁止写入时，仍保留当前页面状态。
+      }
+    }
+    syncSidebarControls();
+  };
+
+  const closeMobileDrawer = (restoreFocus = false) => {
+    document.body.classList.remove("ak-history-drawer-open");
+    syncSidebarControls();
+    if (restoreFocus) openButton?.focus();
+  };
+
+  const openSidebar = () => {
+    if (mobileQuery.matches) {
+      document.body.classList.add("ak-history-drawer-open");
+      syncSidebarControls();
+      sidebar?.querySelector("[data-new-conversation]")?.focus();
+      return;
+    }
+    setHistoryCollapsed(false);
+  };
+
+  setHistoryCollapsed(readCollapsedPreference(), false);
+
   document.querySelector("[data-new-conversation]")?.addEventListener("click", () => {
     startNewConversation();
+    if (mobileQuery.matches) closeMobileDrawer();
   });
 
-  const trigger = document.querySelector("[data-conversation-trigger]");
-  const menu = document.querySelector("[data-conversation-menu]");
-  trigger?.addEventListener("click", (event) => {
-    event.stopPropagation();
-    const isOpen = document.querySelector("[data-conversation-picker]")?.classList.contains("open");
-    if (isOpen) {
-      closeConversationMenu();
-    } else {
-      openConversationMenu();
-    }
-  });
-
-  trigger?.addEventListener("keydown", (event) => {
-    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-    event.preventDefault();
-    openConversationMenu(event.key === "ArrowUp" ? "last" : "active");
-  });
-
-  menu?.addEventListener("click", async (event) => {
+  history?.addEventListener("click", async (event) => {
     const item = event.target.closest("[data-conversation-id]");
     if (!item) return;
-    const id = item.dataset.conversationId || null;
-    closeConversationMenu(true);
-    currentConversationId = id;
-    syncConversationTrigger();
-    if (id) {
-      await loadConversationMessages(id);
-    } else {
-      startNewConversation();
-    }
+    currentConversationId = item.dataset.conversationId || null;
+    renderConversationHistory();
+    await loadConversationMessages(currentConversationId);
+    if (mobileQuery.matches) closeMobileDrawer(true);
   });
 
-  menu?.addEventListener("keydown", (event) => {
-    const options = Array.from(menu.querySelectorAll('[role="option"]'));
-    const current = event.target.closest('[role="option"]');
-    const currentIndex = options.indexOf(current);
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      current?.click();
-      return;
-    }
-    if (event.key === "Escape") {
-      event.preventDefault();
-      closeConversationMenu(true);
-      return;
-    }
-    let nextIndex = -1;
-    if (event.key === "ArrowDown") nextIndex = (currentIndex + 1) % options.length;
-    if (event.key === "ArrowUp") nextIndex = (currentIndex - 1 + options.length) % options.length;
-    if (event.key === "Home") nextIndex = 0;
-    if (event.key === "End") nextIndex = options.length - 1;
-    if (nextIndex < 0) return;
-    event.preventDefault();
-    options.forEach((option, index) => option.setAttribute("tabindex", index === nextIndex ? "0" : "-1"));
-    options[nextIndex]?.focus();
+  collapseButton?.addEventListener("click", () => {
+    if (mobileQuery.matches) closeMobileDrawer(true);
+    else setHistoryCollapsed(true);
   });
-
-  menu?.addEventListener("focusout", () => {
-    window.setTimeout(() => {
-      const picker = document.querySelector("[data-conversation-picker]");
-      if (!picker?.contains(document.activeElement)) closeConversationMenu();
-    }, 0);
-  });
-
+  openButton?.addEventListener("click", openSidebar);
   document.addEventListener("click", (event) => {
-    if (!event.target.closest("[data-conversation-picker]")) {
-      closeConversationMenu();
+    if (
+      mobileQuery.matches &&
+      document.body.classList.contains("ak-history-drawer-open") &&
+      !sidebar?.contains(event.target) &&
+      !openButton?.contains(event.target)
+    ) {
+      closeMobileDrawer();
     }
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !menu?.hidden) closeConversationMenu(true);
+    if (event.key === "Escape" && document.body.classList.contains("ak-history-drawer-open")) {
+      closeMobileDrawer(true);
+    }
+  });
+  mobileQuery.addEventListener?.("change", () => {
+    document.body.classList.remove("ak-history-drawer-open");
+    syncSidebarControls();
   });
 }
 
@@ -1581,7 +1580,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindRangeOutputs();
   bindChatForm();
   bindMentionAutocomplete();
-  bindConversationBar();
+  bindConversationHistory();
   bindApprovalActions();
   bindTabs();
 });

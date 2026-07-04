@@ -81,3 +81,38 @@ def test_mobile_navigation_has_a_focused_controller(client) -> None:
     assert "function bindPrimaryNavigation" in js
     assert 'document.body.classList.toggle("ak-mobile-nav-open", open)' in js
     assert 'toggle.setAttribute("aria-expanded", String(open))' in js
+
+
+def test_chat_has_collapsible_history_sidebar_and_mobile_drawer(client) -> None:
+    login(client)
+    html = client.get("/chat").get_data(as_text=True)
+
+    assert "data-conversation-sidebar" in html
+    assert "data-conversation-sidebar-toggle" in html
+    assert "data-conversation-sidebar-open" in html
+    assert 'aria-controls="conversation-history"' in html
+    assert 'id="conversation-history"' in html
+    assert "data-conversation-list" in html
+    assert 'data-conversation-group="today"' in html
+    assert 'data-conversation-group="older"' in html
+
+
+def test_conversation_history_uses_navigation_buttons(client) -> None:
+    login(client)
+    html = client.get("/chat").get_data(as_text=True)
+    js = client.get("/static/js/app.js").get_data(as_text=True)
+
+    assert "data-conversation-items" in html
+    assert "data-conversation-menu" not in html
+    assert "function groupConversations" in js
+    assert "function renderConversationHistory" in js
+    assert 'button.setAttribute("aria-current", "page")' in js
+
+
+def test_history_preference_never_stores_conversation_content(client) -> None:
+    js = client.get("/static/js/app.js").get_data(as_text=True)
+
+    assert 'agentkit:chat-history-collapsed' in js
+    assert "localStorage.setItem(HISTORY_COLLAPSED_KEY" in js
+    assert 'localStorage.setItem("conversation' not in js
+    assert 'localStorage.setItem("messages' not in js

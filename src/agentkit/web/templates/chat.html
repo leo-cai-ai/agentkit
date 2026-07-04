@@ -8,36 +8,47 @@
   <script id="agent-directory" type="application/json">{{ agents | tojson }}</script>
 
   <section class="ak-general-chat-layout" aria-label="统一多 Agent 聊天">
-    <aside class="panel ak-panel ak-chat-history" aria-labelledby="conversation-history-title">
+    <aside
+      class="panel ak-panel ak-chat-history"
+      data-conversation-sidebar
+      aria-labelledby="conversation-history-title"
+    >
       <div class="panel-head ak-panel-header">
         <div>
           <span class="ak-eyebrow">General Agent</span>
           <h2 id="conversation-history-title">会话</h2>
         </div>
+        <button
+          class="ak-icon-button ak-history-collapse"
+          type="button"
+          data-conversation-sidebar-toggle
+          aria-controls="conversation-history"
+          aria-expanded="true"
+          aria-label="折叠会话历史"
+        >
+          {{ icon("chevron-left") }}
+        </button>
       </div>
       <button class="primary conversation-new ak-new-chat-button" type="button" data-new-conversation aria-label="新建会话">
-        <span aria-hidden="true">＋</span>
+        {{ icon("plus") }}
         <span>新建会话</span>
       </button>
-      <div class="conversation-bar ak-history-picker" data-conversation-bar>
-        <div class="conversation-picker" data-conversation-picker>
-          <button
-            type="button"
-            class="conversation-trigger"
-            data-conversation-trigger
-            aria-haspopup="listbox"
-            aria-controls="conversation-menu"
-            aria-expanded="false"
-          >
-            <span class="conversation-trigger-body">
-              <span class="conversation-trigger-title" data-conversation-current>新会话</span>
-              <span class="conversation-trigger-meta" data-conversation-current-meta>查看历史记录</span>
-            </span>
-            {{ icon("chevron-down", class_name="conversation-caret") }}
-          </button>
-          <ul id="conversation-menu" class="conversation-menu ak-history-list" data-conversation-menu role="listbox" aria-label="历史会话" hidden></ul>
-        </div>
-      </div>
+      <nav
+        id="conversation-history"
+        class="ak-conversation-history"
+        data-conversation-list
+        aria-label="历史会话"
+      >
+        <section class="ak-history-group" data-conversation-group="today">
+          <h3>今天</h3>
+          <div class="ak-history-items" data-conversation-items></div>
+        </section>
+        <section class="ak-history-group" data-conversation-group="older">
+          <h3>过去 7 天</h3>
+          <div class="ak-history-items" data-conversation-items></div>
+        </section>
+        <p class="ak-history-empty" data-conversation-empty>还没有历史会话</p>
+      </nav>
       <div class="ak-chat-help">
         <strong>单轮指定 Agent</strong>
         <p>输入 <code>@招聘</code>、<code>@客服</code> 或 <code>@小红书</code>。下一条未提及时会重新交给 General Agent。</p>
@@ -47,7 +58,16 @@
     <article class="panel ak-panel chat-panel ak-chat-workspace" aria-labelledby="chat-workforce-title">
       <div class="panel-head ak-panel-header ak-chat-heading">
         <div>
-          <span class="ak-presence-dot" aria-hidden="true"></span>
+          <button
+            class="ak-icon-button ak-history-open"
+            type="button"
+            data-conversation-sidebar-open
+            aria-controls="conversation-history"
+            aria-expanded="true"
+            aria-label="打开会话历史"
+          >
+            {{ icon("menu-2") }}
+          </button>
           <h2 id="chat-workforce-title">General Agent</h2>
         </div>
         <span>统一协调入口</span>
