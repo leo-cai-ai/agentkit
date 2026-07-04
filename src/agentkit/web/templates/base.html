@@ -35,21 +35,25 @@
         <nav id="primary-navigation" class="nav ak-primary-nav" aria-label="Primary navigation">
           <a
             class="{{ 'active' if active == 'chat' else '' }}"
+            data-nav-label="聊天"
             {% if active == 'chat' %}aria-current="page"{% endif %}
             href="{{ url_for('chat_console') }}"
           >{{ icon("message-circle") }}<span>聊天</span></a>
           <a
             class="{{ 'active' if active == 'agents' else '' }}"
+            data-nav-label="Agent Network"
             {% if active == 'agents' %}aria-current="page"{% endif %}
             href="{{ url_for('agent_network') }}"
           >{{ icon("topology-star") }}<span>Agent Network</span></a>
           <a
             class="{{ 'active' if active == 'operations' else '' }}"
+            data-nav-label="运行追踪"
             {% if active == 'operations' %}aria-current="page"{% endif %}
             href="{{ url_for('operations') }}"
           >{{ icon("activity") }}<span>运行追踪</span></a>
           <a
             class="{{ 'active' if active == 'governance' else '' }}"
+            data-nav-label="治理"
             {% if active == 'governance' %}aria-current="page"{% endif %}
             href="{{ url_for('governance') }}"
           >{{ icon("shield-check") }}<span>治理</span></a>

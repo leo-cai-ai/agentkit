@@ -83,6 +83,18 @@ def test_mobile_navigation_has_a_focused_controller(client) -> None:
     assert 'toggle.setAttribute("aria-expanded", String(open))' in js
 
 
+def test_compact_navigation_explains_icons_with_tooltips(client) -> None:
+    login(client)
+    html = client.get("/chat").get_data(as_text=True)
+    css = client.get("/static/css/layout.css").get_data(as_text=True)
+
+    assert html.count("data-nav-label=") == 4
+    assert 'data-nav-label="聊天"' in html
+    assert 'data-nav-label="Agent Network"' in html
+    assert "content: attr(data-nav-label)" in css
+    assert ".ak-primary-nav a:focus-visible::after" in css
+
+
 def test_chat_has_collapsible_history_sidebar_and_mobile_drawer(client) -> None:
     login(client)
     html = client.get("/chat").get_data(as_text=True)

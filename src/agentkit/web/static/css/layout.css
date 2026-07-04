@@ -135,6 +135,37 @@
   white-space: nowrap;
 }
 
+.ak-primary-nav a::after {
+  content: attr(data-nav-label);
+  position: absolute;
+  z-index: var(--ak-sys-z-popover);
+  inset-block-start: 50%;
+  inset-inline-start: calc(100% + var(--ak-sys-space-2));
+  max-inline-size: 14rem;
+  padding: var(--ak-sys-space-1) var(--ak-sys-space-2);
+  border: 1px solid var(--ak-sys-color-border-default);
+  border-radius: var(--ak-sys-radius-control);
+  color: var(--ak-sys-color-text-primary);
+  background: var(--ak-sys-color-bg-elevated);
+  box-shadow: var(--ak-sys-shadow-panel);
+  font-size: 0.75rem;
+  font-weight: 650;
+  line-height: 1.35;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(0.25rem, -50%);
+  transition:
+    opacity var(--ak-sys-motion-duration-fast) var(--ak-sys-motion-easing-standard),
+    transform var(--ak-sys-motion-duration-fast) var(--ak-sys-motion-easing-standard);
+  white-space: nowrap;
+}
+
+.ak-primary-nav a:hover::after,
+.ak-primary-nav a:focus-visible::after {
+  opacity: 1;
+  transform: translate(0, -50%);
+}
+
 .ak-primary-nav a:hover {
   color: var(--ak-sys-color-text-primary);
   background: var(--ak-sys-color-bg-surface);
@@ -316,6 +347,10 @@
     clip-path: none;
   }
 
+  .ak-primary-nav a::after {
+    content: none;
+  }
+
   .ak-tenant-summary {
     grid-column: 4;
     margin: 0;
@@ -347,6 +382,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .ak-primary-nav a,
+  .ak-primary-nav a::after,
   .ak-skip-link {
     transition: none;
   }
