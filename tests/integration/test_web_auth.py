@@ -193,7 +193,13 @@ def test_authenticated_shell_preserves_structure_and_accessibility(client):
         assert 'class="ak-skip-link" href="#main-content"' in html
         assert 'id="main-content" tabindex="-1"' in html
         assert 'aria-label="Primary navigation"' in html
-        assert html.count('aria-current="page"') == 1
+        primary_navigation = re.search(
+            r'<nav id="primary-navigation".*?</nav>',
+            html,
+            re.DOTALL,
+        )
+        assert primary_navigation is not None
+        assert primary_navigation.group(0).count('aria-current="page"') == 1
         assert 'class="topbar-meta"' not in html
         assert 'class="meta-chip' not in html
         assert 'class="ak-page-description"' in html
@@ -391,7 +397,7 @@ def test_login_error_uses_accessible_field_state(client):
     assert 'aria-errormessage="login-error"' in html
 
 
-def test_operations_uses_stable_columns_and_collapsible_json(client, monkeypatch, tmp_path):
+def test_operations_uses_run_browser_and_collapsible_json(client, monkeypatch, tmp_path):
     import agentkit.web.app as web_app
     from agentkit.core.audit import SQLiteAuditLog
 
@@ -424,9 +430,11 @@ def test_operations_uses_stable_columns_and_collapsible_json(client, monkeypatch
     html = response.get_data(as_text=True)
 
     assert "Awaiting approval" in html
-    assert 'class="data-table ak-data-table ak-operations-runs-table"' in html
-    assert html.count('<th scope="col">') == 4
-    assert 'class="ak-run-request-link"' in html
+    assert 'class="ak-run-list" data-run-list' in html
+    assert 'class="ak-run-list-item"' in html
+    assert 'data-run-filter="query"' in html
+    assert 'data-run-filter="status"' in html
+    assert 'data-run-filter="agent"' in html
     assert html.count(f"/operations?run_id={run_id}#run-detail") == 1
     assert 'aria-current="location"' in html
     assert re.search(
@@ -434,7 +442,7 @@ def test_operations_uses_stable_columns_and_collapsible_json(client, monkeypatch
         html,
     )
     assert 'class="ak-operations-back-link" href="#recent-requests-title"' in html
-    assert 'class="ak-event-timeline"' in html
+    assert 'class="ak-run-timeline ak-event-timeline"' in html
     assert 'class="ak-json-details"' in html
     assert 'class="ak-json-viewer" tabindex="0"' in html
     assert '"nested": {' in html
@@ -442,12 +450,12 @@ def test_operations_uses_stable_columns_and_collapsible_json(client, monkeypatch
     assert "\\u003cscript\\u003ealert" in html
 
     pages_css = client.get("/static/css/pages.css").get_data(as_text=True)
-    assert ".ak-run-status-cell" in pages_css
-    assert ".ak-run-time-cell" in pages_css
+    assert ".ak-operations-workspace" in pages_css
+    assert ".ak-run-list-item" in pages_css
     assert "white-space: nowrap" in pages_css
     assert ".ak-json-viewer" in pages_css
     assert "@media (max-width: 87.5rem)" in pages_css
-    assert '"status status"' in pages_css
+    assert "grid-template-columns: minmax(20rem, 23rem) minmax(0, 1fr)" in pages_css
 
 
 def test_post_without_csrf_rejected(client):

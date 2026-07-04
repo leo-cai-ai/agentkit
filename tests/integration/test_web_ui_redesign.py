@@ -205,3 +205,17 @@ def test_agent_network_reserves_icon_column_before_node_title(client) -> None:
     assert 'title.setAttribute("text-anchor", "start")' in js
     assert 'title.setAttribute("x", String(-geometry.width / 2 + 34))' in js
     assert 'document.createElementNS(svg.namespaceURI, "title")' in js
+
+
+def test_operations_has_run_filters_and_parent_child_timeline(client) -> None:
+    login(client)
+    html = client.get("/operations").get_data(as_text=True)
+
+    assert 'data-run-filter="status"' in html
+    assert 'data-run-filter="agent"' in html
+    assert 'data-run-filter="query"' in html
+    assert "data-run-list" in html
+    assert "data-run-detail" in html
+    assert "data-run-chain" in html
+    assert "data-run-timeline" in html
+    assert 'aria-label="清除运行过滤条件"' in html

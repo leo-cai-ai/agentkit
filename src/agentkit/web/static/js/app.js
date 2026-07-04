@@ -1266,6 +1266,42 @@ function bindMentionAutocomplete() {
   });
 }
 
+function bindRunFilters() {
+  const form = document.querySelector("[data-run-filters]");
+  const list = document.querySelector("[data-run-list]");
+  if (!form || !list) return;
+  const rows = Array.from(list.querySelectorAll("[data-run-row]"));
+  const query = form.querySelector('[data-run-filter="query"]');
+  const status = form.querySelector('[data-run-filter="status"]');
+  const agent = form.querySelector('[data-run-filter="agent"]');
+  const empty = list.querySelector("[data-run-filter-empty]");
+  const count = document.querySelector("[data-run-filter-count]");
+  const normalize = (value) => String(value || "").trim().toLowerCase();
+
+  const update = () => {
+    const queryValue = normalize(query?.value);
+    const statusValue = normalize(status?.value);
+    const agentValue = normalize(agent?.value);
+    let visible = 0;
+    for (const row of rows) {
+      const matches = (
+        (!queryValue || normalize(row.dataset.runText).includes(queryValue)) &&
+        (!statusValue || normalize(row.dataset.runStatus) === statusValue) &&
+        (!agentValue || normalize(row.dataset.runAgent).includes(agentValue))
+      );
+      row.hidden = !matches;
+      if (matches) visible += 1;
+    }
+    if (empty) empty.hidden = visible > 0 || rows.length === 0;
+    if (count) count.textContent = String(visible);
+  };
+
+  form.addEventListener("input", update);
+  form.addEventListener("change", update);
+  form.addEventListener("reset", () => window.requestAnimationFrame(update));
+  update();
+}
+
 function agentFromRequestPayload(payload) {
   return payload?.context?.agent || payload?.agent || getSelectedAgentName();
 }
@@ -1688,6 +1724,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindPrimaryNavigation();
   bindAgentSelector();
   bindRangeOutputs();
+  bindRunFilters();
   bindChatForm();
   bindMentionAutocomplete();
   bindConversationHistory();
