@@ -25,6 +25,24 @@ def test_get_missing_conversation_returns_none(store):
     assert store.get_conversation("nope") is None
 
 
+def test_transition_conversation_status_is_conditional(store) -> None:
+    cid = store.create_conversation(
+        tenant_id="t1", agent="general_agent", user_id="u1"
+    )
+
+    assert store.transition_conversation_status(
+        cid,
+        expected=("active",),
+        status="deletion_pending",
+    ) is True
+    assert store.get_conversation(cid)["status"] == "deletion_pending"
+    assert store.transition_conversation_status(
+        cid,
+        expected=("active",),
+        status="deletion_pending",
+    ) is False
+
+
 def test_add_message_updates_conversation_updated_at(store):
     cid = store.create_conversation(tenant_id="t1", agent="cs", user_id="u1")
     before = store.get_conversation(cid)["updated_at"]

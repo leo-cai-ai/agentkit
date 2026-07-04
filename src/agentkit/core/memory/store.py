@@ -65,6 +65,28 @@ class ConversationStore:
             ).fetchone()
         return dict(row) if row else None
 
+    def transition_conversation_status(
+        self,
+        conversation_id: str,
+        *,
+        expected: tuple[str, ...],
+        status: str,
+    ) -> bool:
+        """仅当会话处于预期状态时原子更新状态。"""
+        if not expected:
+            return False
+        placeholders = ", ".join("?" for _ in expected)
+        with self._connect() as conn:
+            cursor = conn.execute(
+                f"""
+                UPDATE conversations
+                SET status = ?, updated_at = ?
+                WHERE id = ? AND status IN ({placeholders})
+                """,
+                (status, round(time.time(), 3), conversation_id, *expected),
+            )
+        return cursor.rowcount == 1
+
     def list_conversations(
         self,
         *,

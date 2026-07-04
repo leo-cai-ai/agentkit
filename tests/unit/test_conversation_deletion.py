@@ -7,6 +7,7 @@ from agentkit.runtime.conversation_deletion import (
     ConversationDeletionService,
     ConversationNotFoundError,
 )
+from agentkit.runtime.conversation_runs import ConversationExecution
 
 
 class FakeConversationStore:
@@ -34,13 +35,57 @@ class FakeConversationStore:
             "memories": 1,
         }
 
+    def transition_conversation_status(self, conversation_id, *, expected, status):
+        if conversation_id != "c1" or self.conversation["status"] not in expected:
+            return False
+        self.conversation["status"] = status
+        return True
+
 
 class FakeAudit:
     def __init__(self, *, blocking: bool = False) -> None:
         self.blocking = blocking
+        self.cancellation_requests: list[str] = []
+        self.finished: dict[str, str] = {}
 
     def has_blocking_run(self, **kwargs) -> bool:
         return self.blocking
+
+    def request_cancellation(self, run_id: str, *, reason: str) -> bool:
+        if run_id in self.cancellation_requests:
+            return False
+        self.cancellation_requests.append(run_id)
+        return True
+
+    def record(self, run_id: str, event_type: str, payload: dict) -> None:
+        if event_type == "run_finished":
+            self.finished[run_id] = str(payload["status"])
+
+
+class FakeResolver:
+    def __init__(self, *states: ConversationExecution) -> None:
+        self.states = list(states) or [ConversationExecution(status="idle")]
+        self.calls = 0
+
+    def resolve(self, **kwargs) -> ConversationExecution:
+        index = min(self.calls, len(self.states) - 1)
+        self.calls += 1
+        return self.states[index]
+
+
+def _service(
+    *,
+    store=None,
+    audit=None,
+    resolver=None,
+    external_memory_store=None,
+) -> ConversationDeletionService:
+    return ConversationDeletionService(
+        store=store or FakeConversationStore(),
+        audit=audit or FakeAudit(),
+        resolver=resolver or FakeResolver(ConversationExecution(status="idle")),
+        external_memory_store=external_memory_store,
+    )
 
 
 class FakeExternalMemoryStore:
@@ -65,7 +110,7 @@ def test_delete_rejects_foreign_conversation() -> None:
             "status": "active",
         }
     )
-    service = ConversationDeletionService(store=store, audit=FakeAudit())
+    service = _service(store=store)
 
     with pytest.raises(ConversationNotFoundError):
         service.delete(
@@ -80,7 +125,16 @@ def test_delete_rejects_foreign_conversation() -> None:
 
 def test_delete_rejects_blocking_run() -> None:
     store = FakeConversationStore()
-    service = ConversationDeletionService(store=store, audit=FakeAudit(blocking=True))
+    service = _service(
+        store=store,
+        resolver=FakeResolver(
+            ConversationExecution(
+                status="running",
+                non_terminal_run_ids=("run-1",),
+                requires_second_delete_confirmation=True,
+            )
+        ),
+    )
 
     with pytest.raises(ConversationBusyError):
         service.delete(
@@ -99,6 +153,7 @@ def test_delete_clears_external_memory_before_conversation() -> None:
     service = ConversationDeletionService(
         store=store,
         audit=FakeAudit(),
+        resolver=FakeResolver(ConversationExecution(status="idle")),
         external_memory_store=FakeExternalMemoryStore(calls),
     )
 
@@ -121,6 +176,7 @@ def test_external_memory_failure_keeps_conversation() -> None:
     service = ConversationDeletionService(
         store=store,
         audit=FakeAudit(),
+        resolver=FakeResolver(ConversationExecution(status="idle")),
         external_memory_store=FakeExternalMemoryStore(
             calls,
             error=RuntimeError("vector store unavailable"),
@@ -137,3 +193,95 @@ def test_external_memory_failure_keeps_conversation() -> None:
 
     assert calls == ["external_memory"]
     assert store.deleted is False
+
+
+def test_plain_delete_requires_termination_for_reconciled_run() -> None:
+    store = FakeConversationStore()
+    service = _service(
+        store=store,
+        resolver=FakeResolver(
+            ConversationExecution(
+                status="failed",
+                reconciled=True,
+                requires_second_delete_confirmation=True,
+            )
+        ),
+    )
+
+    with pytest.raises(ConversationBusyError):
+        service.delete(
+            conversation_id="c1",
+            tenant_id="t1",
+            user_id="u1",
+            agent="general_agent",
+        )
+
+    assert store.deleted is False
+
+
+def test_terminate_waiting_conversation_cancels_and_deletes() -> None:
+    store = FakeConversationStore()
+    audit = FakeAudit()
+    service = _service(
+        store=store,
+        audit=audit,
+        resolver=FakeResolver(
+            ConversationExecution(
+                status="waiting_for_approval",
+                non_terminal_run_ids=("root", "child"),
+                requires_second_delete_confirmation=True,
+            ),
+            ConversationExecution(status="cancelled"),
+        ),
+    )
+
+    result = service.terminate_and_delete(
+        conversation_id="c1",
+        tenant_id="t1",
+        user_id="u1",
+        agent="general_agent",
+    )
+
+    assert result.status == "deleted"
+    assert audit.cancellation_requests == ["root", "child"]
+    assert audit.finished == {"root": "cancelled", "child": "cancelled"}
+    assert store.deleted is True
+
+
+def test_terminate_running_conversation_stays_pending_until_run_finishes() -> None:
+    store = FakeConversationStore()
+    audit = FakeAudit()
+    resolver = FakeResolver(
+        ConversationExecution(
+            status="running",
+            non_terminal_run_ids=("root",),
+            requires_second_delete_confirmation=True,
+        ),
+        ConversationExecution(
+            status="cancelling",
+            non_terminal_run_ids=("root",),
+            requires_second_delete_confirmation=True,
+        ),
+        ConversationExecution(status="cancelled"),
+    )
+    service = _service(store=store, audit=audit, resolver=resolver)
+
+    first = service.terminate_and_delete(
+        conversation_id="c1",
+        tenant_id="t1",
+        user_id="u1",
+        agent="general_agent",
+    )
+    assert first.status == "pending"
+    assert store.conversation["status"] == "deletion_pending"
+    assert store.deleted is False
+
+    second = service.terminate_and_delete(
+        conversation_id="c1",
+        tenant_id="t1",
+        user_id="u1",
+        agent="general_agent",
+    )
+    assert second.status == "deleted"
+    assert store.deleted is True
+    assert audit.cancellation_requests == ["root"]
