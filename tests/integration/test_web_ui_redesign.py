@@ -51,3 +51,33 @@ def test_authenticated_shell_uses_icon_macro_without_inline_paths(client) -> Non
     assert '<path d="M8 13V3' not in html
     assert ".ak-icon {" in components
     assert "inline-size: 1rem" in components
+
+
+def test_compact_shell_has_stable_navigation_and_mobile_controls(client) -> None:
+    login(client)
+    html = client.get("/chat").get_data(as_text=True)
+
+    assert "data-app-shell" in html
+    assert "data-primary-rail" in html
+    assert "data-mobile-navigation-toggle" in html
+    assert 'aria-controls="primary-navigation"' in html
+    assert 'id="primary-navigation"' in html
+    assert html.count('aria-current="page"') == 1
+    assert "System Online" not in html
+    assert "Audit Store" not in html
+
+
+def test_shell_css_uses_compact_rail_and_mobile_breakpoint(client) -> None:
+    css = client.get("/static/css/layout.css").get_data(as_text=True)
+
+    assert "--ak-shell-rail-width: 3.625rem" in css
+    assert "grid-template-columns: var(--ak-shell-rail-width) minmax(0, 1fr)" in css
+    assert "@media (max-width: 56.25rem)" in css
+
+
+def test_mobile_navigation_has_a_focused_controller(client) -> None:
+    js = client.get("/static/js/app.js").get_data(as_text=True)
+
+    assert "function bindPrimaryNavigation" in js
+    assert 'document.body.classList.toggle("ak-mobile-nav-open", open)' in js
+    assert 'toggle.setAttribute("aria-expanded", String(open))' in js

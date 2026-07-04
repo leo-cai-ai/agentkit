@@ -356,6 +356,30 @@ function getSelectedAgentLabel() {
   return card?.querySelector("strong")?.textContent?.trim() || agentLabel(selected);
 }
 
+function bindPrimaryNavigation() {
+  const toggle = document.querySelector("[data-mobile-navigation-toggle]");
+  const navigation = document.getElementById("primary-navigation");
+  if (!toggle || !navigation) return;
+
+  const setOpen = (open, restoreFocus = false) => {
+    document.body.classList.toggle("ak-mobile-nav-open", open);
+    toggle.setAttribute("aria-expanded", String(open));
+    if (restoreFocus) toggle.focus();
+  };
+
+  toggle.addEventListener("click", () => {
+    setOpen(toggle.getAttribute("aria-expanded") !== "true");
+  });
+  navigation.addEventListener("click", (event) => {
+    if (event.target.closest("a")) setOpen(false);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && toggle.getAttribute("aria-expanded") === "true") {
+      setOpen(false, true);
+    }
+  });
+}
+
 function agentLabel(agentName) {
   const entry = AGENT_DIRECTORY.find((agent) => agent.name === agentName);
   return entry?.label || String(agentName || "General Agent").replaceAll("_", " ");
@@ -1552,6 +1576,7 @@ function bindApprovalActions() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  bindPrimaryNavigation();
   bindAgentSelector();
   bindRangeOutputs();
   bindChatForm();

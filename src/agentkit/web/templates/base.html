@@ -16,16 +16,23 @@
   <body class="ak-app-page" data-page="{{ active }}">
     <a class="ak-skip-link" href="#main-content">Skip to main content</a>
 
-    <div class="ak-app-shell">
-      <aside class="sidebar ak-app-sidebar" aria-label="Application navigation">
-        <a class="brand ak-brand" href="{{ url_for('chat_console') }}">
-          <span class="brand-mark ak-brand-mark">EA</span>
-          <span>
+    <div class="ak-app-shell" data-app-shell>
+      <aside class="sidebar ak-app-sidebar ak-app-rail" data-primary-rail aria-label="Application navigation">
+        <a class="brand ak-brand" href="{{ url_for('chat_console') }}" aria-label="AgentKit Chat">
+          <span class="brand-mark ak-brand-mark">AK</span>
+          <span class="ak-brand-copy">
             <strong>AgentKit</strong>
             <small>企业 AI 工作台</small>
           </span>
         </a>
-        <nav class="nav ak-primary-nav" aria-label="Primary navigation">
+        <button
+          class="ak-mobile-nav-toggle"
+          type="button"
+          data-mobile-navigation-toggle
+          aria-controls="primary-navigation"
+          aria-expanded="false"
+        >{{ icon("menu-2", "打开导航") }}</button>
+        <nav id="primary-navigation" class="nav ak-primary-nav" aria-label="Primary navigation">
           <a
             class="{{ 'active' if active == 'chat' else '' }}"
             {% if active == 'chat' %}aria-current="page"{% endif %}
@@ -47,10 +54,10 @@
             href="{{ url_for('governance') }}"
           >{{ icon("shield-check") }}<span>治理</span></a>
         </nav>
-        <div class="sidebar-card ak-tenant-summary">
-          <span>当前租户</span>
+        <button class="sidebar-card ak-tenant-summary" type="button" aria-label="当前租户 {{ tenant_id }}">
+          <span aria-hidden="true">AI</span>
           <strong>{{ tenant_id }}</strong>
-        </div>
+        </button>
       </aside>
 
       <main class="page-shell ak-app-main" id="main-content" tabindex="-1">
