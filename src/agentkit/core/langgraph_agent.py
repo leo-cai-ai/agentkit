@@ -139,7 +139,10 @@ class UnifiedAgentGraph:
     def run(self, request: TaskRequest, *, thread_id: str | None = None) -> TaskResponse:
         thread = thread_id or str(uuid.uuid4())
         config = {"configurable": {"thread_id": thread}}
-        self._graph.invoke({"request": request, "thread_id": thread}, config)
+        try:
+            self._graph.invoke({"request": request, "thread_id": thread}, config)
+        except Exception as exc:  # noqa: BLE001 - 未处理异常必须收口为可审计终态
+            return self._failure_response(thread, config, exc)
         return self._response_from_state(thread, config)
 
     def resume(
@@ -198,8 +201,51 @@ class UnifiedAgentGraph:
             },
         )
         self._graph.update_state(config, {"request": resumed_request})
-        self._graph.invoke(None, config)
+        try:
+            self._graph.invoke(None, config)
+        except Exception as exc:  # noqa: BLE001 - 恢复执行也必须形成终态
+            return self._failure_response(thread_id, config, exc)
         return self._response_from_state(thread_id, config)
+
+    def _failure_response(
+        self,
+        thread_id: str,
+        config: dict[str, Any],
+        error: Exception,
+    ) -> TaskResponse:
+        snapshot = self._graph.get_state(config)
+        values = cast(dict[str, Any], snapshot.values)
+        run_id = str(values.get("run_id") or "")
+        if not run_id:
+            raise error
+        error_code = str(getattr(error, "code", "runtime_error"))
+        self._audit.record(
+            run_id,
+            "run_failed",
+            {
+                "error_code": error_code,
+                "error_type": type(error).__name__,
+                "reason": str(error),
+            },
+        )
+        self._audit.record(run_id, "run_finished", {"status": "failed"})
+        request = cast(TaskRequest, values["request"])
+        agent = cast(AgentProfile | None, values.get("agent"))
+        selection = cast(StrategySelection | None, values.get("selection"))
+        return TaskResponse(
+            status="failed",
+            output={
+                "message": "任务执行失败，请在运行追踪中查看详细原因。",
+                "error_code": error_code,
+            },
+            run_id=run_id,
+            thread_id=thread_id,
+            agent=agent.name if agent else str(request.context.get("agent") or ""),
+            strategy=selection.strategy.value if selection else "",
+            conversation_id=str(request.context.get("conversation_id") or ""),
+            governance={"error_code": error_code},
+            audit_events=self._audit.events_for(run_id),
+        )
 
     def _build_graph(self):
         graph = StateGraph(UnifiedAgentState)

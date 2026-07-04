@@ -116,7 +116,7 @@ def gateway(tmp_path):
     return _build_gateway(tmp_path)
 
 
-def _build_gateway(tmp_path):
+def _build_gateway(tmp_path, *, intent_resolver=_intent):
     agents, skills, tools = AgentRegistry(), SkillRegistry(), ToolRegistry()
     for agent_id in ("customer_service", "hr_recruiter", "xhs_growth"):
         skill_name = f"{agent_id}.echo"
@@ -147,7 +147,7 @@ def _build_gateway(tmp_path):
             global_budget=AutonomyBudget(20, 20, 10, 10, 2, 50000, 600),
         ),
         strategies=StrategyRegistry([DirectStrategy(), WorkflowStrategy()]),
-        intent_resolver=_intent,
+        intent_resolver=intent_resolver,
         conversation_context=ConversationContextService(store=store),
         conversation_persistence=ConversationPersistenceService(store=store),
         artifact_store_factory=lambda run_id: InMemoryArtifactStore(),
@@ -192,6 +192,34 @@ def test_agent_cannot_access_another_agents_capability(gateway) -> None:
     )
 
     assert response.status == "capability_denied"
+
+
+def test_unhandled_graph_error_closes_run_as_failed(tmp_path) -> None:
+    def fail_intent(
+        request: TaskRequest,
+        *,
+        agent: AgentProfile,
+        run_id: str,
+    ) -> IntentFrame:
+        del request, agent, run_id
+        raise RuntimeError("intent schema invalid")
+
+    gateway = _build_gateway(tmp_path, intent_resolver=fail_intent)
+    response = gateway.handle(
+        TaskRequest(
+            user_id="u1",
+            roles=[],
+            text="执行",
+            context={"agent": "xhs_growth"},
+        )
+    )
+
+    assert response.status == "failed"
+    assert response.output["error_code"] == "runtime_error"
+    assert gateway.audit.get_run(response.run_id)["status"] == "failed"
+    event_types = [event["type"] for event in response.audit_events]
+    assert "run_failed" in event_types
+    assert "run_finished" in event_types
 
 
 def test_side_effect_resume_keeps_run_and_does_not_repeat_planning(tmp_path) -> None:
