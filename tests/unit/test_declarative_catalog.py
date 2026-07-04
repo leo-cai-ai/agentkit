@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from agentkit.core.execution.models import (
@@ -86,6 +87,74 @@ def test_catalog_compiles_optional_review_policy(tmp_path: Path) -> None:
     assert catalog.capabilities["research.explore"].review.max_revisions == 1
     assert skills.get("research.explore").review is not None
     assert skills.get("research.explore").review.max_revisions == 1
+
+
+def test_catalog_compiles_workflow_composition(tmp_path: Path) -> None:
+    _write_catalog(
+        tmp_path,
+        capability_changes={
+            "execution": {
+                "reasoning": "direct",
+                "orchestration": "workflow",
+                "tool_policy": "read_only",
+            },
+            "composes": ["research.summarize"],
+        },
+    )
+    catalog = load_catalog(tmp_path)
+    agents, skills, tools = AgentRegistry(), SkillRegistry(), ToolRegistry()
+
+    register_catalog(
+        catalog,
+        enabled_agent_ids={"research"},
+        agents=agents,
+        skills=skills,
+        tools=tools,
+    )
+
+    assert catalog.capabilities["research.explore"].composes == (
+        "research.summarize",
+    )
+    assert skills.get("research.explore").composes == ("research.summarize",)
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"composes": ["research.explore"]}, "不能包含自身"),
+        ({"composes": ["missing.capability"]}, "未知 capability"),
+        ({"composes": ["research.summarize", "research.summarize"]}, "不能重复"),
+    ],
+)
+def test_catalog_rejects_invalid_composition(
+    tmp_path: Path,
+    changes: dict,
+    message: str,
+) -> None:
+    _write_catalog(
+        tmp_path,
+        capability_changes={
+            "execution": {
+                "reasoning": "direct",
+                "orchestration": "workflow",
+                "tool_policy": "read_only",
+            },
+            **changes,
+        },
+    )
+
+    with pytest.raises(ValueError, match=message):
+        load_catalog(tmp_path)
+
+
+def test_catalog_rejects_composes_on_non_workflow(tmp_path: Path) -> None:
+    _write_catalog(
+        tmp_path,
+        capability_changes={"composes": ["research.summarize"]},
+    )
+
+    with pytest.raises(ValueError, match="只有 workflow"):
+        load_catalog(tmp_path)
 
 
 def test_enabled_agents_are_explicit_and_validated(tmp_path: Path) -> None:
@@ -201,6 +270,21 @@ def _write_catalog(
         "keywords": ["研究"],
     }
     capability.update(capability_changes or {})
+    summary_capability = {
+        "id": "research.summarize",
+        "domain": "knowledge.research",
+        "description": "汇总研究资料",
+        "entrypoint": "scripts.handlers:summarize",
+        "execution": {
+            "reasoning": "direct",
+            "orchestration": "single",
+            "tool_policy": "none",
+        },
+        "permissions": ["source.read"],
+        "tools": [],
+        "input_schema": {"type": "object"},
+        "output_schema": {"type": "object"},
+    }
     package = {
         "package_id": "research",
         "tools": [
@@ -216,14 +300,16 @@ def _write_catalog(
             },
             mcp_tool,
         ],
-        "capabilities": [capability],
+        "capabilities": [capability, summary_capability],
     }
     (skill_dir / "skill.yaml").write_text(
         yaml.safe_dump(package, allow_unicode=True, sort_keys=False), encoding="utf-8"
     )
     (scripts_dir / "__init__.py").write_text("", encoding="utf-8")
     (scripts_dir / "handlers.py").write_text(
-        "def explore(ctx, args):\n    return {'summary': 'ok'}\n", encoding="utf-8"
+        "def explore(ctx, args):\n    return {'summary': 'ok'}\n\n"
+        "def summarize(ctx, args):\n    return {'summary': 'ok'}\n",
+        encoding="utf-8",
     )
     (scripts_dir / "tools.py").write_text(
         "def lookup(args):\n    return {'query': args['query']}\n", encoding="utf-8"

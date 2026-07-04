@@ -193,6 +193,7 @@ class _CapabilityYaml(_StrictModel):
     output_schema: dict[str, Any] = Field(default_factory=lambda: {"type": "object"})
     batch_key: str | None = None
     keywords: list[str] = Field(default_factory=list)
+    composes: list[str] = Field(default_factory=list)
 
 
 class _SkillPackageYaml(_StrictModel):
@@ -256,6 +257,7 @@ class CapabilityManifest:
     output_schema: dict[str, Any]
     batch_key: str | None
     keywords: tuple[str, ...]
+    composes: tuple[str, ...]
     source_path: Path
 
 
@@ -522,6 +524,7 @@ def _build_capability_manifest(
         output_schema=dict(raw.output_schema),
         batch_key=raw.batch_key,
         keywords=tuple(raw.keywords),
+        composes=tuple(raw.composes),
         source_path=source_path,
     )
 
@@ -551,6 +554,21 @@ def _validate_references(
             raise ValueError(
                 f"{capability.source_path}: 引用了未知工具: {', '.join(unknown)}"
             )
+        if capability.composes:
+            if capability.execution.orchestration is not OrchestrationMode.WORKFLOW:
+                raise ValueError(
+                    f"{capability.source_path}: 只有 workflow Capability 可以声明 composes"
+                )
+            if capability.capability_id in capability.composes:
+                raise ValueError(f"{capability.source_path}: composes 不能包含自身")
+            if len(capability.composes) != len(set(capability.composes)):
+                raise ValueError(f"{capability.source_path}: composes 不能重复")
+            unknown_composed = sorted(set(capability.composes) - set(capabilities))
+            if unknown_composed:
+                raise ValueError(
+                    f"{capability.source_path}: composes 引用了未知 capability: "
+                    + ", ".join(unknown_composed)
+                )
 
 
 def _validate_skill_budget(agent: AgentManifest, capability: CapabilityManifest) -> None:
@@ -667,6 +685,7 @@ def _compile_capability(root: Path, manifest: CapabilityManifest) -> SkillDefini
         handler=handler,
         batch_key=manifest.batch_key,
         keywords=list(manifest.keywords),
+        composes=manifest.composes,
     )
 
 
