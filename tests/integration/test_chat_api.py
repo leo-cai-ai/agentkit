@@ -442,7 +442,9 @@ def test_reconciled_conversation_requires_termination_endpoint(client) -> None:
     assert runtime.conversations.get_conversation(conversation_id) is None
 
 
-def test_running_conversation_termination_returns_pending(client) -> None:
+def test_running_conversation_force_delete_returns_conflict_without_mutation(
+    client,
+) -> None:
     from agentkit.web.app import get_runtime
 
     token = _login(client)
@@ -466,15 +468,13 @@ def test_running_conversation_termination_returns_pending(client) -> None:
         headers={"X-CSRF-Token": token},
     )
 
-    assert response.status_code == 202
-    assert response.get_json()["status"] == "pending"
-    assert runtime.gateway.audit.get_run(run_id)["status"] == "cancellation_requested"
-    assert runtime.conversations.get_conversation(conversation_id)["status"] == (
-        "deletion_pending"
-    )
+    assert response.status_code == 409
+    assert "正在运行" in response.get_json()["error"]
+    assert runtime.gateway.audit.get_run(run_id)["status"] == "running"
+    assert runtime.conversations.get_conversation(conversation_id)["status"] == "active"
 
 
-def test_conversation_list_finalizes_pending_deletion_after_run_stops(client) -> None:
+def test_waiting_conversation_force_delete_cancels_parent_and_child(client) -> None:
     from agentkit.web.app import get_runtime
 
     token = _login(client)
@@ -485,58 +485,42 @@ def test_conversation_list_finalizes_pending_deletion_after_run_stops(client) ->
         agent="general_agent",
         user_id="console-admin",
     )
-    run_id = runtime.gateway.audit.start_run(
+    parent_id = runtime.gateway.audit.start_run(
         tenant_id=tenant_id,
         user_id="console-admin",
-        text="长任务",
+        text="等待审批",
         agent_id="general_agent",
         conversation_id=conversation_id,
     )
-    pending = client.post(
+    child_id = runtime.gateway.audit.start_run(
+        tenant_id=tenant_id,
+        user_id="console-admin",
+        text="待审批子任务",
+        agent_id="xhs_growth",
+        parent_run_id=parent_id,
+        conversation_id=conversation_id,
+    )
+    runtime.gateway.audit.record(
+        parent_id,
+        "run_paused",
+        {"status": "waiting_for_approval", "child_run_id": child_id},
+    )
+    runtime.gateway.audit.record(
+        child_id,
+        "run_paused",
+        {"status": "waiting_for_approval"},
+    )
+
+    response = client.post(
         f"/api/conversations/{conversation_id}/terminate-and-delete",
         headers={"X-CSRF-Token": token},
     )
-    assert pending.status_code == 202
-    runtime.gateway.audit.record(run_id, "run_finished", {"status": "cancelled"})
-
-    response = client.get("/api/conversations")
-    rows = response.get_json()["conversations"]
 
     assert response.status_code == 200
-    assert all(row["id"] != conversation_id for row in rows)
+    assert response.get_json()["status"] == "deleted"
+    assert runtime.gateway.audit.get_run(parent_id)["status"] == "cancelled"
+    assert runtime.gateway.audit.get_run(child_id)["status"] == "cancelled"
     assert runtime.conversations.get_conversation(conversation_id) is None
-
-
-def test_pending_deletion_conversation_rejects_new_chat_turn(client) -> None:
-    from agentkit.web.app import get_runtime
-
-    token = _login(client)
-    runtime = get_runtime()
-    tenant_id = str(runtime.tenant_config["tenant_id"])
-    conversation_id = runtime.conversations.create_conversation(
-        tenant_id=tenant_id,
-        agent="general_agent",
-        user_id="console-admin",
-    )
-    assert runtime.conversations.transition_conversation_status(
-        conversation_id,
-        expected=("active",),
-        status="deletion_pending",
-    )
-
-    response = client.post(
-        "/api/chat",
-        json={"message": "继续执行", "conversation_id": conversation_id},
-        headers={"X-CSRF-Token": token},
-    )
-
-    assert response.status_code == 400
-    assert "正在删除" in response.get_json()["error"]
-    assert runtime.gateway.audit.runs_for_conversation(
-        conversation_id=conversation_id,
-        tenant_id=tenant_id,
-        user_id="console-admin",
-    ) == []
 
 
 def test_explicit_mention_applies_to_one_turn_and_trace_keeps_parent_child(client) -> None:

@@ -27,7 +27,6 @@ let chatBusy = false;
 let pendingDeleteConversationId = null;
 let pendingDeleteExecution = null;
 let currentConversationExecution = null;
-let deletionPollTimer = null;
 const HISTORY_COLLAPSED_KEY = "agentkit:chat-history-collapsed";
 const chatSessionGuard = window.AgentKitChatSession.createChatSessionGuard();
 const TRACE_ATTENTION_STATES = new Set(["waiting_approval", "failed", "blocked"]);
@@ -570,8 +569,6 @@ function renderConversationExecution(execution) {
     failed: execution.reconciled ? "历史任务状态已修复" : "任务执行失败",
     waiting_for_approval: "任务等待人工审批",
     running: "任务正在执行",
-    cancelling: "正在结束任务",
-    deletion_pending: "正在结束任务",
     cancelled: "任务已取消",
   };
   if (title) title.textContent = titles[status] || "任务状态已更新";
@@ -580,7 +577,6 @@ function renderConversationExecution(execution) {
     retry.hidden = !execution?.retryable;
     retry.disabled = chatBusy;
   }
-  setChatBusy(["cancelling", "deletion_pending"].includes(status));
 }
 
 function emptyConversationNotice(execution) {
@@ -588,7 +584,6 @@ function emptyConversationNotice(execution) {
   if (status === "failed") return "本次任务未保存对话消息，可重新执行或查看运行追踪。";
   if (status === "waiting_for_approval") return "任务正在等待人工审批。";
   if (status === "running") return "任务仍在执行，请稍候。";
-  if (["cancelling", "deletion_pending"].includes(status)) return "正在结束任务，完成后会自动删除会话。";
   if (status === "cancelled") return "任务已取消，可重新执行或删除会话。";
   return "该会话暂无消息。";
 }
@@ -752,11 +747,11 @@ function setDeleteDialogStage(stage) {
   const description = dialog.querySelector("[data-conversation-delete-description]");
   const confirm = dialog.querySelector("[data-conversation-delete-confirm]");
   if (stage === 2) {
-    if (heading) heading.textContent = "结束任务并永久删除？";
+    if (heading) heading.textContent = "强制删除会话？";
     if (description) {
-      description.textContent = "系统会先安全结束当前任务，再永久删除会话数据。已经发生的外部 Tool 副作用无法回滚；企业审计和运行追踪仍会保留。";
+      description.textContent = "该任务已失败或正在等待审批。继续操作会永久删除会话消息、摘要和相关长期记忆；企业审计和运行追踪仍会保留。";
     }
-    if (confirm) confirm.textContent = "结束任务并永久删除";
+    if (confirm) confirm.textContent = "强制删除会话";
     return;
   }
   if (heading) heading.textContent = "删除会话？";
@@ -789,11 +784,20 @@ async function openConversationDeleteDialog(conversationId) {
     if (currentConversationId === conversationId) {
       currentConversationExecution = pendingDeleteExecution;
     }
+    if (pendingDeleteExecution.status === "running") {
+      dialog.querySelector("[data-conversation-delete-error]").textContent =
+        "任务正在运行，请等待完成后再删除";
+    }
   } catch (error) {
     dialog.querySelector("[data-conversation-delete-error]").textContent =
       error.message || "无法读取会话状态，请重试";
   } finally {
     setConversationDeleteBusy(false);
+    if (pendingDeleteExecution?.status === "running") {
+      dialog
+        .querySelector("[data-conversation-delete-confirm]")
+        ?.setAttribute("disabled", "");
+    }
   }
 }
 
@@ -856,48 +860,6 @@ async function postTerminateAndDelete(conversationId) {
   );
 }
 
-function scheduleDeletionPoll(conversationId) {
-  if (deletionPollTimer) window.clearTimeout(deletionPollTimer);
-  deletionPollTimer = window.setTimeout(
-    () => pollConversationDeletion(conversationId),
-    1500,
-  );
-}
-
-async function pollConversationDeletion(conversationId) {
-  try {
-    const response = await postTerminateAndDelete(conversationId);
-    const body = await response.json().catch(() => ({}));
-    if (response.status === 404 || (response.ok && body.status === "deleted")) {
-      deletionPollTimer = null;
-      applyDeletedConversation(conversationId);
-      return;
-    }
-    if (response.status === 202) {
-      if (currentConversationId === conversationId) {
-        renderConversationExecution({
-          status: "deletion_pending",
-          reason: "正在安全结束任务，完成后会自动删除会话。",
-          retryable: false,
-        });
-      }
-      scheduleDeletionPoll(conversationId);
-      return;
-    }
-    throw new Error(body.error || "结束任务失败，请重试");
-  } catch (error) {
-    deletionPollTimer = null;
-    if (currentConversationId === conversationId) {
-      renderConversationExecution({
-        status: "failed",
-        reason: error.message || "结束任务失败，请重试",
-        retryable: false,
-        requires_second_delete_confirmation: true,
-      });
-    }
-  }
-}
-
 async function terminateAndDeleteConversation(conversationId) {
   const dialog = document.querySelector("[data-conversation-delete-dialog]");
   const error = dialog?.querySelector("[data-conversation-delete-error]");
@@ -911,22 +873,9 @@ async function terminateAndDeleteConversation(conversationId) {
       closeConversationDeleteDialog();
       return;
     }
-    if (response.status === 202) {
-      closeConversationDeleteDialog();
-      if (currentConversationId === conversationId) {
-        renderConversationExecution({
-          status: "deletion_pending",
-          reason: "正在安全结束任务，完成后会自动删除会话。",
-          retryable: false,
-        });
-        showConversationNotice("正在结束任务，完成后会自动删除会话。", "loading");
-      }
-      scheduleDeletionPoll(conversationId);
-      return;
-    }
-    if (error) error.textContent = body.error || "结束任务失败，请重试";
+    if (error) error.textContent = body.error || "强制删除失败，请重试";
   } catch {
-    if (error) error.textContent = "结束任务失败，请重试";
+    if (error) error.textContent = "强制删除失败，请重试";
   } finally {
     setConversationDeleteBusy(false);
   }
@@ -1936,6 +1885,11 @@ function bindConversationHistory() {
   deleteCancel?.addEventListener("click", closeConversationDeleteDialog);
   deleteConfirm?.addEventListener("click", async () => {
     if (!pendingDeleteConversationId || !pendingDeleteExecution) return;
+    if (pendingDeleteExecution.status === "running") {
+      deleteDialog.querySelector("[data-conversation-delete-error]").textContent =
+        "任务正在运行，请等待完成后再删除";
+      return;
+    }
     const requiresSecond = Boolean(
       pendingDeleteExecution.requires_second_delete_confirmation,
     );

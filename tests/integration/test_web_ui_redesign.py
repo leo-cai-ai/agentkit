@@ -157,8 +157,13 @@ def test_chat_has_conversation_recovery_and_two_stage_delete_controls(client) ->
     assert "/retry/stream" in js
     assert "/terminate-and-delete" in js
     assert "requires_second_delete_confirmation" in js
-    assert "结束任务并永久删除" in js
-    assert "正在结束任务" in js
+    assert "任务正在运行，请等待完成后再删除" in js
+    assert "强制删除会话" in js
+    assert "pollConversationDeletion" not in js
+    assert "deletion_pending" not in js
+    assert "结束任务并永久删除" not in js
+    assert 'data-status="cancelling"' not in css
+    assert 'data-status="deletion_pending"' not in css
     assert "No messages were saved for this conversation" not in js
     assert ".ak-conversation-execution" in css
     assert ".ak-conversation-execution-actions" in css

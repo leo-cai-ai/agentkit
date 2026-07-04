@@ -216,12 +216,6 @@
   background: var(--ak-sys-color-status-danger-bg);
 }
 
-.ak-conversation-execution[data-status="cancelling"],
-.ak-conversation-execution[data-status="deletion_pending"] {
-  border-inline-start-color: var(--ak-sys-color-status-warning-fg);
-  background: var(--ak-sys-color-status-warning-bg);
-}
-
 .ak-conversation-execution h3 {
   margin: var(--ak-sys-space-1) 0;
   font-size: 1rem;

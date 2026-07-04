@@ -662,27 +662,7 @@ def api_conversations():
         agent="general_agent",
         user_id=user_id,
     )
-    visible: list[dict[str, Any]] = []
-    for row in rows:
-        if row.get("status") != "deletion_pending":
-            visible.append(row)
-            continue
-        try:
-            deleted = runtime.conversation_deletion.finalize_pending(
-                conversation_id=str(row["id"]),
-                tenant_id=tenant_id,
-                user_id=user_id,
-                agent="general_agent",
-            )
-        except Exception:  # noqa: BLE001 - 列表读取不能因后台清理失败而整体不可用
-            app.logger.exception(
-                "pending conversation deletion finalization failed",
-                extra={"conversation_id": row.get("id")},
-            )
-            deleted = False
-        if not deleted:
-            visible.append(row)
-    return jsonify({"conversations": visible})
+    return jsonify({"conversations": rows})
 
 
 @app.post("/api/conversations")
@@ -743,22 +723,18 @@ def api_terminate_and_delete_conversation(conversation_id: str):
     except ConversationNotFoundError:
         return jsonify({"error": "会话不存在"}), 404
     except ConversationBusyError:
-        return jsonify({"error": "会话状态已变化，请刷新后重试"}), 409
+        return jsonify({"error": "任务正在运行，请等待完成后再删除"}), 409
     except Exception:  # noqa: BLE001 - API 边界隐藏存储与取消内部细节
         app.logger.exception(
             "conversation termination failed",
             extra={"conversation_id": conversation_id},
         )
         return jsonify({"error": "结束任务失败，请稍后重试"}), 503
-    status_code = 200 if result.status == "deleted" else 202
-    return (
-        jsonify(
-            {
-                "status": result.status,
-                "conversation_id": result.conversation_id,
-            }
-        ),
-        status_code,
+    return jsonify(
+        {
+            "status": result.status,
+            "conversation_id": result.conversation_id,
+        }
     )
 
 
@@ -811,8 +787,6 @@ def api_conversation_messages(conversation_id: str):
         tenant_id=str(runtime.tenant_config["tenant_id"]),
         user_id=user_id,
     )
-    if conversation.get("status") == "deletion_pending":
-        execution = replace(execution, status="deletion_pending", retryable=False)
     return jsonify(
         {
             "messages": _display_conversation_messages(rows),
