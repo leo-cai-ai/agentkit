@@ -1431,7 +1431,7 @@ button.conversation-new {
 
 .ak-chat-composer textarea,
 .ak-chat-composer textarea:focus {
-  min-block-size: var(--ak-sys-size-control-touch);
+  min-block-size: 6rem;
   max-block-size: min(10rem, 25vh);
   max-block-size: min(10rem, 25dvh);
   padding: var(--ak-sys-space-2);

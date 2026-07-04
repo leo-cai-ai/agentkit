@@ -85,6 +85,43 @@ def test_chat_api_always_returns_unified_gateway_contract(client) -> None:
     assert data["conversation_id"]
 
 
+def test_chat_stream_captures_request_identity_before_worker_thread(client) -> None:
+    token = _login(client)
+    response = client.post(
+        "/api/chat/stream",
+        json={"message": "你好"},
+        headers={"X-CSRF-Token": token},
+        buffered=True,
+    )
+
+    body = response.get_data(as_text=True)
+    assert response.status_code == 200
+    assert "Working outside of application context" not in body
+    assert "event: error" not in body
+    assert "event: final" in body
+    assert '"interaction_mode": "unified"' in body
+
+
+def test_task_stream_captures_request_identity_before_worker_thread(client) -> None:
+    token = _login(client)
+    response = client.post(
+        "/api/tasks/stream",
+        json={
+            "agent": "customer_service",
+            "text": "请帮助我",
+            "skill": "customer.answer",
+        },
+        headers={"X-CSRF-Token": token},
+        buffered=True,
+    )
+
+    body = response.get_data(as_text=True)
+    assert response.status_code == 200
+    assert "Working outside of application context" not in body
+    assert "event: error" not in body
+    assert "event: final" in body
+
+
 def test_chat_ignores_legacy_agent_selection_and_uses_general_entry(client) -> None:
     token = _login(client)
     response = client.post(

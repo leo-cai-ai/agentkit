@@ -28,8 +28,14 @@ from agentkit.core.identity import (
     RUNTIME_ADMIN,
     TASK_APPROVE,
     TASK_RUN,
+    Principal,
 )
-from agentkit.runtime.bootstrap import AGENTKIT_ROOT, build_runtime, resolve_tenant_id
+from agentkit.runtime.bootstrap import (
+    AGENTKIT_ROOT,
+    AgentKitRuntime,
+    build_runtime,
+    resolve_tenant_id,
+)
 from agentkit.web.identity import current_principal, require_permission
 from agentkit.web.security import configure_security
 from agentkit.web.streaming import stream_response
@@ -334,8 +340,13 @@ def governance():
     )
 
 
-def _effective_user_id(payload: dict[str, Any], ui: dict[str, Any]) -> str:
-    principal = current_principal()
+def _effective_user_id(
+    payload: dict[str, Any],
+    ui: dict[str, Any],
+    *,
+    principal: Principal | None = None,
+) -> str:
+    principal = principal if principal is not None else current_principal()
     return principal.subject if principal.is_authenticated else str(
         payload.get("user_id") or ui["default_user_id"]
     )
@@ -345,9 +356,10 @@ def _trusted_business_roles(
     *,
     tenant_config: dict[str, Any],
     ui: dict[str, Any],
+    principal: Principal | None = None,
 ) -> tuple[list[str], str]:
     """业务角色只来自可信身份或租户映射，不接受请求体提权。"""
-    principal = current_principal()
+    principal = principal if principal is not None else current_principal()
     permission_map = tenant_config.get("role_permissions", {})
     known = set(permission_map) if isinstance(permission_map, dict) else set()
     claimed = [
@@ -386,8 +398,14 @@ def _extract_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
-def _task_request(payload: dict[str, Any]) -> TaskRequest:
-    runtime = get_runtime()
+def _task_request(
+    payload: dict[str, Any],
+    *,
+    runtime: AgentKitRuntime | None = None,
+    principal: Principal | None = None,
+) -> TaskRequest:
+    runtime = runtime if runtime is not None else get_runtime()
+    principal = principal if principal is not None else current_principal()
     ui = get_ui_config(runtime.tenant_config)
     values = _extract_payload(payload)
     agent_id = str(values.get("agent") or ui.get("default_agent") or "")
@@ -397,6 +415,7 @@ def _task_request(payload: dict[str, Any]) -> TaskRequest:
     roles, role_source = _trusted_business_roles(
         tenant_config=runtime.tenant_config,
         ui=ui,
+        principal=principal,
     )
     reserved = {
         "agent",
@@ -413,21 +432,26 @@ def _task_request(payload: dict[str, Any]) -> TaskRequest:
     context.update(
         {
             "agent": agent_id,
-            "principal": current_principal().to_public_dict(),
+            "principal": principal.to_public_dict(),
             "business_roles_source": role_source,
         }
     )
     if "roles" in values:
         context["ignored_payload_roles"] = _as_list(values["roles"])
     return TaskRequest(
-        user_id=_effective_user_id(values, ui),
+        user_id=_effective_user_id(values, ui, principal=principal),
         roles=roles,
         text=text,
         context=context,
     )
 
 
-def _chat_task_request(payload: dict[str, Any]) -> TaskRequest:
+def _chat_task_request(
+    payload: dict[str, Any],
+    *,
+    runtime: AgentKitRuntime | None = None,
+    principal: Principal | None = None,
+) -> TaskRequest:
     """聊天入口始终以 General Agent 为会话所有者。"""
     normalized = dict(payload)
     nested = normalized.get("context")
@@ -436,7 +460,7 @@ def _chat_task_request(payload: dict[str, Any]) -> TaskRequest:
         "agent": "general_agent",
     }
     normalized["agent"] = "general_agent"
-    task = _task_request(normalized)
+    task = _task_request(normalized, runtime=runtime, principal=principal)
     return replace(task, context={**task.context, "agent": "general_agent"})
 
 
@@ -467,38 +491,61 @@ def _resume_payload(payload: dict[str, Any]) -> tuple[str, list[str], list[str]]
     return thread_id, approved, rejected
 
 
-def _run_chat(payload: dict[str, Any]) -> dict[str, Any]:
-    runtime = get_runtime()
+def _run_chat(
+    payload: dict[str, Any],
+    *,
+    runtime: AgentKitRuntime | None = None,
+    principal: Principal | None = None,
+) -> dict[str, Any]:
+    runtime = runtime if runtime is not None else get_runtime()
+    principal = principal if principal is not None else current_principal()
     if runtime.chat_service is None:
         raise RuntimeError("多 Agent 聊天服务未初始化")
     approval = _approval(payload)
     if approval is not None:
         thread_id, approved, rejected = approval
-        task = _chat_task_request(payload)
+        task = _chat_task_request(payload, runtime=runtime, principal=principal)
         response = runtime.chat_service.resume(
             thread_id,
             user_id=task.user_id,
             roles=task.roles,
             approved_skills=approved,
             rejected_skills=rejected,
-            decision_context={"principal": current_principal().to_public_dict()},
+            decision_context={"principal": principal.to_public_dict()},
         )
     else:
-        response = runtime.chat_service.handle(_chat_task_request(payload))
+        response = runtime.chat_service.handle(
+            _chat_task_request(payload, runtime=runtime, principal=principal)
+        )
     return _web_response(response)
 
 
-def _run_task(payload: dict[str, Any]) -> dict[str, Any]:
-    return _web_response(get_runtime().gateway.handle(_task_request(payload)))
+def _run_task(
+    payload: dict[str, Any],
+    *,
+    runtime: AgentKitRuntime | None = None,
+    principal: Principal | None = None,
+) -> dict[str, Any]:
+    runtime = runtime if runtime is not None else get_runtime()
+    principal = principal if principal is not None else current_principal()
+    task = _task_request(payload, runtime=runtime, principal=principal)
+    return _web_response(runtime.gateway.handle(task))
 
 
-def _resume(payload: dict[str, Any]) -> dict[str, Any]:
+def _resume(
+    payload: dict[str, Any],
+    *,
+    runtime: AgentKitRuntime | None = None,
+    principal: Principal | None = None,
+) -> dict[str, Any]:
+    runtime = runtime if runtime is not None else get_runtime()
+    principal = principal if principal is not None else current_principal()
     thread_id, approved, rejected = _resume_payload(payload)
-    response = get_runtime().gateway.resume(
+    response = runtime.gateway.resume(
         thread_id,
         approved_skills=approved,
         rejected_skills=rejected,
-        decision_context={"principal": current_principal().to_public_dict()},
+        decision_context={"principal": principal.to_public_dict()},
     )
     return _web_response(response)
 
@@ -559,7 +606,9 @@ def api_chat():
 @require_permission(CHAT_USE)
 def api_chat_stream():
     payload = request.get_json(silent=True) or {}
-    return _sse(lambda: _run_chat(payload))
+    runtime = get_runtime()
+    principal = current_principal()
+    return _sse(lambda: _run_chat(payload, runtime=runtime, principal=principal))
 
 
 @app.post("/api/tasks")
@@ -575,7 +624,9 @@ def api_tasks():
 @require_permission(TASK_RUN)
 def api_tasks_stream():
     payload = request.get_json(silent=True) or {}
-    return _sse(lambda: _run_task(payload))
+    runtime = get_runtime()
+    principal = current_principal()
+    return _sse(lambda: _run_task(payload, runtime=runtime, principal=principal))
 
 
 @app.post("/api/tasks/resume")
@@ -593,7 +644,9 @@ def api_tasks_resume():
 @require_permission(TASK_APPROVE)
 def api_tasks_resume_stream():
     payload = request.get_json(silent=True) or {}
-    return _sse(lambda: _resume(payload))
+    runtime = get_runtime()
+    principal = current_principal()
+    return _sse(lambda: _resume(payload, runtime=runtime, principal=principal))
 
 
 @app.get("/api/conversations")

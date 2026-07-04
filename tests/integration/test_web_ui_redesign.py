@@ -148,6 +148,19 @@ def test_chat_session_guard_loads_before_app_and_exposes_request_lifecycle(clien
     assert "cancel()" in js
 
 
+def test_chat_composer_starts_multiline_and_keeps_shift_enter_newlines(client) -> None:
+    login(client)
+    html = client.get("/chat").get_data(as_text=True)
+    css = client.get("/static/css/pages.css").get_data(as_text=True)
+    js = client.get("/static/js/app.js").get_data(as_text=True)
+
+    assert 'data-chat-input' in html
+    assert 'rows="3"' in html
+    assert "min-block-size: 6rem;" in css
+    assert 'if (event.key !== "Enter" || event.shiftKey) return;' in js
+    assert "chatForm.requestSubmit(submit)" in js
+
+
 def test_chat_trace_drawer_is_present_but_closed_by_default(client) -> None:
     login(client)
     html = client.get("/chat").get_data(as_text=True)
