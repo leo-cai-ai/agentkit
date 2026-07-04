@@ -314,6 +314,52 @@ def assess_research_quality(
         name: sum(int(case.get(name, 0)) > 0 for case in top_cases)
         for name in ("likes", "saves", "comments")
     }
+    media_status_counts = {"completed": 0, "skipped": 0, "failed": 0}
+    media_evidence: list[dict[str, Any]] = []
+    cases_with_media_evidence: set[str] = set()
+    for case in top_cases:
+        understanding = _normalize_media_understanding(case.get("media_understanding"))
+        status = str(understanding["status"])
+        media_status_counts[status] += 1
+        valid_evidence = [
+            item
+            for item in understanding["evidence"]
+            if isinstance(item, dict) and str(item.get("text") or "").strip()
+        ]
+        note_id = str(case.get("note_id") or "")
+        if note_id and valid_evidence:
+            cases_with_media_evidence.add(note_id)
+        for raw_evidence in valid_evidence:
+            if len(media_evidence) >= 20:
+                break
+            if not isinstance(raw_evidence, dict):
+                continue
+            text = str(raw_evidence.get("text") or "").strip()
+            media_evidence.append(
+                {
+                    "note_id": note_id,
+                    "asset_id": str(raw_evidence.get("asset_id") or ""),
+                    "text": text[:500],
+                    "provider": str(raw_evidence.get("provider") or ""),
+                    "model": str(raw_evidence.get("model") or ""),
+                    "confidence": raw_evidence.get("confidence"),
+                }
+            )
+    grounded_case_count = sum(
+        bool(case.get("detail_enriched"))
+        or str(case.get("note_id") or "") in cases_with_media_evidence
+        for case in top_cases
+    )
+    detail_attempted_count = sum(bool(case.get("detail_attempted")) for case in top_cases)
+    detail_failed_count = sum(
+        bool(case.get("detail_attempted")) and not bool(case.get("detail_enriched"))
+        for case in top_cases
+    )
+    detail_skipped_count = sum(
+        not bool(case.get("detail_attempted"))
+        and bool(str(case.get("detail_skipped_reason") or "").strip())
+        for case in top_cases
+    )
     warnings: list[str] = []
     is_zh = language == "zh-CN"
     detail_errors = sorted(
@@ -382,7 +428,7 @@ def assess_research_quality(
 
     if observed < requested_top_n:
         status = "insufficient"
-    elif detail_count < observed:
+    elif grounded_case_count < observed:
         status = "limited"
     else:
         status = "sufficient_for_draft"
@@ -391,9 +437,16 @@ def assess_research_quality(
         "requested_count": requested_top_n,
         "observed_count": observed,
         "detail_count": detail_count,
+        "detail_attempted_count": detail_attempted_count,
+        "detail_failed_count": detail_failed_count,
+        "detail_skipped_count": detail_skipped_count,
+        "grounded_case_count": grounded_case_count,
         "dated_count": dated_count,
         "metric_coverage": metric_coverage,
         "detail_errors": detail_errors,
+        "media_status_counts": media_status_counts,
+        "media_evidence_count": len(media_evidence),
+        "media_evidence": media_evidence,
         "official_daily_rank": False,
         "recurring_schedule_configured": False,
         "warnings": warnings,
@@ -1049,6 +1102,19 @@ def _maybe_llm_article(
                 "saves": case.get("saves", 0),
                 "comments": case.get("comments", 0),
                 "excerpt": str(case.get("content") or case.get("insight") or "")[:800],
+                "media_evidence": [
+                    {
+                        "asset_id": str(item.get("asset_id") or ""),
+                        "text": str(item.get("text") or "")[:500],
+                        "provider": str(item.get("provider") or ""),
+                        "model": str(item.get("model") or ""),
+                        "confidence": item.get("confidence"),
+                    }
+                    for item in _normalize_media_understanding(
+                        case.get("media_understanding")
+                    )["evidence"][:10]
+                    if isinstance(item, dict) and str(item.get("text") or "").strip()
+                ],
                 "score": _case_engagement_score(case),
             }
         )
@@ -1131,6 +1197,40 @@ def compact_cases(cases: list[dict]) -> list[dict]:
             "captured_at": case.get("captured_at", ""),
             "detail_enriched": bool(case.get("detail_enriched")),
             "detail_error": case.get("detail_error", ""),
+            "detail_attempted": bool(case.get("detail_attempted")),
+            "detail_skipped_reason": case.get("detail_skipped_reason", ""),
+            "media_assets": [
+                dict(item)
+                for item in case.get("media_assets", [])
+                if isinstance(item, dict)
+            ],
+            "media_understanding": _normalize_media_understanding(
+                case.get("media_understanding")
+            ),
         }
         for case in cases
     ]
+
+
+def _normalize_media_understanding(value: Any) -> dict[str, Any]:
+    """规范化 Provider 结果，并为 Mock 或旧数据补充显式跳过状态。"""
+
+    if not isinstance(value, dict):
+        return {
+            "status": "skipped",
+            "provider": "none",
+            "evidence": [],
+            "reason": "not_configured",
+            "usage": {},
+        }
+    status = str(value.get("status") or "failed")
+    if status not in {"completed", "skipped", "failed"}:
+        status = "failed"
+    evidence = value.get("evidence")
+    return {
+        "status": status,
+        "provider": str(value.get("provider") or "unknown"),
+        "evidence": [dict(item) for item in evidence or [] if isinstance(item, dict)],
+        "reason": str(value.get("reason") or ""),
+        "usage": dict(value.get("usage") or {}),
+    }

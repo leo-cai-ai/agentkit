@@ -26,6 +26,7 @@ _maybe_llm_article = _HANDLERS._maybe_llm_article
 _parse_generated_article = _HANDLERS._parse_generated_article
 assess_research_quality = _HANDLERS.assess_research_quality
 compare_cases = _HANDLERS.compare_cases
+compact_cases = _HANDLERS.compact_cases
 extract_topic = _HANDLERS.extract_topic
 review_copy = _HANDLERS.review_copy
 topic_source_for = _HANDLERS.topic_source_for
@@ -213,6 +214,132 @@ def test_research_quality_reports_default_topic_and_card_only_evidence():
     assert quality["recurring_schedule_configured"] is False
     assert any("tenant default" in item for item in quality["warnings"])
     assert any("search-card" in item for item in quality["warnings"])
+
+
+def test_compact_cases_defaults_media_understanding_to_none_skipped():
+    compacted = compact_cases([{"note_id": "n1", "title": "case"}])
+
+    assert compacted[0]["media_assets"] == []
+    assert compacted[0]["media_understanding"] == {
+        "status": "skipped",
+        "provider": "none",
+        "evidence": [],
+        "reason": "not_configured",
+        "usage": {},
+    }
+
+
+def test_research_quality_summarizes_media_evidence_without_warning_for_none():
+    quality = assess_research_quality(
+        compact_cases(
+            [
+                {
+                    "note_id": "n1",
+                    "title": "case",
+                    "detail_enriched": True,
+                    "published_at": "2026-07-04",
+                    "media_understanding": {
+                        "status": "completed",
+                        "provider": "recording",
+                        "reason": "",
+                        "usage": {"images": 1},
+                        "evidence": [
+                            {
+                                "asset_id": "n1:cover:0",
+                                "text": "图片显示：工具清单",
+                                "provider": "recording",
+                                "model": "fake-vision",
+                                "confidence": 0.9,
+                                "metadata": {},
+                            }
+                        ],
+                    },
+                },
+                {"note_id": "n2", "title": "text only", "detail_enriched": True},
+            ]
+        ),
+        requested_top_n=2,
+        topic_source="request",
+        language="zh-CN",
+    )
+
+    assert quality["media_status_counts"] == {
+        "completed": 1,
+        "skipped": 1,
+        "failed": 0,
+    }
+    assert quality["media_evidence_count"] == 1
+    assert quality["media_evidence"][0]["text"] == "图片显示：工具清单"
+    assert not any("none" in warning.lower() for warning in quality["warnings"])
+
+
+def test_media_evidence_reaches_generation_and_review_contexts():
+    spy = SpyContextInvoker(
+        "TITLE: AI工具观察\nBODY: 基于可见证据整理的正文。" * 10,
+        {"status": "approved", "reason": "证据可核查", "findings": []},
+    )
+    ctx, _artifacts = _campaign_context(spy, publishing_mode="direct")
+    top_cases = compact_cases(
+        [
+            {
+                "note_id": "n1",
+                "title": "AI 工具清单",
+                "detail_enriched": True,
+                "published_at": "2026-07-04",
+                "media_understanding": {
+                    "status": "completed",
+                    "provider": "recording",
+                    "reason": "",
+                    "usage": {"images": 1},
+                    "evidence": [
+                        {
+                            "asset_id": "n1:cover:0",
+                            "text": "图片显示：工具清单",
+                            "provider": "recording",
+                            "model": "fake-vision",
+                            "confidence": 0.9,
+                            "metadata": {},
+                        }
+                    ],
+                },
+            }
+        ]
+    )
+    quality = assess_research_quality(
+        top_cases,
+        requested_top_n=1,
+        topic_source="request",
+        language="zh-CN",
+    )
+    article = _maybe_llm_article(
+        ctx=ctx,
+        article={
+            "title": "fallback",
+            "body": "fallback",
+            "source_case_ids": ["n1"],
+        },
+        topic="AI 工具",
+        goal={"days": 30, "target_followers": 10000},
+        cadence="daily",
+        comparison=[],
+        top_cases=top_cases,
+        language="zh-CN",
+        research_quality=quality,
+    )
+    review_copy(
+        ctx,
+        {
+            "article": article,
+            "top_cases": top_cases,
+            "research_quality": quality,
+        },
+    )
+
+    article_evidence = spy.requests[0].values["skill.article_evidence"]
+    assert article_evidence[0]["media_evidence"][0]["text"] == "图片显示：工具清单"
+    review_quality = spy.requests[1].values["skill.research_quality"]
+    assert review_quality["media_evidence_count"] == 1
+    assert review_quality["media_evidence"][0]["asset_id"] == "n1:cover:0"
 
 
 def test_compare_cases_uses_observed_metrics_without_inventing_saves():
