@@ -32,7 +32,12 @@ def _agent() -> AgentProfile:
         name="customer_service",
         domain="support",
         description="客服",
-        allowed_skills=["order.lookup", "logistics.diagnose", "refund.apply"],
+        allowed_skills=[
+            "order.lookup",
+            "logistics.diagnose",
+            "refund.apply",
+            "support.resolve",
+        ],
         execution_policy=AgentExecutionPolicy(
             default_strategy=ExecutionStrategyName.DIRECT,
             allowed_strategies=(
@@ -65,6 +70,7 @@ def _skill(
     tool_policy: ToolPolicy = ToolPolicy.READ_ONLY,
     keywords: tuple[str, ...] = (),
     batch_key: str | None = None,
+    composes: tuple[str, ...] = (),
 ) -> SkillDefinition:
     return SkillDefinition(
         name=name,
@@ -79,6 +85,7 @@ def _skill(
         handler=lambda ctx, args: {},
         batch_key=batch_key,
         keywords=list(keywords),
+        composes=composes,
     )
 
 
@@ -92,6 +99,13 @@ def _router(context_invoker=None) -> IntentRouter:
             "logistics.diagnose",
             reasoning=ReasoningStrategy.REACT,
             keywords=("物流", "没到"),
+        )
+    )
+    skills.register(
+        _skill(
+            "support.resolve",
+            orchestration=OrchestrationMode.WORKFLOW,
+            composes=("order.lookup", "logistics.diagnose", "refund.apply"),
         )
     )
     skills.register(
@@ -162,6 +176,80 @@ def test_router_allows_multiple_explicit_bound_skills() -> None:
     assert result.primary_skill is None
     assert result.candidate_skills == ("order.lookup", "logistics.diagnose")
     assert result.complexity.has_dependencies is True
+
+
+def test_router_collapses_dependent_atomic_skills_to_covering_workflow() -> None:
+    invoker = SpyContextInvoker(
+        {
+            "primary_skill": None,
+            "candidate_skills": ["order.lookup", "logistics.diagnose"],
+            "reason": "先查订单再诊断物流",
+            "confidence": "high",
+            "has_dependencies": True,
+        }
+    )
+
+    result = _router(invoker).resolve(
+        TaskRequest(
+            user_id="u1",
+            roles=[],
+            text="请完整处理这个问题",
+            context={"agent": "customer_service"},
+        ),
+        intent=_intent(),
+        run_id="r-composite",
+    )
+
+    assert result.response_mode == "skill"
+    assert result.primary_skill == "support.resolve"
+    assert result.candidate_skills == ("support.resolve",)
+    assert "组合 Workflow" in result.reason
+
+
+def test_explicit_multi_skill_request_is_not_collapsed() -> None:
+    result = _router().resolve(
+        TaskRequest(
+            user_id="u1",
+            roles=[],
+            text="自定义执行",
+            context={
+                "agent": "customer_service",
+                "skills": ["order.lookup", "logistics.diagnose"],
+                "has_dependencies": True,
+            },
+        ),
+        intent=_intent(),
+        run_id="r-explicit",
+    )
+
+    assert result.candidate_skills == ("order.lookup", "logistics.diagnose")
+    assert result.primary_skill is None
+
+
+def test_independent_llm_skills_are_not_collapsed() -> None:
+    invoker = SpyContextInvoker(
+        {
+            "primary_skill": None,
+            "candidate_skills": ["order.lookup", "logistics.diagnose"],
+            "reason": "两个独立查询",
+            "confidence": "high",
+            "has_dependencies": False,
+        }
+    )
+
+    result = _router(invoker).resolve(
+        TaskRequest(
+            user_id="u1",
+            roles=[],
+            text="分别处理这些问题",
+            context={"agent": "customer_service"},
+        ),
+        intent=_intent(),
+        run_id="r-independent",
+    )
+
+    assert result.response_mode == "multi_skill"
+    assert result.candidate_skills == ("order.lookup", "logistics.diagnose")
 
 
 def test_router_rejects_skill_outside_agent_boundary() -> None:
@@ -253,4 +341,13 @@ def test_router_llm_receives_minimal_candidate_contracts() -> None:
     assert request.context_id == "runtime.capability-route"
     candidates = request.values["routing.candidate_skills"]
     assert candidates
-    assert set(candidates[0]) == {"id", "description", "input_schema", "reasoning", "tools"}
+    assert set(candidates[0]) == {
+        "id",
+        "description",
+        "input_schema",
+        "reasoning",
+        "orchestration",
+        "tool_policy",
+        "tools",
+        "composes",
+    }

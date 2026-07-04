@@ -6,7 +6,12 @@ from typing import Any, Literal
 
 from .context.models import ContextRenderRequest
 from .contracts import AgentProfile, IntentFrame, SkillDefinition, TaskRequest
-from .execution.models import CapabilityResolution, ComplexityAssessment, ToolPolicy
+from .execution.models import (
+    CapabilityResolution,
+    ComplexityAssessment,
+    OrchestrationMode,
+    ToolPolicy,
+)
 from .registry import AgentRegistry, SkillRegistry
 
 
@@ -146,6 +151,24 @@ class IntentRouter:
             raise CapabilityResolutionError("LLM primary_skill 不在候选集合中")
         if not selected:
             return self._answer_resolution(intent)
+        has_dependencies = bool(data.get("has_dependencies", False))
+        covering_workflow = self._covering_workflow(
+            agent,
+            selected,
+            has_dependencies=has_dependencies,
+        )
+        if covering_workflow:
+            return self._resolution(
+                request=request,
+                intent=intent,
+                candidates=(covering_workflow,),
+                primary=covering_workflow,
+                reason=(
+                    "组合 Workflow 收敛: "
+                    f"{', '.join(selected)} -> {covering_workflow}"
+                ),
+                confidence=_confidence(data.get("confidence")),
+            )
         return self._resolution(
             request=request,
             intent=intent,
@@ -153,8 +176,31 @@ class IntentRouter:
             primary=primary if len(selected) == 1 else None,
             reason=str(data.get("reason") or "受约束的 LLM Capability 建议"),
             confidence=_confidence(data.get("confidence")),
-            llm_dependencies=bool(data.get("has_dependencies", False)),
+            llm_dependencies=has_dependencies,
         )
+
+    def _covering_workflow(
+        self,
+        agent: AgentProfile,
+        selected: tuple[str, ...],
+        *,
+        has_dependencies: bool,
+    ) -> str | None:
+        if not has_dependencies or len(selected) < 2:
+            return None
+        selected_set = set(selected)
+        matches: list[SkillDefinition] = []
+        for name in agent.allowed_skills:
+            skill = self._skills.get(name)
+            if skill.execution.orchestration is not OrchestrationMode.WORKFLOW:
+                continue
+            atomic_selected = selected_set - {skill.name}
+            if atomic_selected and atomic_selected <= set(skill.composes):
+                matches.append(skill)
+        if not matches:
+            return None
+        matches.sort(key=lambda item: (len(item.composes), item.name))
+        return matches[0].name
 
     def _resolution(
         self,
@@ -245,7 +291,10 @@ class IntentRouter:
             "description": skill.description,
             "input_schema": skill.input_schema,
             "reasoning": skill.execution.reasoning.value,
+            "orchestration": skill.execution.orchestration.value,
+            "tool_policy": skill.execution.tool_policy.value,
             "tools": list(skill.tools),
+            "composes": list(skill.composes),
         }
 
     def _answer_resolution(self, intent: IntentFrame) -> CapabilityResolution:
