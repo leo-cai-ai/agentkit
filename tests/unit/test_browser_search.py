@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pytest
 
@@ -287,6 +287,7 @@ class _XhsPage(_FakePage):
                     "likes": "987",
                     "snippet": "Lower engagement. Body",
                     "content_type": "note",
+                    "cover_url": "https://sns-webpic-qc.xhscdn.com/low.jpg",
                 },
                 {
                     "url": "https://www.xiaohongshu.com/explore/high?token=x",
@@ -295,6 +296,7 @@ class _XhsPage(_FakePage):
                     "likes": "1.2万",
                     "snippet": "Higher engagement。Body",
                     "content_type": "video",
+                    "cover_url": "https://sns-webpic-qc.xhscdn.com/high.jpg",
                 },
                 {
                     "url": "/explore/high?duplicate=1",
@@ -508,6 +510,96 @@ def test_xhs_provider_preserves_source_provenance():
     assert note["tags"] == ["AI"]
 
 
+def test_xhs_provider_preserves_safe_cover_and_detail_media_assets():
+    class MediaResultClient(_ResultClient):
+        def search(self, adapter, *, query: str, limit: int):
+            result = super().search(adapter, query=query, limit=limit)[0]
+            return [
+                replace(
+                    result,
+                    metadata={
+                        **result.metadata,
+                        "cover_url": "https://sns-webpic-qc.xhscdn.com/cover.jpg",
+                        "detail_media_urls": [
+                            "https://sns-webpic-qc.xhscdn.com/detail.jpg",
+                            "javascript:alert(1)",
+                        ],
+                    },
+                )
+            ]
+
+    provider = PlaywrightXhsResearchProvider(
+        MediaResultClient(),
+        XhsSearchAdapter(),
+        max_media_assets=2,
+    )
+
+    note = provider.search_top_notes(topic="agent", limit=1)[0]
+
+    assert note["media_assets"] == [
+        {
+            "asset_id": "note-1:cover:0",
+            "source_url": "https://sns-webpic-qc.xhscdn.com/cover.jpg",
+            "media_type": "image",
+            "source_kind": "cover",
+            "index": 0,
+            "metadata": {},
+        },
+        {
+            "asset_id": "note-1:detail:1",
+            "source_url": "https://sns-webpic-qc.xhscdn.com/detail.jpg",
+            "media_type": "image",
+            "source_kind": "detail",
+            "index": 1,
+            "metadata": {},
+        },
+    ]
+
+
+def test_xhs_detail_enrichment_keeps_only_safe_deduplicated_media_urls():
+    class DetailPage(_FakePage):
+        def wait_for_selector(self, *_args, **_kwargs):
+            return None
+
+        def evaluate(self, expression: str, arg=None):
+            del arg
+            if "media_urls" in expression:
+                return {
+                    "title": "Detail title",
+                    "content": "Detail body",
+                    "media_urls": [
+                        "https://sns-webpic-qc.xhscdn.com/one.jpg",
+                        "https://sns-webpic-qc.xhscdn.com/one.jpg",
+                        "https://evil.example/track.jpg",
+                        "javascript:alert(1)",
+                    ],
+                }
+            raise AssertionError(f"unexpected evaluate expression: {expression[:40]}")
+
+    adapter = XhsSearchAdapter(enrich_details=True, detail_pause_seconds=0)
+    result = WebSearchResult(
+        result_id="n1",
+        title="One",
+        url="https://www.xiaohongshu.com/explore/n1",
+        source="xiaohongshu",
+    )
+
+    enriched = adapter._enrich_details(
+        DetailPage(),
+        [result],
+        timeout_ms=1000,
+        max_items=1,
+    )[0]
+
+    assert enriched.metadata["detail_attempted"] is True
+    assert enriched.metadata["detail_enriched"] is True
+    assert enriched.metadata["detail_error"] == ""
+    assert enriched.metadata["detail_skipped_reason"] == ""
+    assert enriched.metadata["detail_media_urls"] == [
+        "https://sns-webpic-qc.xhscdn.com/one.jpg"
+    ]
+
+
 def test_xhs_detail_challenge_keeps_search_cards_for_quality_review(monkeypatch):
     adapter = XhsSearchAdapter(enrich_details=True, detail_pause_seconds=0)
     page = _FakePage()
@@ -535,4 +627,9 @@ def test_xhs_detail_challenge_keeps_search_cards_for_quality_review(monkeypatch)
 
     assert [item.result_id for item in enriched] == ["n1", "n2"]
     assert all(item.metadata["detail_enriched"] is False for item in enriched)
-    assert all(item.metadata["detail_error"] == "BrowserChallengeRequired" for item in enriched)
+    assert enriched[0].metadata["detail_attempted"] is True
+    assert enriched[0].metadata["detail_error"] == "BrowserChallengeRequired"
+    assert enriched[0].metadata["detail_skipped_reason"] == ""
+    assert enriched[1].metadata["detail_attempted"] is False
+    assert enriched[1].metadata["detail_error"] == ""
+    assert enriched[1].metadata["detail_skipped_reason"] == "session_challenge"

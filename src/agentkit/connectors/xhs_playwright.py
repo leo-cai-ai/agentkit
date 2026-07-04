@@ -94,6 +94,14 @@ _EXTRACT_DETAIL = r"""
   };
   const textsOf = (selector) => Array.from(document.querySelectorAll(selector))
     .map((element) => clean(element.textContent)).filter(Boolean).slice(0, 20);
+  const mediaRoots = Array.from(document.querySelectorAll(
+    '#detail-desc, [class*="note-content"], [class*="interaction-container"]'
+  ));
+  const mediaUrls = mediaRoots.flatMap((root) =>
+    Array.from(root.querySelectorAll('img')).map((image) =>
+      image.currentSrc || image.src || ""
+    )
+  ).filter(Boolean);
   return {
     title: textOf(['#detail-title', '[class*="title"]']),
     author: textOf([
@@ -115,7 +123,8 @@ _EXTRACT_DETAIL = r"""
     published_at: textOf([
       '[class*="date"]', '[class*="publish-time"]', '[class*="bottom-container"]'
     ]),
-    tags: textsOf('a[href*="/search_result?keyword="]')
+    tags: textsOf('a[href*="/search_result?keyword="]'),
+    media_urls: mediaUrls
   };
 }
 """
@@ -325,6 +334,11 @@ class XhsSearchAdapter:
                     metadata={
                         "captured_at": captured_at,
                         "cover_url": str(item.get("cover_url") or ""),
+                        "detail_attempted": False,
+                        "detail_enriched": False,
+                        "detail_error": "",
+                        "detail_skipped_reason": "",
+                        "detail_media_urls": [],
                     },
                 )
             )
@@ -365,7 +379,11 @@ class XhsSearchAdapter:
                         metrics[key] = parsed
                 content = _clean_text(raw.get("content")) or result.snippet
                 metadata = dict(result.metadata)
+                metadata["detail_attempted"] = True
                 metadata["detail_enriched"] = True
+                metadata["detail_error"] = ""
+                metadata["detail_skipped_reason"] = ""
+                metadata["detail_media_urls"] = _safe_media_urls(raw.get("media_urls"))
                 enriched.append(
                     replace(
                         result,
@@ -380,16 +398,34 @@ class XhsSearchAdapter:
                 )
             except (BrowserAuthenticationRequired, BrowserChallengeRequired) as exc:
                 error_name = type(exc).__name__
-                for pending in results[index:]:
+                current_metadata = dict(result.metadata)
+                current_metadata["detail_attempted"] = True
+                current_metadata["detail_enriched"] = False
+                current_metadata["detail_error"] = error_name
+                current_metadata["detail_skipped_reason"] = ""
+                current_metadata["detail_media_urls"] = []
+                enriched.append(replace(result, metadata=current_metadata))
+                skipped_reason = (
+                    "session_challenge"
+                    if isinstance(exc, BrowserChallengeRequired)
+                    else "session_authentication"
+                )
+                for pending in results[index + 1 :]:
                     metadata = dict(pending.metadata)
+                    metadata["detail_attempted"] = False
                     metadata["detail_enriched"] = False
-                    metadata["detail_error"] = error_name
+                    metadata["detail_error"] = ""
+                    metadata["detail_skipped_reason"] = skipped_reason
+                    metadata["detail_media_urls"] = []
                     enriched.append(replace(pending, metadata=metadata))
                 return enriched
             except Exception as exc:  # noqa: BLE001 - keep usable search results on detail drift
                 metadata = dict(result.metadata)
+                metadata["detail_attempted"] = True
                 metadata["detail_enriched"] = False
                 metadata["detail_error"] = type(exc).__name__
+                metadata["detail_skipped_reason"] = ""
+                metadata["detail_media_urls"] = []
                 enriched.append(replace(result, metadata=metadata))
         return enriched
 
@@ -469,10 +505,10 @@ class PlaywrightXhsResearchProvider:
         results = self.client.search(self.adapter, query=topic, limit=limit)
         return [self._to_note(result, topic=topic) for result in results]
 
-    @staticmethod
-    def _to_note(result: WebSearchResult, *, topic: str) -> dict[str, Any]:
+    def _to_note(self, result: WebSearchResult, *, topic: str) -> dict[str, Any]:
         metrics = result.metrics
         content = result.snippet[:3000]
+        media_assets = _media_assets_for_result(result, limit=self.max_media_assets)
         return {
             "note_id": result.result_id,
             "title": result.title,
@@ -493,8 +529,73 @@ class PlaywrightXhsResearchProvider:
             "captured_at": result.metadata.get("captured_at", ""),
             "detail_enriched": bool(result.metadata.get("detail_enriched")),
             "detail_error": str(result.metadata.get("detail_error") or ""),
+            "detail_attempted": bool(result.metadata.get("detail_attempted")),
+            "detail_skipped_reason": str(
+                result.metadata.get("detail_skipped_reason") or ""
+            ),
+            "media_assets": media_assets,
             "topic": topic,
         }
+
+
+def _safe_media_urls(value: Any) -> list[str]:
+    """只保留小红书可信域名下的 HTTPS 媒体 URL，并按页面顺序去重。"""
+
+    items = value if isinstance(value, list | tuple) else [value]
+    seen: set[str] = set()
+    urls: list[str] = []
+    for item in items:
+        url = str(item or "").strip()
+        parsed = urlparse(url)
+        hostname = (parsed.hostname or "").lower()
+        allowed_host = any(
+            hostname == root or hostname.endswith(f".{root}")
+            for root in ("xiaohongshu.com", "xhscdn.com")
+        )
+        if parsed.scheme != "https" or not allowed_host or url in seen:
+            continue
+        seen.add(url)
+        urls.append(url)
+    return urls
+
+
+def _media_assets_for_result(
+    result: WebSearchResult,
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """把搜索封面和详情图片转换为通用媒体资产描述。"""
+
+    if limit <= 0:
+        return []
+    candidates: list[tuple[str, str]] = []
+    candidates.extend(
+        ("cover", url) for url in _safe_media_urls(result.metadata.get("cover_url"))
+    )
+    candidates.extend(
+        ("detail", url)
+        for url in _safe_media_urls(result.metadata.get("detail_media_urls"))
+    )
+    seen: set[str] = set()
+    assets: list[dict[str, Any]] = []
+    for source_kind, url in candidates:
+        if url in seen:
+            continue
+        seen.add(url)
+        index = len(assets)
+        assets.append(
+            {
+                "asset_id": f"{result.result_id}:{source_kind}:{index}",
+                "source_url": url,
+                "media_type": "image",
+                "source_kind": source_kind,
+                "index": index,
+                "metadata": {},
+            }
+        )
+        if len(assets) >= limit:
+            break
+    return assets
 
 
 def _note_id(url: str) -> str:
