@@ -36,7 +36,7 @@ from agentkit.core.memory.extractor import MemoryExtractor
 from agentkit.core.memory.retrieval import MemoryRetriever
 from agentkit.core.memory.store import build_conversation_store
 from agentkit.core.memory.summarizer import Summarizer
-from agentkit.core.memory.vector_store import build_vector_store
+from agentkit.core.memory.vector_store import SqliteVectorStore, build_vector_store
 from agentkit.core.migrations import run_storage_migrations
 from agentkit.core.multi_agent import AgentDirectory, MultiAgentCoordinator
 from agentkit.core.rag.service import build_knowledge_service
@@ -49,6 +49,7 @@ from agentkit.core.tool_backends import (
     ToolBackendRegistry,
 )
 from agentkit.runtime.conversation_context import ConversationContextService
+from agentkit.runtime.conversation_deletion import ConversationDeletionService
 from agentkit.runtime.conversation_persistence import (
     ConversationPersistenceService,
     ExtractingMemoryWriter,
@@ -79,6 +80,7 @@ class AgentKitRuntime:
     conversations: Any
     contexts: ContextRegistry
     context_invoker: ContextInvocationService
+    conversation_deletion: ConversationDeletionService
     manifest: dict[str, Any] | None = None
     # 迁移期间保留属性形状，但不再存在第二套 Chat Runtime。
     chat_service: MultiAgentCoordinator | None = None
@@ -232,6 +234,13 @@ def build_runtime(
     embeddings = build_embedding_provider(settings)
     vector_store = build_vector_store(settings, conversation_store)
     memory = MemoryRetriever(vector_store=vector_store, embeddings=embeddings)
+    conversation_deletion = ConversationDeletionService(
+        store=conversation_store,
+        audit=audit,
+        external_memory_store=(
+            None if isinstance(vector_store, SqliteVectorStore) else vector_store
+        ),
+    )
     knowledge = (
         build_knowledge_service(
             settings,
@@ -329,6 +338,7 @@ def build_runtime(
         conversations=conversation_store,
         contexts=context_registry,
         context_invoker=context_invoker,
+        conversation_deletion=conversation_deletion,
         manifest=manifest,
         chat_service=chat_service,
     )

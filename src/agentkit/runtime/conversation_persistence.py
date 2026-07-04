@@ -168,6 +168,8 @@ class ConversationPersistenceService:
             or conversation.get("user_id") != user_id
         ):
             raise ValueError("会话不属于当前租户、Agent 或用户")
+        if conversation.get("status") != "active":
+            raise ValueError("会话当前不可写入")
 
         assistant_text = strip_reasoning_tags(assistant_message)
         if user_message:
