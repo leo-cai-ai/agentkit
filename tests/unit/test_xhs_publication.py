@@ -228,11 +228,20 @@ class _ResponseLocator(_Locator):
         self.page.emit_response(self.response)
 
 
+class _Keyboard:
+    def __init__(self) -> None:
+        self.pressed: list[str] = []
+
+    def press(self, key: str) -> None:
+        self.pressed.append(key)
+
+
 class _CdpSession:
     def __init__(self, page) -> None:
         self.page = page
         self.outer_html = '<button type="button" class="ce-btn bg-red">发布</button>'
         self.border = [633.0, 655.0, 753.0, 655.0, 753.0, 695.0, 633.0, 695.0]
+        self.hit_backend_node_id = 99
         self.mouse_events: list[dict] = []
 
     def send(self, method: str, params: dict | None = None) -> dict:
@@ -253,6 +262,17 @@ class _CdpSession:
             return {"outerHTML": self.outer_html}
         if method == "DOM.getBoxModel":
             return {"model": {"border": self.border, "width": 120, "height": 40}}
+        if method == "DOM.getNodeForLocation":
+            return {"backendNodeId": self.hit_backend_node_id}
+        if method == "DOM.pushNodesByBackendIdsToFrontend":
+            return {"nodeIds": [self.hit_backend_node_id]}
+        if method == "DOM.describeNode":
+            return {
+                "node": {
+                    "backendNodeId": params["nodeId"],
+                    "parentId": 0,
+                }
+            }
         if method == "Input.dispatchMouseEvent":
             self.mouse_events.append(params)
             if params.get("type") == "mouseReleased":
@@ -287,16 +307,22 @@ class _PublishPage:
         self.button = _Locator(attributes={"is-publish": "true", "submit-disabled": "false"})
         self.context = _BrowserContext(self)
         self.cdp_session = self.context.session
+        self.keyboard = _Keyboard()
         self.tab = _Locator()
         self.optional = _Locator(count=0)
         self.viewport: dict = {}
         self.html = ""
         self.frames: list = []
+        self.blurred = False
+        self.wait_calls: list[int] = []
 
     def goto(self, url: str, **_kwargs) -> None:
         self.url = url
 
     def evaluate(self, _expression: str, *_args):
+        if "document.activeElement" in _expression:
+            self.blurred = True
+            return None
         if ".creator-tab.active" in _expression:
             return True
         if 'document.querySelectorAll(".creator-tab")' in _expression:
@@ -324,8 +350,8 @@ class _PublishPage:
             return self.button
         return self.optional
 
-    def wait_for_timeout(self, _timeout_ms: int) -> None:
-        return None
+    def wait_for_timeout(self, timeout_ms: int) -> None:
+        self.wait_calls.append(timeout_ms)
 
     def wait_for_function(self, *_args, **_kwargs) -> None:
         if not self.button.clicked:
@@ -345,7 +371,6 @@ class _UnknownPublishPage(_PublishPage):
     def __init__(self) -> None:
         super().__init__()
         self.handlers: dict[str, list] = {}
-        self.wait_calls: list[int] = []
         request = _FakeRequest(
             url="https://creator.xiaohongshu.com/api/sns/v1/note?body=secret-body",
             method="POST",
@@ -482,7 +507,27 @@ def test_publish_targets_exact_button_inside_closed_shadow_host(tmp_path) -> Non
         "mousePressed",
         "mouseReleased",
     ]
+    assert page.keyboard.pressed == ["Escape"]
+    assert page.blurred is True
+    assert 250 in page.wait_calls
     assert page.button.click_options["position"] == {"x": 693.0, "y": 675.0}
+
+
+def test_publish_refuses_click_when_overlay_covers_shadow_button(tmp_path) -> None:
+    page = _PublishPage()
+    page.cdp_session.hit_backend_node_id = 123
+    adapter = XhsPublishAdapter(asset_root=tmp_path / "assets")
+    media = tmp_path / "cover.png"
+    media.write_bytes(b"png")
+
+    with pytest.raises(BrowserPageChanged, match="covered"):
+        adapter.publish(
+            page,
+            package={"title": "标题", "body": "正文", "media_paths": [str(media)]},
+            timeout_ms=1000,
+        )
+
+    assert page.cdp_session.mouse_events == []
 
 
 def test_publish_refuses_to_guess_when_closed_shadow_publish_button_is_missing(tmp_path) -> None:
@@ -523,7 +568,7 @@ def test_unknown_publish_outcome_includes_redacted_network_evidence_and_waits(tm
     assert "secret-body" not in message
     assert "secret-page-body" not in message
     assert "secret-page-query" not in message
-    assert page.wait_calls == [90_000]
+    assert page.wait_calls == [250, 90_000]
 
 
 def test_unknown_publish_outcome_does_not_wait_when_observation_is_disabled(tmp_path) -> None:
@@ -539,7 +584,7 @@ def test_unknown_publish_outcome_does_not_wait_when_observation_is_disabled(tmp_
             timeout_ms=1000,
         )
 
-    assert page.wait_calls == []
+    assert page.wait_calls == [250]
 
 
 def test_playwright_publish_adapter_generates_reviewed_text_images(tmp_path) -> None:
