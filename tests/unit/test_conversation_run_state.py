@@ -185,23 +185,7 @@ def test_recent_running_parent_is_not_treated_as_orphaned() -> None:
     assert state.non_terminal_run_ids == (parent_id,)
 
 
-def test_cancellation_requested_projects_as_cancelling() -> None:
-    audit = InMemoryAuditLog()
-    parent_id = _root(audit)
-    assert audit.request_cancellation(parent_id, reason="conversation deletion")
-
-    state = _resolve(audit).resolve(
-        conversation_id="conversation-a",
-        tenant_id="tenant-a",
-        user_id="user-a",
-    )
-
-    assert state.status == "cancelling"
-    assert state.non_terminal_run_ids == (parent_id,)
-    assert state.requires_second_delete_confirmation is True
-
-
-def test_terminal_failed_run_is_retryable_without_reconciliation() -> None:
+def test_terminal_failed_run_requires_second_delete_confirmation() -> None:
     audit = InMemoryAuditLog()
     parent_id = _root(audit)
     audit.record(parent_id, "run_finished", {"status": "failed"})
@@ -215,7 +199,7 @@ def test_terminal_failed_run_is_retryable_without_reconciliation() -> None:
     assert state.status == "failed"
     assert state.retryable is True
     assert state.reconciled is False
-    assert state.requires_second_delete_confirmation is False
+    assert state.requires_second_delete_confirmation is True
 
 
 def test_historical_reconciliation_keeps_second_delete_confirmation() -> None:

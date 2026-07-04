@@ -30,7 +30,6 @@ TERMINAL_RUN_STATUSES = frozenset(
 _BLOCKING_RUN_STATUSES = (
     "running",
     "waiting_for_approval",
-    "cancellation_requested",
 )
 
 
@@ -99,9 +98,6 @@ class InMemoryAuditLog:
             elif event_type == "run_resumed" and not terminal:
                 run["status"] = "running"
                 run["finished_at"] = None
-            elif event_type == "cancellation_requested" and not terminal:
-                run["status"] = "cancellation_requested"
-                run["finished_at"] = None
 
     def events_for(self, run_id: str) -> list[dict[str, Any]]:
         return [event for event in self._events if event["run_id"] == run_id]
@@ -140,19 +136,6 @@ class InMemoryAuditLog:
             and run.get("user_id") == user_id
         ]
         return sorted(runs, key=lambda run: float(run.get("started_at") or 0.0))
-
-    def request_cancellation(self, run_id: str, *, reason: str) -> bool:
-        run = self._runs.get(run_id)
-        if run is None or run.get("status") in TERMINAL_RUN_STATUSES:
-            return False
-        if run.get("status") == "cancellation_requested":
-            return False
-        self.record(run_id, "cancellation_requested", {"reason": reason})
-        return True
-
-    def cancellation_requested(self, run_id: str) -> bool:
-        run = self._runs.get(run_id)
-        return bool(run and run.get("status") == "cancellation_requested")
 
     def child_runs(self, parent_run_id: str) -> list[dict[str, Any]]:
         return [
@@ -285,16 +268,6 @@ class SQLiteAuditLog:
                     """,
                     ("running", run_id, *TERMINAL_RUN_STATUSES),
                 )
-            elif event_type == "cancellation_requested":
-                conn.execute(
-                    """
-                    UPDATE task_runs
-                    SET status = ?, finished_at = NULL
-                    WHERE run_id = ?
-                      AND status NOT IN (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    ("cancellation_requested", run_id, *TERMINAL_RUN_STATUSES),
-                )
 
     def events_for(self, run_id: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -353,7 +326,7 @@ class SQLiteAuditLog:
                 WHERE conversation_id = ?
                   AND tenant_id = ?
                   AND user_id = ?
-                  AND status IN (?, ?, ?)
+                  AND status IN (?, ?)
                 LIMIT 1
                 """,
                 (
@@ -384,40 +357,6 @@ class SQLiteAuditLog:
                 (conversation_id, tenant_id, user_id),
             ).fetchall()
         return [dict(row) for row in rows]
-
-    def request_cancellation(self, run_id: str, *, reason: str) -> bool:
-        now = round(time.time(), 3)
-        payload_json = json.dumps({"reason": reason}, ensure_ascii=False)
-        with self._connect() as conn:
-            cursor = conn.execute(
-                """
-                UPDATE task_runs
-                SET status = ?, finished_at = NULL
-                WHERE run_id = ?
-                  AND status != ?
-                  AND status NOT IN (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    "cancellation_requested",
-                    run_id,
-                    "cancellation_requested",
-                    *TERMINAL_RUN_STATUSES,
-                ),
-            )
-            if cursor.rowcount != 1:
-                return False
-            conn.execute(
-                """
-                INSERT INTO audit_events (run_id, ts, event_type, payload_json)
-                VALUES (?, ?, ?, ?)
-                """,
-                (run_id, now, "cancellation_requested", payload_json),
-            )
-        return True
-
-    def cancellation_requested(self, run_id: str) -> bool:
-        run = self.get_run(run_id)
-        return bool(run and run.get("status") == "cancellation_requested")
 
     def child_runs(self, parent_run_id: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -666,16 +605,6 @@ class PostgresAuditLog(SQLiteAuditLog):
                     """,
                     ("running", run_id, *TERMINAL_RUN_STATUSES),
                 )
-            elif event_type == "cancellation_requested":
-                conn.execute(
-                    """
-                    UPDATE task_runs
-                    SET status = %s, finished_at = NULL
-                    WHERE run_id = %s
-                      AND status NOT IN (%s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    ("cancellation_requested", run_id, *TERMINAL_RUN_STATUSES),
-                )
 
     def events_for(self, run_id: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -788,7 +717,7 @@ class PostgresAuditLog(SQLiteAuditLog):
                 WHERE conversation_id = %s
                   AND tenant_id = %s
                   AND user_id = %s
-                  AND status IN (%s, %s, %s)
+                  AND status IN (%s, %s)
                 LIMIT 1
                 """,
                 (
@@ -821,40 +750,6 @@ class PostgresAuditLog(SQLiteAuditLog):
                 (conversation_id, tenant_id, user_id),
             ).fetchall()
         return [_postgres_run_row(row) for row in rows]
-
-    def request_cancellation(self, run_id: str, *, reason: str) -> bool:
-        now = round(time.time(), 3)
-        payload_json = json.dumps({"reason": reason}, ensure_ascii=False)
-        with self._connect() as conn:
-            cursor = conn.execute(
-                """
-                UPDATE task_runs
-                SET status = %s, finished_at = NULL
-                WHERE run_id = %s
-                  AND status != %s
-                  AND status NOT IN (%s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    "cancellation_requested",
-                    run_id,
-                    "cancellation_requested",
-                    *TERMINAL_RUN_STATUSES,
-                ),
-            )
-            if cursor.rowcount != 1:
-                return False
-            conn.execute(
-                """
-                INSERT INTO audit_events (run_id, ts, event_type, payload_json)
-                VALUES (%s, %s, %s, %s::jsonb)
-                """,
-                (run_id, now, "cancellation_requested", payload_json),
-            )
-        return True
-
-    def cancellation_requested(self, run_id: str) -> bool:
-        run = self.get_run(run_id)
-        return bool(run and run.get("status") == "cancellation_requested")
 
     def child_runs(self, parent_run_id: str) -> list[dict[str, Any]]:
         with self._connect() as conn:

@@ -104,18 +104,6 @@ class ConversationRunStateResolver:
             if str(run.get("status") or "running") not in TERMINAL_RUN_STATUSES
         )
 
-        if any(
-            str(run.get("status") or "") == "cancellation_requested"
-            for run in all_runs
-        ):
-            return self._state(
-                root,
-                status="cancelling",
-                reason="正在安全结束任务，当前执行边界完成后会继续删除。",
-                reconciled=reconciled,
-                non_terminal=non_terminal,
-            )
-
         active_children = [
             child
             for child in children
@@ -235,9 +223,7 @@ class ConversationRunStateResolver:
             retryable=status in {"failed", "cancelled"},
             reconciled=reconciled,
             requires_second_delete_confirmation=(
-                reconciled
-                or status
-                in {"running", "waiting_for_approval", "cancelling", "deletion_pending"}
+                reconciled or status in {"failed", "waiting_for_approval"}
             ),
             non_terminal_run_ids=non_terminal,
         )

@@ -162,14 +162,13 @@ def test_postgres_audit_scopes_blocking_run_query(monkeypatch) -> None:
     assert "conversation_id = %s" in sql
     assert "tenant_id = %s" in sql
     assert "user_id = %s" in sql
-    assert "status IN (%s, %s, %s)" in sql
+    assert "status IN (%s, %s)" in sql
     assert params == (
         "conversation-a",
         "tenant-a",
         "user-a",
         "running",
         "waiting_for_approval",
-        "cancellation_requested",
     )
 
 
@@ -180,7 +179,7 @@ def test_postgres_audit_scopes_blocking_run_query(monkeypatch) -> None:
         lambda tmp_path: SQLiteAuditLog(tmp_path / "audit.sqlite"),
     ],
 )
-def test_audit_lists_scoped_conversation_runs_and_persists_cancellation(
+def test_audit_lists_scoped_conversation_runs(
     factory, tmp_path
 ) -> None:
     audit = factory(tmp_path)
@@ -215,10 +214,6 @@ def test_audit_lists_scoped_conversation_runs_and_persists_cancellation(
 
     assert [run["run_id"] for run in runs] == [parent_id, child_id]
     assert all(run.get("started_at") is not None for run in runs)
-    assert audit.request_cancellation(parent_id, reason="conversation deletion") is True
-    assert audit.request_cancellation(parent_id, reason="conversation deletion") is False
-    assert audit.cancellation_requested(parent_id) is True
-    assert audit.get_run(parent_id)["status"] == "cancellation_requested"
 
 
 @pytest.mark.parametrize(
@@ -240,7 +235,6 @@ def test_terminal_run_cannot_return_to_non_terminal_state(factory, tmp_path) -> 
 
     audit.record(run_id, "run_resumed", {})
     audit.record(run_id, "run_paused", {"status": "waiting_for_approval"})
-    audit.record(run_id, "cancellation_requested", {"reason": "late request"})
 
     run = audit.get_run(run_id)
     assert run["status"] == "failed"
