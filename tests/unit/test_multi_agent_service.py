@@ -72,9 +72,16 @@ class FakeInvoker:
 
 
 class FakeGateway:
-    def __init__(self, audit: InMemoryAuditLog, *, status: str = "completed") -> None:
+    def __init__(
+        self,
+        audit: InMemoryAuditLog,
+        *,
+        status: str = "completed",
+        output: dict | None = None,
+    ) -> None:
         self.audit = audit
         self.status = status
+        self.output = output or {"message": "招聘分析已完成"}
         self.requests: list[TaskRequest] = []
 
     def handle_delegated(self, request: TaskRequest) -> TaskResponse:
@@ -90,7 +97,7 @@ class FakeGateway:
         self.audit.record(child_run, "run_finished", {"status": self.status})
         return TaskResponse(
             status=self.status,
-            output={"message": "招聘分析已完成"},
+            output=dict(self.output),
             run_id=child_run,
             thread_id="child-thread",
             agent=str(request.context["agent"]),
@@ -119,7 +126,12 @@ class FakeGateway:
         )
 
 
-def _service(decision: dict | None = None, *, child_status: str = "completed"):
+def _service(
+    decision: dict | None = None,
+    *,
+    child_status: str = "completed",
+    child_output: dict | None = None,
+):
     agents = AgentRegistry()
     agents.register(_profile("general_agent", "通用协调", []))
     agents.register(_profile("hr_recruiter", "招聘筛选", ["candidate.rank"]))
@@ -136,7 +148,7 @@ def _service(decision: dict | None = None, *, child_status: str = "completed"):
     persistence = FakePersistence()
     contexts = FakeContextService()
     invoker = FakeInvoker(decision)
-    gateway = FakeGateway(audit, status=child_status)
+    gateway = FakeGateway(audit, status=child_status, output=child_output)
     service = MultiAgentCoordinator(
         tenant_id="tenant-a",
         tenant_selector="company_alpha",
@@ -211,6 +223,39 @@ def test_general_agent_propagates_blocked_child_status() -> None:
     assert response.status == "blocked"
     assert response.governance["delegation"]["status"] == "blocked"
     assert audit.get_run(response.run_id)["status"] == "blocked"
+
+
+def test_delegated_business_output_persists_same_user_facing_summary() -> None:
+    output = {
+        "platform": "xiaohongshu",
+        "topic": "AI时代的副业",
+        "workflow_status": "completed",
+        "publish": {"status": "published"},
+    }
+    service, _gateway, _audit, _invoker, _contexts, persistence = _service(
+        {
+            "action": "delegate",
+            "target_agent": "customer_service",
+            "task": "研究并发布小红书内容",
+            "reason": "测试业务委派",
+            "confidence": "high",
+        },
+        child_output=output,
+    )
+
+    service.handle(
+        TaskRequest(
+            user_id="u1",
+            roles=["growth_manager"],
+            text="研究并发布小红书内容",
+            context={"conversation_id": "conversation-existing"},
+        )
+    )
+
+    assert persistence.turns[0]["assistant_message"] == (
+        "已完成“AI时代的副业”主题研究、文案审核与发布。"
+    )
+    assert not persistence.turns[0]["assistant_message"].startswith("{")
 
 
 def test_general_router_can_delegate_without_explicit_mention() -> None:

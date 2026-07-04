@@ -30,6 +30,7 @@ from agentkit.core.identity import (
     TASK_RUN,
     Principal,
 )
+from agentkit.core.response_text import format_task_output_text
 from agentkit.runtime.bootstrap import (
     AGENTKIT_ROOT,
     AgentKitRuntime,
@@ -564,31 +565,7 @@ def _web_response(response: TaskResponse) -> dict[str, Any]:
 
 
 def format_response_text(response: TaskResponse) -> str:
-    output = response.output
-    publish = output.get("publish")
-    if response.status == "blocked" and isinstance(publish, dict):
-        review = publish.get("review")
-        review = review if isinstance(review, dict) else {}
-        reason = str(
-            review.get("reason") or publish.get("reason") or "未通过质量门禁"
-        )
-        return f"内容审核未通过，未进入发布：{reason}"
-    for key in ("answer", "message", "summary", "campaign_summary"):
-        if output.get(key):
-            return str(output[key])
-    if response.status == "waiting_for_approval":
-        skills = ", ".join(output.get("approval", {}).get("skills", []))
-        return f"当前任务等待人工审批: {skills}"
-    if response.status == "needs_clarification":
-        missing = ", ".join(output.get("missing_required", []))
-        return f"请补充必填参数: {missing}"
-    ranked = output.get("ranked_candidates")
-    if isinstance(ranked, list):
-        return "\n".join(
-            f"{index}. {item.get('name', item.get('candidate_id', 'candidate'))}"
-            for index, item in enumerate(ranked, start=1)
-        )
-    return json.dumps(output, ensure_ascii=False, default=str)
+    return format_task_output_text(status=response.status, output=response.output)
 
 
 def _sse(produce, *, error_context: dict[str, Any] | None = None) -> Response:

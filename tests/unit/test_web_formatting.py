@@ -42,3 +42,26 @@ def test_unified_response_formatter_explains_blocked_review() -> None:
     )
 
     assert format_response_text(response) == "内容审核未通过，未进入发布：证据不足"
+
+
+def test_unified_response_formatter_uses_published_xhs_outcome() -> None:
+    response = TaskResponse(
+        status="completed",
+        output={
+            "platform": "xiaohongshu",
+            "topic": "AI时代的副业",
+            "campaign_summary": "Prepared a reviewed 30-day workflow.",
+            "publish": {"status": "published"},
+        },
+        run_id="r-published",
+        thread_id="t-published",
+        agent="xhs_growth",
+        strategy="workflow",
+        conversation_id="c-published",
+        governance={},
+        audit_events=[],
+    )
+
+    assert format_response_text(response) == (
+        "已完成“AI时代的副业”主题研究、文案审核与发布。"
+    )

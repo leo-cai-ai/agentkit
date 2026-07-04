@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -14,6 +13,7 @@ from agentkit.runtime.conversation_persistence import ConversationPersistenceSer
 from .context.models import ContextRenderRequest
 from .contracts import TaskRequest, TaskResponse
 from .registry import AgentRegistry
+from .response_text import format_task_output_text
 
 GENERAL_AGENT_ID = "general_agent"
 
@@ -416,6 +416,7 @@ class MultiAgentCoordinator:
                 conversation_id=conversation_id,
                 run_id=parent_run_id,
                 assistant_agent_id=target_agent,
+                status=child.status,
                 output=child.output,
             )
             self._audit.record(
@@ -558,6 +559,7 @@ class MultiAgentCoordinator:
                 conversation_id=conversation_id,
                 run_id=parent_run_id,
                 assistant_agent_id=target_agent,
+                status=child.status,
                 output=child.output,
             )
             self._audit.record(
@@ -596,6 +598,7 @@ class MultiAgentCoordinator:
                 conversation_id=conversation_id,
                 run_id=parent_run_id,
                 assistant_agent_id=GENERAL_AGENT_ID,
+                status=status,
                 output=output,
             )
         self._audit.record(parent_run_id, "run_finished", {"status": status})
@@ -618,15 +621,11 @@ class MultiAgentCoordinator:
         conversation_id: str,
         run_id: str,
         assistant_agent_id: str,
+        status: str,
         output: dict[str, Any],
     ) -> None:
         general = self._directory.profile(GENERAL_AGENT_ID)
-        message = output.get("message")
-        assistant_message = (
-            str(message)
-            if isinstance(message, str)
-            else json.dumps(output, ensure_ascii=False, default=str)
-        )
+        assistant_message = format_task_output_text(status=status, output=output)
         self._conversation_persistence.record_turn(
             tenant_id=self._tenant_id,
             agent_id=GENERAL_AGENT_ID,
