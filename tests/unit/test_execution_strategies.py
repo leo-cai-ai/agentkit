@@ -182,6 +182,38 @@ def test_workflow_surfaces_deferred_action_without_executing_it() -> None:
     assert result.output["deferred_action"] == action
 
 
+def test_workflow_propagates_explicit_terminal_status() -> None:
+    skill = _skill(
+        "demo.workflow",
+        lambda ctx, args: {
+            "workflow_status": "blocked",
+            "summary": "审核未通过",
+        },
+        orchestration=OrchestrationMode.WORKFLOW,
+    )
+
+    result = WorkflowStrategy().execute(
+        context=_context(skill),
+        request=StrategyRequest("审核", {}, _resolution("demo.workflow")),
+    )
+
+    assert result.status == "blocked"
+
+
+def test_workflow_rejects_unknown_explicit_terminal_status() -> None:
+    skill = _skill(
+        "demo.workflow",
+        lambda ctx, args: {"workflow_status": "invented"},
+        orchestration=OrchestrationMode.WORKFLOW,
+    )
+
+    with pytest.raises(StrategyPolicyError, match="非法终态"):
+        WorkflowStrategy().execute(
+            context=_context(skill),
+            request=StrategyRequest("审核", {}, _resolution("demo.workflow")),
+        )
+
+
 def test_batch_shards_and_merges() -> None:
     skill = _skill(
         "demo.batch",

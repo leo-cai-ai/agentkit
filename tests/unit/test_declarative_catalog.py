@@ -60,6 +60,34 @@ def test_catalog_registers_new_runtime_contracts(tmp_path: Path) -> None:
     assert python_tool.handler({"query": "agent"}) == {"query": "agent"}
 
 
+def test_catalog_compiles_optional_review_policy(tmp_path: Path) -> None:
+    _write_catalog(
+        tmp_path,
+        capability_changes={
+            "review": {
+                "enabled": True,
+                "max_revisions": 1,
+                "exhausted_status": "blocked",
+            }
+        },
+    )
+    catalog = load_catalog(tmp_path)
+    agents, skills, tools = AgentRegistry(), SkillRegistry(), ToolRegistry()
+
+    register_catalog(
+        catalog,
+        enabled_agent_ids={"research"},
+        agents=agents,
+        skills=skills,
+        tools=tools,
+    )
+
+    assert catalog.capabilities["research.explore"].review is not None
+    assert catalog.capabilities["research.explore"].review.max_revisions == 1
+    assert skills.get("research.explore").review is not None
+    assert skills.get("research.explore").review.max_revisions == 1
+
+
 def test_enabled_agents_are_explicit_and_validated(tmp_path: Path) -> None:
     _write_catalog(tmp_path)
     catalog = load_catalog(tmp_path)

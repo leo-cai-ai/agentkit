@@ -36,6 +36,7 @@ from agentkit.core.execution.models import (
     ToolRisk,
 )
 from agentkit.core.registry import AgentRegistry, SkillRegistry, ToolRegistry
+from agentkit.core.review import ReviewPolicy
 
 DEFAULT_GLOBAL_BUDGET = AutonomyBudget(
     max_model_calls=64,
@@ -132,6 +133,15 @@ class _SkillAutonomyYaml(_StrictModel):
         return AutonomyLimits(**self.model_dump())
 
 
+class _ReviewYaml(_StrictModel):
+    enabled: bool = False
+    max_revisions: int = Field(default=0, ge=0)
+    exhausted_status: Literal["blocked"] = "blocked"
+
+    def to_runtime(self) -> ReviewPolicy:
+        return ReviewPolicy(**self.model_dump())
+
+
 class _AgentYaml(_StrictModel):
     id: str = Field(min_length=1)
     domain: str = Field(min_length=1)
@@ -176,6 +186,7 @@ class _CapabilityYaml(_StrictModel):
     entrypoint: str = Field(min_length=1)
     execution: _SkillExecutionYaml
     autonomy: _SkillAutonomyYaml = Field(default_factory=_SkillAutonomyYaml)
+    review: _ReviewYaml | None = None
     permissions: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
     input_schema: dict[str, Any] = Field(default_factory=lambda: {"type": "object"})
@@ -238,6 +249,7 @@ class CapabilityManifest:
     entrypoint: str
     execution: SkillExecutionPolicy
     autonomy: AutonomyLimits
+    review: ReviewPolicy | None
     permissions: tuple[str, ...]
     tools: tuple[str, ...]
     input_schema: dict[str, Any]
@@ -503,6 +515,7 @@ def _build_capability_manifest(
             allow_dynamic_selection=raw.execution.allow_dynamic_selection,
         ),
         autonomy=raw.autonomy.to_runtime(),
+        review=raw.review.to_runtime() if raw.review is not None else None,
         permissions=tuple(raw.permissions),
         tools=tuple(raw.tools),
         input_schema=dict(raw.input_schema),
@@ -649,6 +662,7 @@ def _compile_capability(root: Path, manifest: CapabilityManifest) -> SkillDefini
         permissions=list(manifest.permissions),
         execution=manifest.execution,
         autonomy=manifest.autonomy,
+        review=manifest.review,
         tools=list(manifest.tools),
         handler=handler,
         batch_key=manifest.batch_key,
