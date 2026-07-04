@@ -10,10 +10,10 @@
   <section class="ak-agent-network-shell" data-agent-network>
     <div class="ak-network-toolbar" aria-label="图谱控制">
       <div class="ak-network-filters" role="group" aria-label="节点类型筛选">
-        <button type="button" class="active" data-network-filter="all">全部</button>
-        <button type="button" data-network-filter="agent">Agents</button>
-        <button type="button" data-network-filter="skill">Skills</button>
-        <button type="button" data-network-filter="tool">Tools</button>
+        <button type="button" class="active" data-network-filter="all" aria-pressed="true">全部</button>
+        <button type="button" data-network-filter="agent" aria-pressed="false">Agents</button>
+        <button type="button" data-network-filter="skill" aria-pressed="false">Skills</button>
+        <button type="button" data-network-filter="tool" aria-pressed="false">Tools</button>
       </div>
       <div class="ak-network-zoom" role="group" aria-label="缩放控制">
         <button type="button" data-network-zoom="out" aria-label="缩小">−</button>
@@ -22,13 +22,17 @@
       </div>
     </div>
 
-    <div class="ak-network-stage">
+    <div class="ak-network-stage" aria-busy="true">
       <div class="ak-network-canvas" data-network-canvas aria-label="Agent 关系动态图"></div>
       <aside class="ak-network-detail" data-network-detail aria-live="polite">
         <span class="ak-eyebrow">节点详情</span>
         <h2>AgentKit Network</h2>
         <p>选择节点可查看能力、策略、工具与风险信息。拖动节点或缩放画布探索完整拓扑。</p>
       </aside>
+      <div class="ak-network-status" data-network-status aria-live="polite">
+        <span data-network-status-message>正在加载 Agent Network…</span>
+        <button class="secondary" type="button" data-network-retry hidden>重试</button>
+      </div>
     </div>
 
     <details class="ak-network-fallback">

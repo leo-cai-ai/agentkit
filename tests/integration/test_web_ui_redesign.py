@@ -175,3 +175,24 @@ def test_trace_auto_open_is_limited_to_human_attention_states(client) -> None:
     )
     assert function is not None
     assert "general_delegate" not in function.group("body")
+
+
+def test_agent_network_has_accessible_canvas_filters_and_fallback(client) -> None:
+    login(client)
+    html = client.get("/agents").get_data(as_text=True)
+
+    assert "data-network-canvas" in html
+    assert "data-network-detail" in html
+    assert "data-network-list" in html
+    assert "data-network-retry" in html
+    assert 'aria-live="polite"' in html
+    assert 'aria-pressed="true"' in html
+
+
+def test_agent_network_does_not_fake_active_edges(client) -> None:
+    js = client.get("/static/js/agent_graph.js").get_data(as_text=True)
+
+    assert "is-highlighted" in js
+    assert "is-active-run" in js
+    assert "relationship.active === true" in js
+    assert "setInterval" not in js
