@@ -219,8 +219,21 @@ def extract_entities(request: TaskRequest) -> dict[str, Any]:
     )
     if candidate_ids:
         entities["candidate_ids"] = [str(item).upper() for item in candidate_ids]
-    if request.context.get("top_n"):
-        entities["top_n"] = request.context["top_n"]
+    topic = request.context.get("topic")
+    if not topic:
+        topic_match = re.search(
+            r"(?:围绕|以)?\s*[“\"](?P<topic>[^”\"\n]{1,100})[”\"]\s*(?:为)?主题",
+            request.text,
+        )
+        topic = topic_match.group("topic").strip() if topic_match else ""
+    if topic:
+        entities["topic"] = str(topic)
+    top_n = request.context.get("top_n")
+    if not top_n:
+        top_n_match = re.search(r"(?:top|前)\s*(\d{1,2})", request.text, flags=re.IGNORECASE)
+        top_n = int(top_n_match.group(1)) if top_n_match else None
+    if top_n:
+        entities["top_n"] = top_n
     return entities
 
 

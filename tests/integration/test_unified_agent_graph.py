@@ -222,6 +222,39 @@ def test_unhandled_graph_error_closes_run_as_failed(tmp_path) -> None:
     assert "run_finished" in event_types
 
 
+def test_intent_entities_fill_missing_skill_arguments(tmp_path) -> None:
+    def intent_with_marker(
+        request: TaskRequest,
+        *,
+        agent: AgentProfile,
+        run_id: str,
+    ) -> IntentFrame:
+        del request, agent, run_id
+        return IntentFrame(
+            raw_text="执行",
+            language="zh-CN",
+            intent_type="business_task",
+            goal="执行绑定能力",
+            boundaries={},
+            entities={"marker": "from-intent"},
+            target={"kind": "business_skill", "name": "xhs_growth.echo"},
+            confidence="high",
+        )
+
+    gateway = _build_gateway(tmp_path, intent_resolver=intent_with_marker)
+    response = gateway.handle(
+        TaskRequest(
+            user_id="u1",
+            roles=[],
+            text="执行",
+            context={"agent": "xhs_growth", "skill": "xhs_growth.echo"},
+        )
+    )
+
+    assert response.status == "completed"
+    assert response.output == {"agent": "xhs_growth", "marker": "from-intent"}
+
+
 def test_side_effect_resume_keeps_run_and_does_not_repeat_planning(tmp_path) -> None:
     calls: list[str] = []
     agents, skills, tools = AgentRegistry(), SkillRegistry(), ToolRegistry()

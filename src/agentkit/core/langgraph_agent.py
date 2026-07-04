@@ -394,13 +394,18 @@ class UnifiedAgentGraph:
             return {"arguments": dict(state["request"].context.get("plan_args", {}))}
         skill = self._skills.get(resolution.primary_skill)
         request_context = state["request"].context
+        intent_entities = state["intent"].entities
         explicit = request_context.get("skill_args")
         arguments = dict(explicit) if isinstance(explicit, dict) else {}
         properties = skill.input_schema.get("properties", {})
         if isinstance(properties, dict):
             for name in properties:
-                if name not in arguments and name in request_context:
+                if name in arguments:
+                    continue
+                if name in request_context:
                     arguments[name] = request_context[name]
+                elif name in intent_entities:
+                    arguments[name] = intent_entities[name]
         required = skill.input_schema.get("required", [])
         missing = [name for name in required if name not in arguments]
         if missing:

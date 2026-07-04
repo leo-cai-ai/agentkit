@@ -30,6 +30,19 @@ def test_extract_entities_from_text_when_context_empty():
     assert entities["candidate_ids"] == ["C-100", "C-101"]
 
 
+def test_extract_entities_recovers_xhs_topic_and_top_n() -> None:
+    request = TaskRequest(
+        user_id="u",
+        roles=[],
+        text="围绕“AI改变生活”为主题，研究小红书热门前5内容",
+    )
+
+    entities = extract_entities(request)
+
+    assert entities["topic"] == "AI改变生活"
+    assert entities["top_n"] == 5
+
+
 def test_looks_like_business_task_detects_action_term():
     assert looks_like_business_task(text="please rank them", entities={}) is True
     assert looks_like_business_task(text="hello there", entities={}) is False
