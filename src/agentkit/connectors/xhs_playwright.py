@@ -171,7 +171,7 @@ class XhsSearchAdapter:
 
     def search_url(self, query: str) -> str:
         return (
-            f"{self.base_url}/search_result?keyword={quote(query)}"
+            f"{self.base_url}/search_result/?keyword={quote(query)}"
             "&source=web_search_result_notes"
         )
 

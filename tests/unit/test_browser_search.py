@@ -308,6 +308,15 @@ class _XhsPage(_FakePage):
         raise AssertionError(f"unexpected evaluate expression: {expression[:40]}")
 
 
+def test_xhs_adapter_search_url_uses_canonical_https_path():
+    adapter = XhsSearchAdapter(enrich_details=False)
+
+    assert adapter.search_url("AI Agent") == (
+        "https://www.xiaohongshu.com/search_result/"
+        "?keyword=AI%20Agent&source=web_search_result_notes"
+    )
+
+
 def test_xhs_adapter_normalizes_deduplicates_and_ranks_live_results():
     adapter = XhsSearchAdapter(enrich_details=False)
     page = _XhsPage()
@@ -327,7 +336,7 @@ def test_xhs_adapter_normalizes_deduplicates_and_ranks_live_results():
     assert results[0].source_rank == 1
     assert results[0].url == "https://www.xiaohongshu.com/explore/high"
     assert page.goto_calls[0].endswith(
-        "/search_result?keyword=AI%20Agent&source=web_search_result_notes"
+        "/search_result/?keyword=AI%20Agent&source=web_search_result_notes"
     )
     assert page.goto_options[0]["wait_until"] == "commit"
 
