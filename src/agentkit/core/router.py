@@ -73,15 +73,15 @@ class IntentRouter:
 
         if target.get("kind") == "business_skill" and target.get("name"):
             skill_name = str(target["name"])
-            self._validate_candidates(agent, [skill_name])
-            return self._resolution(
-                request=request,
-                intent=intent,
-                candidates=(skill_name,),
-                primary=skill_name,
-                reason="结构化意图指定 Capability",
-                confidence=intent.confidence,
-            )
+            if skill_name in agent.allowed_skills and self._skills.has(skill_name):
+                return self._resolution(
+                    request=request,
+                    intent=intent,
+                    candidates=(skill_name,),
+                    primary=skill_name,
+                    reason="结构化意图指定 Capability",
+                    confidence=intent.confidence,
+                )
 
         scored = self._score_skills(agent, request.text)
         if scored and scored[0][0] >= 1:

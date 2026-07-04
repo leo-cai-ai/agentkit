@@ -111,7 +111,7 @@ def _router(context_invoker=None) -> IntentRouter:
     )
 
 
-def _intent(intent_type="business_task") -> IntentFrame:
+def _intent(intent_type="business_task", *, target=None) -> IntentFrame:
     return IntentFrame(
         raw_text="",
         language="zh-CN",
@@ -119,7 +119,7 @@ def _intent(intent_type="business_task") -> IntentFrame:
         goal="处理请求",
         boundaries={},
         entities={},
-        target={"kind": "none"},
+        target=target or {"kind": "none"},
         confidence="high",
     )
 
@@ -176,6 +176,38 @@ def test_router_rejects_skill_outside_agent_boundary() -> None:
             intent=_intent(),
             run_id="r1",
         )
+
+
+def test_router_ignores_unbound_llm_target_and_uses_constrained_candidates() -> None:
+    invoker = SpyContextInvoker(
+        {
+            "primary_skill": "order.lookup",
+            "candidate_skills": ["order.lookup"],
+            "reason": "从 Agent 白名单选择真实能力",
+            "confidence": "high",
+            "has_dependencies": False,
+        }
+    )
+
+    result = _router(invoker).resolve(
+        TaskRequest(
+            user_id="u1",
+            roles=["support"],
+            text="请帮我处理这个问题",
+            context={"agent": "customer_service"},
+        ),
+        intent=_intent(
+            target={
+                "kind": "business_skill",
+                "name": "InventedCustomerServiceManager",
+            }
+        ),
+        run_id="r-hallucinated-target",
+    )
+
+    assert result.primary_skill == "order.lookup"
+    assert result.candidate_skills == ("order.lookup",)
+    assert invoker.requests[0].context_id == "runtime.capability-route"
 
 
 def test_non_business_intent_resolves_to_answer() -> None:
