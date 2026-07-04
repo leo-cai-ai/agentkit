@@ -196,3 +196,12 @@ def test_agent_network_does_not_fake_active_edges(client) -> None:
     assert "is-active-run" in js
     assert "relationship.active === true" in js
     assert "setInterval" not in js
+
+
+def test_agent_network_reserves_icon_column_before_node_title(client) -> None:
+    js = client.get("/static/js/agent_graph.js").get_data(as_text=True)
+
+    assert "function truncateNodeLabel" in js
+    assert 'title.setAttribute("text-anchor", "start")' in js
+    assert 'title.setAttribute("x", String(-geometry.width / 2 + 34))' in js
+    assert 'document.createElementNS(svg.namespaceURI, "title")' in js

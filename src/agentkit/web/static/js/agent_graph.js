@@ -87,6 +87,14 @@
     return "activity";
   }
 
+  function truncateNodeLabel(label, geometry) {
+    const availableWidth = geometry.width - 48;
+    const maxCharacters = Math.max(6, Math.floor(availableWidth / 6.4));
+    return label.length > maxCharacters
+      ? `${label.slice(0, maxCharacters - 1)}…`
+      : label;
+  }
+
   function edgePath(source, target) {
     const mx = (source.x + target.x) / 2;
     const my = (source.y + target.y) / 2 - Math.min(55, Math.abs(source.x - target.x) * 0.08);
@@ -104,6 +112,8 @@
     group.setAttribute("tabindex", "0");
     group.setAttribute("role", "button");
     group.setAttribute("aria-label", `${node.type}: ${node.label}`);
+    const fullTitle = document.createElementNS(svg.namespaceURI, "title");
+    fullTitle.textContent = node.label;
 
     const halo = document.createElementNS(svg.namespaceURI, "rect");
     halo.setAttribute("x", String(-geometry.width / 2 - 6));
@@ -131,10 +141,10 @@
 
     const title = document.createElementNS(svg.namespaceURI, "text");
     title.classList.add("ak-node-title");
-    title.setAttribute("text-anchor", "middle");
-    title.setAttribute("x", "8");
+    title.setAttribute("text-anchor", "start");
+    title.setAttribute("x", String(-geometry.width / 2 + 34));
     title.setAttribute("y", "-2");
-    title.textContent = node.label.length > 18 ? `${node.label.slice(0, 16)}…` : node.label;
+    title.textContent = truncateNodeLabel(node.label, geometry);
 
     const type = document.createElementNS(svg.namespaceURI, "text");
     type.classList.add("ak-node-type");
@@ -142,7 +152,7 @@
     type.setAttribute("x", "8");
     type.setAttribute("y", "16");
     type.textContent = node.type.toUpperCase();
-    group.append(halo, body, icon, title, type);
+    group.append(fullTitle, halo, body, icon, title, type);
 
     const select = () => selectNode(node.id);
     group.addEventListener("click", select);
