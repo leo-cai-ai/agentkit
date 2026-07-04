@@ -10,6 +10,7 @@ from typing import Any
 from agentkit.runtime.conversation_context import ConversationContextService
 from agentkit.runtime.conversation_persistence import ConversationPersistenceService
 
+from .audit import TERMINAL_RUN_STATUSES
 from .context.models import ContextRenderRequest
 from .contracts import TaskRequest, TaskResponse
 from .registry import AgentRegistry
@@ -220,6 +221,23 @@ class MultiAgentCoordinator:
             agent_id=GENERAL_AGENT_ID,
             conversation_id=conversation_id,
         )
+        try:
+            return self._handle_started(
+                request=request,
+                conversation_id=conversation_id,
+                parent_run_id=parent_run_id,
+            )
+        except Exception as exc:
+            self._fail_parent_run(parent_run_id, exc)
+            raise
+
+    def _handle_started(
+        self,
+        *,
+        request: TaskRequest,
+        conversation_id: str,
+        parent_run_id: str,
+    ) -> TaskResponse:
 
         from .safety import REFUSAL_MESSAGE, build_safety_guard
 
@@ -378,6 +396,39 @@ class MultiAgentCoordinator:
         conversation_id = str(child_run.get("conversation_id") or "")
         target_agent = str(child_run.get("agent_id") or "")
         self._directory.profile(target_agent)
+        try:
+            return self._resume_started(
+                thread_id=thread_id,
+                user_id=user_id,
+                roles=roles,
+                approved_skills=approved_skills,
+                rejected_skills=rejected_skills,
+                decision_context=decision_context,
+                child_run=child_run,
+                parent_run=parent_run,
+                parent_run_id=parent_run_id,
+                conversation_id=conversation_id,
+                target_agent=target_agent,
+            )
+        except Exception as exc:
+            self._fail_parent_run(parent_run_id, exc)
+            raise
+
+    def _resume_started(
+        self,
+        *,
+        thread_id: str,
+        user_id: str,
+        roles: list[str],
+        approved_skills: list[str] | tuple[str, ...],
+        rejected_skills: list[str] | tuple[str, ...],
+        decision_context: dict[str, Any] | None,
+        child_run: dict[str, Any],
+        parent_run: dict[str, Any],
+        parent_run_id: str,
+        conversation_id: str,
+        target_agent: str,
+    ) -> TaskResponse:
 
         child = self._gateway.resume(
             thread_id,
@@ -637,6 +688,21 @@ class MultiAgentCoordinator:
             run_id=run_id,
             window_turns=general.context_policy.memory.window_turns,
         )
+
+    def _fail_parent_run(self, run_id: str, exc: Exception) -> None:
+        """异常退出时保证 General 父运行进入失败终态。"""
+        current = self._audit.get_run(run_id)
+        if current is None or current.get("status") in TERMINAL_RUN_STATUSES:
+            return
+        self._audit.record(
+            run_id,
+            "run_failed",
+            {
+                "error_type": type(exc).__name__,
+                "reason": "General Agent 协调流程异常退出",
+            },
+        )
+        self._audit.record(run_id, "run_finished", {"status": "failed"})
 
     def _available_agent_text(self) -> str:
         return "、".join(

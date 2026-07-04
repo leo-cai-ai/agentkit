@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from agentkit.core.audit import InMemoryAuditLog
 from agentkit.core.context.errors import ContextOutputInvalidError
 from agentkit.core.contracts import TaskRequest, TaskResponse
@@ -361,3 +363,112 @@ def test_approval_resume_returns_to_the_original_general_conversation() -> None:
     assert response.agent == "hr_recruiter"
     assert persistence.turns[0]["user_message"] == "@招聘 发出录用通知"
     assert persistence.turns[0]["assistant_agent_id"] == "hr_recruiter"
+
+
+def test_context_failure_finishes_parent_run_without_persisting_turn() -> None:
+    service, _, audit, _, contexts, persistence = _service()
+
+    def fail_context(**kwargs):
+        raise RuntimeError("context storage unavailable")
+
+    contexts.build = fail_context
+
+    with pytest.raises(RuntimeError, match="context storage unavailable"):
+        service.handle(
+            TaskRequest(
+                user_id="u1",
+                roles=["employee"],
+                text="你好",
+                context={"conversation_id": "conversation-failed"},
+            )
+        )
+
+    runs = audit.runs_for_conversation(
+        conversation_id="conversation-failed",
+        tenant_id="tenant-a",
+        user_id="u1",
+    )
+    assert len(runs) == 1
+    assert runs[0]["status"] == "failed"
+    assert [event["type"] for event in audit.events_for(runs[0]["run_id"])][-2:] == [
+        "run_failed",
+        "run_finished",
+    ]
+    assert persistence.turns == []
+
+
+def test_delegation_failure_finishes_parent_run_without_persisting_turn() -> None:
+    service, gateway, audit, _, _, persistence = _service()
+
+    def fail_delegation(request):
+        raise RuntimeError("child execution failed")
+
+    gateway.handle_delegated = fail_delegation
+
+    with pytest.raises(RuntimeError, match="child execution failed"):
+        service.handle(
+            TaskRequest(
+                user_id="u1",
+                roles=["employee"],
+                text="@招聘 分析候选人",
+                context={"conversation_id": "conversation-failed"},
+            )
+        )
+
+    runs = audit.runs_for_conversation(
+        conversation_id="conversation-failed",
+        tenant_id="tenant-a",
+        user_id="u1",
+    )
+    assert len(runs) == 1
+    assert runs[0]["status"] == "failed"
+    assert persistence.turns == []
+
+
+def test_resume_failure_finishes_waiting_parent_run() -> None:
+    service, gateway, audit, _, _, persistence = _service()
+    parent_id = audit.start_run(
+        tenant_id="tenant-a",
+        user_id="u1",
+        text="@招聘 发出录用通知",
+        agent_id="general_agent",
+        conversation_id="conversation-approval-failed",
+    )
+    child_id = audit.start_run(
+        tenant_id="tenant-a",
+        user_id="u1",
+        text="发出录用通知",
+        agent_id="hr_recruiter",
+        parent_run_id=parent_id,
+        conversation_id="conversation-approval-failed",
+    )
+    audit.record(
+        child_id,
+        "run_paused",
+        {"status": "waiting_for_approval", "thread_id": "approval-failed"},
+    )
+    audit.record(
+        parent_id,
+        "run_paused",
+        {"status": "waiting_for_approval", "child_run_id": child_id},
+    )
+
+    def fail_resume(thread_id, **kwargs):
+        raise RuntimeError("child resume failed")
+
+    gateway.resume = fail_resume
+
+    with pytest.raises(RuntimeError, match="child resume failed"):
+        service.resume(
+            "approval-failed",
+            user_id="u1",
+            roles=["employee"],
+            approved_skills=["offer.send"],
+        )
+
+    assert audit.get_run(parent_id)["status"] == "failed"
+    assert [event["type"] for event in audit.events_for(parent_id)][-2:] == [
+        "run_failed",
+        "run_finished",
+    ]
+    assert persistence.turns == []
