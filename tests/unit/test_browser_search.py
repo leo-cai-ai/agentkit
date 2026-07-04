@@ -182,6 +182,33 @@ def test_playwright_client_can_persist_portable_storage_state(tmp_path):
     assert browser_type.browser.closed is True
 
 
+def test_headed_portable_context_uses_maximized_native_viewport(tmp_path):
+    page = _FakePage()
+    context = _FakeContext(page)
+    browser_type = _FakeBrowserType(context)
+    client = PlaywrightSearchClient(
+        PlaywrightSearchConfig(
+            headless=False,
+            profile_root=None,
+            storage_state_root=str(tmp_path),
+        ),
+        playwright_factory=lambda: _FakePlaywrightManager(browser_type),
+    )
+
+    client.perform(site_key="example", operation=lambda _page, _timeout: None)
+
+    assert browser_type.launch_options["args"] == [
+        "--start-maximized",
+        "--deny-permission-prompts",
+    ]
+    assert "no_viewport" not in browser_type.launch_options
+    assert browser_type.browser is not None
+    assert browser_type.browser.context_options == {
+        "locale": "zh-CN",
+        "no_viewport": True,
+    }
+
+
 def test_missing_browser_channel_reports_install_command(tmp_path):
     page = _FakePage()
     context = _FakeContext(page)
@@ -215,6 +242,11 @@ def test_interactive_browser_stays_open_until_readiness_check_passes(tmp_path):
     )
 
     assert browser_type.launch_options["headless"] is False
+    assert browser_type.launch_options["args"] == [
+        "--start-maximized",
+        "--deny-permission-prompts",
+    ]
+    assert browser_type.launch_options["no_viewport"] is True
     assert page.goto_calls == ["https://example.test/login"]
     assert page.wait_calls == [100, 100, 100]
     assert context.closed is True

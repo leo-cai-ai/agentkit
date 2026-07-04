@@ -237,17 +237,26 @@ class PlaywrightSearchClient:
                         raise BrowserDependencyError(
                             f"Unsupported Playwright browser engine: {self.config.browser!r}"
                         )
+                    headed_chromium = self._is_headed_chromium(headless=headless)
                     if profile_path is not None:
                         profile_path.mkdir(parents=True, exist_ok=True)
+                        launch_options = self._launch_options(
+                            headless=headless,
+                            include_locale=True,
+                        )
+                        if headed_chromium:
+                            launch_options["no_viewport"] = True
                         context = browser_type.launch_persistent_context(
                             str(profile_path),
-                            **self._launch_options(headless=headless, include_locale=True),
+                            **launch_options,
                         )
                     else:
                         browser_instance = browser_type.launch(
                             **self._launch_options(headless=headless, include_locale=False)
                         )
                         context_options: dict[str, Any] = {"locale": self.config.locale}
+                        if headed_chromium:
+                            context_options["no_viewport"] = True
                         if storage_state_path is not None and storage_state_path.is_file():
                             context_options["storage_state"] = str(storage_state_path)
                         context = browser_instance.new_context(**context_options)
@@ -306,6 +315,8 @@ class PlaywrightSearchClient:
         options: dict[str, Any] = {
             "headless": self.config.headless if headless is None else headless,
         }
+        if self._is_headed_chromium(headless=headless):
+            options["args"] = ["--start-maximized", "--deny-permission-prompts"]
         if include_locale:
             options["locale"] = self.config.locale
         if self.config.channel:
@@ -313,6 +324,10 @@ class PlaywrightSearchClient:
         if self.config.executable_path:
             options["executable_path"] = self.config.executable_path
         return options
+
+    def _is_headed_chromium(self, *, headless: bool | None) -> bool:
+        resolved_headless = self.config.headless if headless is None else headless
+        return self.config.browser == "chromium" and not resolved_headless
 
 
 __all__ = [
