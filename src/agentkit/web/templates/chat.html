@@ -1,5 +1,7 @@
 {% extends "base.html" %}
 {% from "_icons.html" import icon %}
+{% set general_welcome = "你好，我负责理解你的需求并协调合适的业务 Agent。你也可以使用 @Agent名称，只指定当前这一轮。" %}
+{% set agent_welcome_template = "你好，我是{agent}。本轮将由我直接协助你处理相关任务。" %}
 
 {% block page_description %}与 General Agent 对话，或使用 @Agent 只指定当前一轮的执行者。{% endblock %}
 
@@ -88,6 +90,8 @@
           class="chat-thread ak-chat-thread"
           role="log"
           aria-label="对话消息"
+          data-general-welcome="{{ general_welcome }}"
+          data-agent-welcome-template="{{ agent_welcome_template }}"
           aria-live="polite"
           aria-relevant="additions"
           tabindex="0"
@@ -95,7 +99,7 @@
           <div class="chat-message assistant">
             <span>General Agent</span>
             <div class="chat-body">
-              <p>你好，我负责理解你的需求并协调合适的业务 Agent。你也可以使用 <code>@Agent名称</code> 只指定当前这一轮。</p>
+              <p>{{ general_welcome }}</p>
             </div>
           </div>
         </div>

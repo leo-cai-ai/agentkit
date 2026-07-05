@@ -102,6 +102,26 @@ def test_chat_result_renderer_only_updates_conversation_and_trace(client) -> Non
     assert 'region.innerHTML = suppressPrimaryPanel ? ""' in js
 
 
+def test_chat_welcome_message_uses_shared_chinese_configuration(client) -> None:
+    login(client)
+    html = client.get("/chat").get_data(as_text=True)
+    js = client.get("/static/js/app.js").get_data(as_text=True)
+    general_welcome = (
+        "你好，我负责理解你的需求并协调合适的业务 Agent。"
+        "你也可以使用 @Agent名称，只指定当前这一轮。"
+    )
+    agent_welcome_template = "你好，我是{agent}。本轮将由我直接协助你处理相关任务。"
+
+    assert f'data-general-welcome="{general_welcome}"' in html
+    assert f'data-agent-welcome-template="{agent_welcome_template}"' in html
+    assert f"<p>{general_welcome}</p>" in html
+    assert "function getChatWelcomeMessage" in js
+    assert "resetChatThread(getChatWelcomeMessage())" in js
+    assert "resetChatThread(getChatWelcomeMessage(selected))" in js
+    assert "New conversation started. How can I help?" not in js
+    assert "How can I help?" not in js
+
+
 def test_compact_navigation_explains_icons_with_tooltips(client) -> None:
     login(client)
     html = client.get("/chat").get_data(as_text=True)
