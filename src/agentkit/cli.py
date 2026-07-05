@@ -534,9 +534,12 @@ def _ocr_check(image: str, *, as_json: bool) -> int:
     except OSError:
         return _print_ocr_check_error("image_read_failed", as_json=as_json)
 
-    payload = {**result.to_dict(), "elapsed_seconds": elapsed_seconds}
+    result_payload: dict[str, Any] = {
+        **result.to_dict(),
+        "elapsed_seconds": elapsed_seconds,
+    }
     if as_json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        print(json.dumps(result_payload, ensure_ascii=False, indent=2))
     else:
         print(
             f"OCR completed: provider={result.provider}, model={result.model}, "
