@@ -76,6 +76,10 @@ def test_xhs_approval_publishes_frozen_content(monkeypatch, tmp_path) -> None:
         assert waiting.output["approval"]["phase"] == "post_execution"
         assert waiting.output["approval"]["skills"] == ["xhs.growth.campaign"]
         assert waiting.output["approval"]["preview"]["title"] == "暑假带娃旅行避坑"
+        assert 3 <= len(waiting.output["approval"]["preview"]["card_pages"]) <= 8
+        assert waiting.output["approval"]["preview"]["card_page_count"] == len(
+            waiting.output["approval"]["preview"]["card_pages"]
+        )
 
         resumed = runtime.gateway.resume(
             waiting.thread_id,

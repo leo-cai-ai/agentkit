@@ -1212,10 +1212,18 @@ function approvalActionHtml(waitingForApproval, approval) {
     )).join("")}</div>`
     : "";
   const preview = approval?.preview || {};
+  const cardPages = Array.isArray(preview.card_pages) ? preview.card_pages : [];
   const textImagePreview = preview.media_strategy === "xhs_text_image"
     ? `<div class="approval-text-image">
-        <p><strong>Media</strong> Xiaohongshu text cards · <strong>Style</strong> ${escapeHtml(preview.card_style || "-")}</p>
-        <blockquote>${escapeHtml(preview.card_text || "")}</blockquote>
+        <p><strong>Media</strong> Xiaohongshu text cards · <strong>Pages</strong> ${cardPages.length} · <strong>Style</strong> ${escapeHtml(preview.card_style || "-")}</p>
+        <div class="approval-card-pages">
+          ${cardPages.map((cardPage, index) => `
+            <blockquote class="approval-card-page">
+              <strong>${index === 0 ? "Cover" : `Page ${index}`}</strong>
+              <span>${escapeHtml(cardPage)}</span>
+            </blockquote>
+          `).join("")}
+        </div>
       </div>`
     : "";
   return `
