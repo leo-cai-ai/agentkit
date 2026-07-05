@@ -14,6 +14,7 @@ from agentkit.connectors.xhs_publication import (
     append_hashtags,
     normalize_publish_content,
     publication_content_hash,
+    resolve_publish_content,
 )
 from agentkit.connectors.xhs_publisher_playwright import (
     PlaywrightXhsPublishingProvider,
@@ -47,22 +48,56 @@ def test_publication_contract_is_stable_and_deduplicates_tags() -> None:
     assert publication_content_hash(content) == publication_content_hash(dict(content))
 
 
-def test_text_image_contract_hashes_card_text_and_style() -> None:
+def test_text_image_contract_hashes_card_pages_and_style() -> None:
     content = normalize_publish_content(
         {
             "title": "标题",
-            "body": "正文",
+            "body": "第一段。第二段。",
             "media_strategy": "xhs_text_image",
-            "card_text": "卡片正文",
+            "card_pages": ["封面", "第一段。", "第二段。"],
             "card_style": "涂鸦",
         }
     )
 
     assert content["media_strategy"] == "xhs_text_image"
-    assert content["card_text"] == "卡片正文"
+    assert content["card_pages"] == ["封面", "第一段。", "第二段。"]
+    assert publication_content_hash(content) != publication_content_hash(
+        {**content, "card_pages": ["封面", "第二段。", "第一段。"]}
+    )
     assert publication_content_hash(content) != publication_content_hash(
         {**content, "card_style": "基础"}
     )
+
+
+def test_text_image_contract_plans_pages_before_freezing() -> None:
+    content = resolve_publish_content(
+        {"title": "AI 入门", "body": "先明确目标。再完成一个小任务。"},
+        default_media_strategy="xhs_text_image",
+        default_card_style="涂鸦",
+    )
+
+    assert content["media_strategy"] == "xhs_text_image"
+    assert len(content["card_pages"]) == 3
+    assert content["card_pages"][0].startswith("AI 入门")
+    assert content["card_style"] == "涂鸦"
+
+
+def test_upload_contract_clears_text_image_pages() -> None:
+    content = resolve_publish_content(
+        {
+            "title": "标题",
+            "body": "正文",
+            "media_paths": ["cover.png"],
+            "card_pages": ["封面", "正文一", "正文二"],
+            "card_style": "涂鸦",
+        },
+        default_media_strategy="xhs_text_image",
+        default_card_style="涂鸦",
+    )
+
+    assert content["media_strategy"] == "upload"
+    assert content["card_pages"] == []
+    assert content["card_style"] == ""
 
 
 def test_mock_publish_is_idempotent_and_hash_guarded() -> None:
@@ -197,6 +232,21 @@ class _Locator:
     def click(self, **_kwargs) -> None:
         self.clicked = True
         self.click_options = dict(_kwargs)
+
+
+class _LocatorCollection:
+    def __init__(self, items: list[_Locator]) -> None:
+        self.items = items
+
+    @property
+    def first(self):
+        return self.items[0] if self.items else _Locator(count=0)
+
+    def count(self) -> int:
+        return len(self.items)
+
+    def nth(self, index: int) -> _Locator:
+        return self.items[index]
 
 
 class _DiscardingLocator(_Locator):
@@ -408,20 +458,21 @@ class _UnknownPublishPage(_PublishPage):
 
 
 class _TextImagePublishPage(_PublishPage):
-    def __init__(self) -> None:
+    def __init__(self, *, add_page_grows: bool = True) -> None:
         super().__init__()
         self.entry = _Locator()
-        self.card_editor = _Locator()
+        self.card_editors = [_Locator()]
         self.generate_button = _Locator()
         self.next_button = _Locator()
         self.stage = "entry"
         self.selected_style = ""
+        self.add_page_grows = add_page_grows
 
     def locator(self, selector: str):
         if selector == "button.text2image-button":
             return self.entry
         if "div.tiptap.ProseMirror" in selector or "真诚分享" in selector:
-            return self.card_editor if self.entry.clicked else self.optional
+            return _LocatorCollection(self.card_editors) if self.entry.clicked else self.optional
         if selector == ".edit-text-button":
             return self.generate_button if self.entry.clicked else self.optional
         if selector == "button.bg-red":
@@ -437,8 +488,12 @@ class _TextImagePublishPage(_PublishPage):
         return super().locator(selector)
 
     def evaluate(self, expression: str, *args):
+        if 'const label = "再写一张"' in expression:
+            if self.add_page_grows:
+                self.card_editors.append(_Locator())
+            return True
         if ".edit-text-button" in expression:
-            return bool(self.card_editor.value)
+            return all(editor.value for editor in self.card_editors)
         if ".cover-name" in expression:
             self.selected_style = str(args[0])
             return True
@@ -608,12 +663,12 @@ def test_playwright_publish_adapter_generates_reviewed_text_images(tmp_path) -> 
     assert package["media_strategy"] == "xhs_text_image"
     assert package["media_paths"] == []
     assert package["media_preview_urls"] == []
-    assert package["card_text"] == package["body"]
+    assert len(package["card_pages"]) == 3
     assert package["card_style"] == "涂鸦"
 
     result = adapter.publish(page, package=package, timeout_ms=1000)
 
-    assert page.card_editor.value == package["card_text"]
+    assert [editor.value for editor in page.card_editors] == package["card_pages"]
     assert page.selected_style == "涂鸦"
     assert page.upload.files == []
     assert page.title.value == package["title"]
@@ -639,7 +694,27 @@ def test_explicit_media_uses_upload_when_text_image_is_default(tmp_path) -> None
 
     assert package["media_strategy"] == "upload"
     assert package["media_paths"] == [str(media)]
-    assert package["card_text"] == ""
+    assert package["card_pages"] == []
+
+
+def test_text_image_publish_stops_when_editor_count_does_not_grow(tmp_path) -> None:
+    adapter = XhsPublishAdapter(
+        asset_root=tmp_path / "assets",
+        media_strategy="xhs_text_image",
+        text_image_generation_timeout_seconds=0.01,
+    )
+    page = _TextImagePublishPage(add_page_grows=False)
+    package = adapter.prepare_package(
+        page,
+        article={"title": "标题", "body": "第一段正文。第二段正文。"},
+        mode="direct",
+        timeout_ms=10,
+    )
+
+    with pytest.raises(BrowserPageChanged, match="editor count"):
+        adapter.publish(page, package=package, timeout_ms=10)
+
+    assert page.button.clicked is False
 
 
 def test_playwright_publish_adapter_requires_creator_login(tmp_path) -> None:

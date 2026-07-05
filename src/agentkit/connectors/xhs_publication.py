@@ -8,6 +8,14 @@ import re
 from pathlib import Path
 from typing import Any
 
+from agentkit.connectors.xhs_text_image_cards import (
+    DEFAULT_MAX_PAGES,
+    DEFAULT_MIN_PAGES,
+    DEFAULT_TARGET_CHARS_PER_PAGE,
+    plan_text_image_pages,
+    validate_page_settings,
+)
+
 PUBLISH_MEDIA_STRATEGIES = frozenset({"upload", "xhs_text_image"})
 
 
@@ -21,7 +29,7 @@ def normalize_publish_content(article: dict[str, Any]) -> dict[str, Any]:
         str(item).strip() for item in article.get("media_paths", []) if str(item).strip()
     ]
     media_strategy = _clean(article.get("media_strategy")).lower() or "upload"
-    card_text = str(article.get("card_text") or "").strip()
+    card_pages = _card_pages(article.get("card_pages"))
     card_style = _clean(article.get("card_style"))
     return {
         "title": title,
@@ -29,7 +37,7 @@ def normalize_publish_content(article: dict[str, Any]) -> dict[str, Any]:
         "tags": tags,
         "media_paths": media_paths,
         "media_strategy": media_strategy,
-        "card_text": card_text,
+        "card_pages": card_pages,
         "card_style": card_style,
     }
 
@@ -60,6 +68,9 @@ def resolve_publish_content(
     *,
     default_media_strategy: str,
     default_card_style: str,
+    text_image_min_pages: int = DEFAULT_MIN_PAGES,
+    text_image_max_pages: int = DEFAULT_MAX_PAGES,
+    text_image_target_chars_per_page: int = DEFAULT_TARGET_CHARS_PER_PAGE,
 ) -> dict[str, Any]:
     """Apply the configured media policy before freezing a publish package."""
 
@@ -75,14 +86,32 @@ def resolve_publish_content(
 
     content["media_strategy"] = strategy
     if strategy == "xhs_text_image":
+        validate_page_settings(
+            min_pages=text_image_min_pages,
+            max_pages=text_image_max_pages,
+            target_chars_per_page=text_image_target_chars_per_page,
+        )
         card_style = _clean(article.get("card_style") or default_card_style)
         if not card_style:
             raise ValueError("XHS text-image style must not be empty")
         content["media_paths"] = []
-        content["card_text"] = str(article.get("card_text") or content["body"]).strip()
+        if content["card_pages"]:
+            page_count = len(content["card_pages"])
+            if not text_image_min_pages <= page_count <= text_image_max_pages:
+                raise ValueError(
+                    "XHS text-image card_pages count must be within the configured page range"
+                )
+        else:
+            content["card_pages"] = plan_text_image_pages(
+                title=content["title"],
+                body=content["body"],
+                min_pages=text_image_min_pages,
+                max_pages=text_image_max_pages,
+                target_chars_per_page=text_image_target_chars_per_page,
+            )
         content["card_style"] = card_style
     else:
-        content["card_text"] = ""
+        content["card_pages"] = []
         content["card_style"] = ""
     return content
 
@@ -95,6 +124,17 @@ def validate_publish_media_strategy(value: Any) -> str:
             f"Unsupported XHS media strategy: {strategy!r}. " f"Supported strategies: {supported}."
         )
     return strategy
+
+
+def _card_pages(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list | tuple):
+        raise ValueError("XHS text-image card_pages must be a list of non-empty strings")
+    pages = [str(item).strip() for item in value]
+    if any(not page for page in pages):
+        raise ValueError("XHS text-image card_pages must contain only non-empty strings")
+    return pages
 
 
 def _file_hash(path: Path) -> str:
