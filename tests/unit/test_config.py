@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 import agentkit.config as config_mod
 
 
@@ -37,6 +39,9 @@ def _fresh_settings(monkeypatch, **env):
         "AGENTKIT_OCR_TIMEOUT_SECONDS",
         "AGENTKIT_OCR_MAX_IMAGE_BYTES",
         "AGENTKIT_XHS_RESEARCH_PROVIDER",
+        "AGENTKIT_XHS_TEXT_IMAGE_MIN_PAGES",
+        "AGENTKIT_XHS_TEXT_IMAGE_MAX_PAGES",
+        "AGENTKIT_XHS_TEXT_IMAGE_TARGET_CHARS_PER_PAGE",
         "AGENTKIT_XHS_BASE_URL",
         "AGENTKIT_XHS_ENRICH_DETAILS",
         "AGENTKIT_XHS_DETAIL_LIMIT",
@@ -81,6 +86,9 @@ def test_defaults(monkeypatch):
     assert s.xhs_publish_media_strategy == "upload"
     assert s.xhs_text_image_style == "涂鸦"
     assert s.xhs_text_image_generation_timeout_seconds == 120.0
+    assert s.xhs_text_image_min_pages == 3
+    assert s.xhs_text_image_max_pages == 8
+    assert s.xhs_text_image_target_chars_per_page == 180
     assert s.xhs_detail_timeout_seconds == 6.0
     assert s.web_search_browser == "chromium"
     assert s.web_search_headless is True
@@ -337,6 +345,9 @@ def test_browser_search_env_overrides(monkeypatch):
         AGENTKIT_XHS_PUBLISH_MEDIA_STRATEGY="xhs_text_image",
         AGENTKIT_XHS_TEXT_IMAGE_STYLE="清新",
         AGENTKIT_XHS_TEXT_IMAGE_GENERATION_TIMEOUT_SECONDS="90",
+        AGENTKIT_XHS_TEXT_IMAGE_MIN_PAGES="4",
+        AGENTKIT_XHS_TEXT_IMAGE_MAX_PAGES="7",
+        AGENTKIT_XHS_TEXT_IMAGE_TARGET_CHARS_PER_PAGE="150",
         AGENTKIT_WEB_SEARCH_HEADLESS="false",
         AGENTKIT_WEB_SEARCH_PROFILE_ROOT="data/test-profiles",
         AGENTKIT_WEB_SEARCH_STORAGE_STATE_ROOT="data/test-browser-state",
@@ -345,9 +356,21 @@ def test_browser_search_env_overrides(monkeypatch):
     assert s.xhs_publish_media_strategy == "xhs_text_image"
     assert s.xhs_text_image_style == "清新"
     assert s.xhs_text_image_generation_timeout_seconds == 90.0
+    assert s.xhs_text_image_min_pages == 4
+    assert s.xhs_text_image_max_pages == 7
+    assert s.xhs_text_image_target_chars_per_page == 150
     assert s.web_search_headless is False
     assert s.web_search_profile_root == "data/test-profiles"
     assert s.web_search_storage_state_root == "data/test-browser-state"
+
+
+def test_xhs_text_image_page_range_must_be_ordered(monkeypatch):
+    with pytest.raises(ValueError, match="min_pages"):
+        _fresh_settings(
+            monkeypatch,
+            AGENTKIT_XHS_TEXT_IMAGE_MIN_PAGES="7",
+            AGENTKIT_XHS_TEXT_IMAGE_MAX_PAGES="6",
+        )
 
 
 def test_get_settings_cached(monkeypatch):

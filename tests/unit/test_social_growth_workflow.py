@@ -51,11 +51,12 @@ def _campaign_context(
     context_invoker: object,
     *,
     publishing_mode: str = "draft",
+    publishing_media_strategy: str = "upload",
     request_text: str = (
         "Research top 3 Xiaohongshu cases and prepare copy for 30 days 1w followers."
     ),
 ) -> tuple[SkillContext, InMemoryArtifactStore]:
-    mock_xhs = MockXhsProvider()
+    mock_xhs = MockXhsProvider(media_strategy=publishing_media_strategy)
     mock_metrics = MockXhsMetricsProvider()
     artifacts = InMemoryArtifactStore()
     agent = SimpleNamespace(
@@ -82,6 +83,7 @@ def _campaign_context(
                     "target_followers": 10000,
                     "cadence": "daily",
                     "publishing_mode": publishing_mode,
+                    "publishing_media_strategy": publishing_media_strategy,
                 }
             },
             tools={
@@ -212,6 +214,9 @@ def test_xhs_provider_bundle_builds_playwright_publisher(monkeypatch, tmp_path):
             "publishing_media_strategy": "xhs_text_image",
             "text_image_style": "涂鸦",
             "text_image_generation_timeout_seconds": 90,
+            "text_image_min_pages": 4,
+            "text_image_max_pages": 7,
+            "text_image_target_chars_per_page": 150,
         }
     )
 
@@ -221,6 +226,9 @@ def test_xhs_provider_bundle_builds_playwright_publisher(monkeypatch, tmp_path):
     assert bundle.publishing.adapter.media_strategy == "xhs_text_image"
     assert bundle.publishing.adapter.text_image_style == "涂鸦"
     assert bundle.publishing.adapter.text_image_generation_timeout_ms == 90_000
+    assert bundle.publishing.adapter.text_image_min_pages == 4
+    assert bundle.publishing.adapter.text_image_max_pages == 7
+    assert bundle.publishing.adapter.text_image_target_chars_per_page == 150
 
 
 def test_research_quality_reports_default_topic_and_card_only_evidence():
@@ -542,6 +550,7 @@ def test_xhs_review_failure_revises_once_then_prepares_publication() -> None:
     ctx, _artifacts = _campaign_context(
         spy,
         publishing_mode="direct",
+        publishing_media_strategy="xhs_text_image",
         request_text="围绕 AI 副业生成并发布小红书文案",
     )
 
@@ -552,6 +561,16 @@ def test_xhs_review_failure_revises_once_then_prepares_publication() -> None:
     assert result["article"]["body"].startswith("仅根据可见搜索卡片")
     assert result["publish"]["status"] == "awaiting_approval"
     assert "deferred_action" in result
+    deferred_action = result["deferred_action"]
+    assert 3 <= len(deferred_action["preview"]["card_pages"]) <= 8
+    assert deferred_action["preview"]["card_page_count"] == len(
+        deferred_action["preview"]["card_pages"]
+    )
+    assert (
+        deferred_action["tool_calls"][0]["args"]["package"]["card_pages"]
+        == result["publish"]["card_pages"]
+    )
+    assert "card_text" not in deferred_action["preview"]
     assert [request.context_id for request in spy.requests] == [
         "skill.xhs-growth-campaign.article-generate",
         "skill.xhs-growth-campaign.content-review",
