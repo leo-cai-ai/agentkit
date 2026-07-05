@@ -29,6 +29,11 @@ def _fresh_settings(monkeypatch, **env):
         "AGENTKIT_RAG_STORE_BACKEND",
         "AGENTKIT_RAG_QUERY_REWRITE",
         "AGENTKIT_RAG_RERANKER",
+        "AGENTKIT_OCR_PROVIDER",
+        "AGENTKIT_OCR_URL",
+        "AGENTKIT_OCR_MODEL",
+        "AGENTKIT_OCR_TIMEOUT_SECONDS",
+        "AGENTKIT_OCR_MAX_IMAGE_BYTES",
         "AGENTKIT_XHS_RESEARCH_PROVIDER",
         "AGENTKIT_XHS_BASE_URL",
         "AGENTKIT_XHS_ENRICH_DETAILS",
@@ -91,6 +96,33 @@ def test_media_understanding_defaults(monkeypatch):
     assert settings.media_understanding_model == ""
     assert settings.media_understanding_max_images == 3
     assert settings.media_understanding_min_confidence == 0.75
+
+
+def test_shared_ocr_defaults_to_none(monkeypatch):
+    settings = _fresh_settings(monkeypatch)
+
+    assert settings.ocr_provider == "none"
+    assert settings.ocr_url == "http://localhost:11434/api/generate"
+    assert settings.ocr_model == "glm-ocr:latest"
+    assert settings.ocr_timeout_seconds == 120.0
+    assert settings.ocr_max_image_bytes == 10 * 1024 * 1024
+
+
+def test_shared_ocr_environment_overrides(monkeypatch):
+    settings = _fresh_settings(
+        monkeypatch,
+        AGENTKIT_OCR_PROVIDER="ollama",
+        AGENTKIT_OCR_URL="http://127.0.0.1:11434/api/generate",
+        AGENTKIT_OCR_MODEL="glm-ocr:q8_0",
+        AGENTKIT_OCR_TIMEOUT_SECONDS="45",
+        AGENTKIT_OCR_MAX_IMAGE_BYTES="2048",
+    )
+
+    assert settings.ocr_provider == "ollama"
+    assert settings.ocr_url.endswith("/api/generate")
+    assert settings.ocr_model == "glm-ocr:q8_0"
+    assert settings.ocr_timeout_seconds == 45.0
+    assert settings.ocr_max_image_bytes == 2048
 
 
 def test_media_understanding_env_overrides(monkeypatch):

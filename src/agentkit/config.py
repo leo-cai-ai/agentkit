@@ -221,6 +221,17 @@ class Settings(BaseSettings):
     rag_ocr_enabled: bool = False
     rag_ocr_languages: str = "eng+chi_sim"
 
+    # XHS 与 RAG 共用同一 OCR 基础设施；none 是零网络调用的全局硬关闭。
+    ocr_provider: str = "none"
+    ocr_url: str = "http://localhost:11434/api/generate"
+    ocr_model: str = "glm-ocr:latest"
+    ocr_timeout_seconds: float = Field(default=120.0, gt=0.0, le=600.0)
+    ocr_max_image_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        gt=0,
+        le=50 * 1024 * 1024,
+    )
+
     # Browser-backed public-web research. Browser lifecycle is shared across
     # site adapters; each site gets an isolated persistent profile directory so
     # login cookies are not mixed between connectors. Playwright is optional and
