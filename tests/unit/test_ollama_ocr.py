@@ -59,6 +59,28 @@ def test_ollama_ocr_sends_non_streaming_base64_image_and_returns_usage() -> None
     assert result.usage == {"total_duration": 12, "eval_count": 3}
 
 
+def test_ollama_ocr_allows_docker_host_gateway() -> None:
+    captured_url = ""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_url
+        captured_url = str(request.url)
+        return httpx.Response(200, json={"response": "识别文本", "done": True})
+
+    provider = OllamaOcrProvider(
+        url="http://host.docker.internal:11435/api/generate",
+        model="glm-ocr:latest",
+        timeout_seconds=120,
+        max_image_bytes=1024,
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = provider.analyze(b"png", mime_type="image/png")
+
+    assert captured_url == "http://host.docker.internal:11435/api/generate"
+    assert result.text == "识别文本"
+
+
 @pytest.mark.parametrize(
     "url",
     [

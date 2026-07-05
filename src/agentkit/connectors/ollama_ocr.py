@@ -1,4 +1,4 @@
-"""通过本机 Ollama `/api/generate` 调用 GLM-OCR。"""
+"""通过本机或 Docker 宿主机 Ollama `/api/generate` 调用 GLM-OCR。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import httpx
 
 from agentkit.core.ocr import OcrProviderError, OcrResult
 
-_ALLOWED_HOSTS = {"localhost", "127.0.0.1", "::1"}
+_ALLOWED_HOSTS = {"localhost", "127.0.0.1", "::1", "host.docker.internal"}
 _ALLOWED_MIME_TYPES = {"image/png", "image/jpeg", "image/webp"}
 _USAGE_FIELDS = (
     "total_duration",
@@ -25,7 +25,7 @@ _MAX_RESPONSE_BYTES = 1_000_000
 
 
 class OllamaOcrProvider:
-    """把图片发送到受限的本机 Ollama OCR Endpoint。"""
+    """把图片发送到受限的本机或 Docker 宿主机 OCR Endpoint。"""
 
     name = "ollama"
     enabled = True
@@ -145,7 +145,7 @@ def _validate_ollama_url(url: str) -> str:
         and not parts.fragment
     )
     if not valid:
-        raise ValueError("Ollama OCR URL 必须是本机 /api/generate Endpoint")
+        raise ValueError("Ollama OCR URL 必须是本机或 Docker 宿主机 /api/generate Endpoint")
     return value
 
 

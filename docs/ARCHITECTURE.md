@@ -247,8 +247,9 @@ XHS 与 RAG 共享 URL、模型、超时和图片大小上限，但分别由
 执行 OCR，也不得隐式回退到 Tesseract。XHS 记录 `skipped/ocr_not_configured`，RAG 按未启用
 OCR 处理。
 
-Ollama Endpoint 默认只允许 `localhost`、`127.0.0.1` 或 `::1`，路径必须严格为
-`/api/generate`，禁止重定向并限制请求图片与响应体大小。单张图片或单页失败只影响该资产；
+Ollama Endpoint 默认只允许 `localhost`、`127.0.0.1`、`::1` 或 Docker 宿主机别名
+`host.docker.internal`，路径必须严格为 `/api/generate`，禁止重定向并限制请求图片与响应体大小。
+Docker 容器可通过该宿主机别名访问宿主机或已映射的 WSL Ollama 服务。单张图片或单页失败只影响该资产；
 全部 XHS 图片失败才返回媒体理解失败。GLM-OCR 未返回可信置信度时保持 `None`，不能因此
 降低 Review 标准。
 
