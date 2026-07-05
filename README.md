@@ -91,6 +91,23 @@ agentkit --tenant company_alpha web
 
 Web 控制台默认地址为 `http://127.0.0.1:8501`。
 
+### 验证本地 Ollama OCR
+
+XHS 图片理解与 RAG 文档摄取共用同一个 OCR Provider。目标机器安装
+`glm-ocr:latest` 后，可直接使用生产代码路径验证一张已知文字图片：
+
+```powershell
+$env:AGENTKIT_OCR_PROVIDER="ollama"
+$env:AGENTKIT_OCR_URL="http://localhost:11434/api/generate"
+$env:AGENTKIT_OCR_MODEL="glm-ocr:latest"
+agentkit ocr-check .\test-image.png
+agentkit ocr-check .\test-image.png --json
+```
+
+成功标准是退出码为 `0`、状态为 `completed`、模型为 `glm-ocr:latest`，且 `text`
+包含图片中的已知文字。`AGENTKIT_OCR_PROVIDER=none` 是全局硬关闭：命令返回
+`SKIPPED`，不会读取图片、访问 Ollama 或回退到 Tesseract。
+
 ## 声明式扩展
 
 ```powershell

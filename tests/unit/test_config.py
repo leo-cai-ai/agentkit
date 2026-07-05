@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import agentkit.config as config_mod
 
 
@@ -121,6 +123,17 @@ def test_shared_ocr_environment_overrides(monkeypatch):
     assert settings.ocr_model == "glm-ocr:q8_0"
     assert settings.ocr_timeout_seconds == 45.0
     assert settings.ocr_max_image_bytes == 2048
+
+
+def test_env_example_documents_shared_ocr_configuration() -> None:
+    env_example = (Path(__file__).parents[2] / ".env.example").read_text(encoding="utf-8")
+
+    assert "AGENTKIT_OCR_PROVIDER=none" in env_example
+    assert "AGENTKIT_OCR_URL=http://localhost:11434/api/generate" in env_example
+    assert "AGENTKIT_OCR_MODEL=glm-ocr:latest" in env_example
+    assert "AGENTKIT_MEDIA_UNDERSTANDING_PROVIDER=ocr" in env_example
+    assert "AGENTKIT_RAG_OCR_ENABLED=false" in env_example
+    assert "AGENTKIT_RAG_OCR_LANGUAGES" not in env_example
 
 
 def test_media_understanding_env_overrides(monkeypatch):
