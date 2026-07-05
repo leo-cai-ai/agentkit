@@ -2,6 +2,7 @@ from contextlib import nullcontext
 
 import pytest
 
+import agentkit.core.audit as audit_mod
 from agentkit.core.audit import InMemoryAuditLog, PostgresAuditLog, SQLiteAuditLog
 
 
@@ -214,6 +215,35 @@ def test_audit_lists_scoped_conversation_runs(
 
     assert [run["run_id"] for run in runs] == [parent_id, child_id]
     assert all(run.get("started_at") is not None for run in runs)
+
+
+def test_sqlite_audit_orders_parent_before_child_when_started_at_ties(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(audit_mod.time, "time", lambda: 123.456)
+    audit = SQLiteAuditLog(tmp_path / "audit.sqlite")
+    parent_id = audit.start_run(
+        tenant_id="tenant-a",
+        user_id="user-a",
+        text="父任务",
+        conversation_id="conversation-a",
+    )
+    child_id = audit.start_run(
+        tenant_id="tenant-a",
+        user_id="user-a",
+        text="子任务",
+        parent_run_id=parent_id,
+        conversation_id="conversation-a",
+    )
+
+    runs = audit.runs_for_conversation(
+        conversation_id="conversation-a",
+        tenant_id="tenant-a",
+        user_id="user-a",
+    )
+
+    assert [run["run_id"] for run in runs] == [parent_id, child_id]
 
 
 @pytest.mark.parametrize(

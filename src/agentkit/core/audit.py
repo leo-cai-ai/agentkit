@@ -352,7 +352,9 @@ class SQLiteAuditLog:
                 WHERE conversation_id = ?
                   AND tenant_id = ?
                   AND user_id = ?
-                ORDER BY started_at ASC
+                ORDER BY started_at ASC,
+                         (parent_run_id IS NOT NULL) ASC,
+                         rowid ASC
                 """,
                 (conversation_id, tenant_id, user_id),
             ).fetchall()
@@ -745,7 +747,9 @@ class PostgresAuditLog(SQLiteAuditLog):
                 WHERE conversation_id = %s
                   AND tenant_id = %s
                   AND user_id = %s
-                ORDER BY started_at ASC
+                ORDER BY started_at ASC,
+                         (parent_run_id IS NOT NULL) ASC,
+                         run_id ASC
                 """,
                 (conversation_id, tenant_id, user_id),
             ).fetchall()
