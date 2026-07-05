@@ -457,7 +457,9 @@ Expected: `All checks passed!`
 
 - [ ] **Step 4: 运行 mypy**
 
-Run: `.venv\Scripts\python.exe -m mypy src skills`
+Run: `.venv\Scripts\python.exe -m mypy src`
+
+Run: `.venv\Scripts\python.exe -m mypy skills/xhs-growth-campaign/scripts/handlers.py skills/xhs-growth-campaign/scripts/providers.py`
 
 Expected: `Success: no issues found`。
 
