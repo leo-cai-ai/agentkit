@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from agentkit.config import get_settings
 from agentkit.core.contracts import ToolDefinition
+from agentkit.core.media import NoneMediaUnderstandingProvider
 
 from .providers import (
     XhsMetricsProvider,
@@ -94,12 +95,23 @@ def _interactive_login(
     settings = get_settings()
     target = str(args.get("target") or "search")
     if target == "publish":
-        provider = build_playwright_publishing_provider(settings, provider_config)
+        provider = cast(
+            Any,
+            build_playwright_publishing_provider(settings, provider_config),
+        )
         client = provider.client
         adapter = provider.adapter
         url = adapter.publish_url
     else:
-        provider = build_playwright_research_provider(settings, provider_config)
+        provider = cast(
+            Any,
+            build_playwright_research_provider(
+                settings,
+                provider_config,
+                media_provider=NoneMediaUnderstandingProvider(),
+                max_media_assets=0,
+            ),
+        )
         client = provider.client
         adapter = provider.adapter
         url = adapter.search_url(str(args.get("query") or "AI Agent"))

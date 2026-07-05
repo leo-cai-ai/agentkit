@@ -231,6 +231,42 @@ def test_xhs_provider_bundle_builds_playwright_publisher(monkeypatch, tmp_path):
     assert bundle.publishing.adapter.text_image_target_chars_per_page == 150
 
 
+def test_interactive_search_login_disables_media_analysis(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class Client:
+        def open_interactive(self, **kwargs) -> None:
+            captured["open_interactive"] = kwargs
+
+    adapter = SimpleNamespace(
+        site_key="xiaohongshu",
+        search_url=lambda query: f"https://www.xiaohongshu.com/search?keyword={query}",
+        interactive_login_complete=lambda _page: True,
+    )
+
+    def build_research(settings, config, *, media_provider, max_media_assets):
+        captured["settings"] = settings
+        captured["config"] = config
+        captured["media_provider"] = media_provider
+        captured["max_media_assets"] = max_media_assets
+        return SimpleNamespace(client=Client(), adapter=adapter)
+
+    settings = SimpleNamespace()
+    monkeypatch.setattr(_TOOLS, "get_settings", lambda: settings)
+    monkeypatch.setattr(_PROVIDERS, "build_playwright_research_provider", build_research)
+
+    result = _TOOLS._interactive_login(
+        {"target": "search", "query": "AI Agent"},
+        {},
+    )
+
+    assert result == {"status": "authenticated", "target": "search"}
+    assert captured["settings"] is settings
+    assert captured["media_provider"].name == "none"
+    assert captured["max_media_assets"] == 0
+    assert captured["open_interactive"]["site_key"] == "xiaohongshu"
+
+
 def test_research_quality_reports_default_topic_and_card_only_evidence():
     quality = assess_research_quality(
         [
