@@ -116,8 +116,16 @@ def test_chat_welcome_message_uses_shared_chinese_configuration(client) -> None:
     assert f'data-agent-welcome-template="{agent_welcome_template}"' in html
     assert f"<p>{general_welcome}</p>" in html
     assert "function getChatWelcomeMessage" in js
+    assert 'agentWelcomeTemplate.replace("{agent}", agentLabel(agentName))' in js
+    assert (
+        "function resetChatThread(greeting, labelOverride = getSelectedAgentLabel())"
+        in js
+    )
+    assert 'addChatMessage("assistant", greeting, labelOverride)' in js
     assert "resetChatThread(getChatWelcomeMessage())" in js
-    assert "resetChatThread(getChatWelcomeMessage(selected))" in js
+    assert (
+        "resetChatThread(getChatWelcomeMessage(selected), agentLabel(selected))" in js
+    )
     assert "New conversation started. How can I help?" not in js
     assert "How can I help?" not in js
 

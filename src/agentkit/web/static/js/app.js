@@ -519,15 +519,15 @@ function getChatWelcomeMessage(agentName = getSelectedAgentName()) {
   const agentWelcomeTemplate = thread?.dataset.agentWelcomeTemplate
     || "你好，我是{agent}。本轮将由我直接协助你处理相关任务。";
   if (agentName === "general_agent") return generalWelcome;
-  return agentWelcomeTemplate.replace("{agent}", getSelectedAgentLabel());
+  return agentWelcomeTemplate.replace("{agent}", agentLabel(agentName));
 }
 
-function resetChatThread(greeting) {
+function resetChatThread(greeting, labelOverride = getSelectedAgentLabel()) {
   const thread = document.getElementById("chat-thread");
   if (!thread) return;
   thread.innerHTML = "";
   if (greeting) {
-    addChatMessage("assistant", greeting, getSelectedAgentLabel());
+    addChatMessage("assistant", greeting, labelOverride);
   }
 }
 
@@ -1047,7 +1047,7 @@ function bindAgentSelector() {
       // persisted history from the backend.
       currentConversationId = null;
       clearPendingResult();
-      resetChatThread(getChatWelcomeMessage(selected));
+      resetChatThread(getChatWelcomeMessage(selected), agentLabel(selected));
       await loadConversations(selected);
     } else {
       await loadConversations(selected);
