@@ -44,16 +44,14 @@ pg = [
     "psycopg[binary,pool]>=3.1,<4.0",
     "langgraph-checkpoint-postgres>=3.1.0,<4.0.0",
 ]
-# Enterprise knowledge-base RAG: Chroma persistence plus PDF/Word/OCR loaders.
-# OCR also needs a system tesseract binary and language packs.
+# Enterprise knowledge-base RAG: Chroma persistence plus PDF/Word loaders.
+# OCR uses the shared runtime Provider and needs no RAG-specific SDK.
 rag = [
     "chromadb>=0.5.0,<2.0.0",
     "numpy>=1.26,<2.4",
     "pypdf>=4.0.0,<7.0.0",
     "pymupdf>=1.24.0,<2.0.0",
     "python-docx>=1.1.0,<2.0.0",
-    "pillow>=10.0.0,<13.0.0",
-    "pytesseract>=0.3.10,<0.4.0",
 ]
 # Browser-backed website research. Browser binaries are installed separately
 # with `python -m playwright install chromium`.

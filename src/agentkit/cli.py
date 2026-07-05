@@ -486,16 +486,19 @@ def _rag_service_for_tenant(tenant_selector: str | None):
     from agentkit.config import get_settings
     from agentkit.core.rag.service import build_knowledge_service
     from agentkit.runtime.bootstrap import build_runtime, load_tenant_config, resolve_tenant_id
+    from agentkit.runtime.ocr import build_configured_ocr_provider
 
     resolved = resolve_tenant_id(tenant_selector)
     tenant_config = load_tenant_config(resolved)
     tenant_id = str(tenant_config.get("tenant_id") or resolved)
     runtime = build_runtime(tenant_id=resolved)
+    settings = get_settings()
     service = build_knowledge_service(
-        get_settings(),
+        settings,
         tenant_id=tenant_id,
         tenant_selector=resolved,
         context_invoker=runtime.context_invoker,
+        ocr_provider=build_configured_ocr_provider(settings),
     )
     return tenant_id, service, runtime.gateway.audit
 
@@ -520,7 +523,6 @@ def _rag_ingest(
         acl_roles=_parse_csv(roles),
         metadata={"tenant_id": logical_tenant_id},
         ocr_enabled=bool(getattr(settings, "rag_ocr_enabled", False) if ocr is None else ocr),
-        ocr_languages=str(getattr(settings, "rag_ocr_languages", "eng+chi_sim")),
     )
     if as_json:
         print(json.dumps(report, ensure_ascii=False, indent=2))

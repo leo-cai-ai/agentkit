@@ -60,6 +60,7 @@ from agentkit.runtime.declarative_catalog import (
     register_catalog,
     resolve_enabled_agent_ids,
 )
+from agentkit.runtime.ocr import build_configured_ocr_provider
 
 AGENTKIT_ROOT = Path(
     os.environ.get("AGENTKIT_ROOT") or Path(__file__).resolve().parents[3]
@@ -255,6 +256,7 @@ def build_runtime(
             tenant_selector=resolved_tenant_id,
             context_invoker=context_invoker,
             embeddings=embeddings,
+            ocr_provider=build_configured_ocr_provider(settings),
         )
         if bool(getattr(settings, "rag_enabled", False))
         else None
