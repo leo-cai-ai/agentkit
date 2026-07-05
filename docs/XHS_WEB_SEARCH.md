@@ -19,6 +19,19 @@ agentkit --tenant company_alpha browser-login xhs --target publish
 
 CLI 通过声明目录中 XHS Tool 的 `factory_entrypoint` 获取交互式入口，不导入额外业务包。浏览器保持打开，直到页面通过登录完成检查或用户按 Ctrl+C。
 
+## Docker 浏览器运行时
+
+默认 Compose 文件显式构建 Dockerfile 的 `browser-runtime` 阶段，该阶段会安装 Playwright Python 包、Chromium 二进制和浏览器所需的 Linux 系统库。Windows 宿主机 `.venv` 中安装的 Playwright 或 Chromium 不会进入容器。
+
+Compose 固定使用镜像内置 Chromium，并在容器中启用 Headless 模式；宿主机 `.env` 中的 Chrome/Edge `browser_channel` 和 `executable_path` 不会传入容器。修改构建配置后需执行：
+
+```powershell
+docker compose build --no-cache web
+docker compose up -d
+```
+
+浏览器登录态同样不会自动从 Windows 宿主机复制到容器，生产部署应通过受保护的持久卷或 Storage State 注入，不能把登录态写进镜像。
+
 ## 研究策略
 
 `xhs.trend.research` 是只读 ReAct Skill，可根据观测选择搜索 Tool，但不得执行发布。`xhs.growth.campaign` 是固定 Workflow，用于完整的研究、提取、对比、策略、文案、评审、冻结和指标流程。
