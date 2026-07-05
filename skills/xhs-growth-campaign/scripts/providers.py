@@ -12,6 +12,10 @@ from typing import Any, Protocol
 
 from agentkit.config import get_settings
 from agentkit.connectors.mock_xhs import MockXhsConnector
+from agentkit.connectors.ocr_media import (
+    HttpMediaAssetLoader,
+    OcrMediaUnderstandingProvider,
+)
 from agentkit.connectors.xhs_publication import (
     publication_content_hash,
     resolve_publish_content,
@@ -21,6 +25,7 @@ from agentkit.core.media import (
     MediaUnderstandingProvider,
     build_default_media_registry,
 )
+from agentkit.runtime.ocr import build_configured_ocr_provider
 
 
 class XhsResearchProvider(Protocol):
@@ -243,18 +248,18 @@ def _build_media_provider(
         raise ValueError("media_understanding_max_images 必须位于 0 到 20 之间")
     if not 0.0 <= min_confidence <= 1.0:
         raise ValueError("media_understanding_min_confidence 必须位于 0 到 1 之间")
-    provider = build_default_media_registry().build(
-        provider_name,
-        {
-            "model": str(
-                config.get(
-                    "media_understanding_model",
-                    settings.media_understanding_model,
-                )
+    ocr_provider = build_configured_ocr_provider(settings)
+    registry = build_default_media_registry()
+    registry.register_factory(
+        "ocr",
+        lambda _provider_config: OcrMediaUnderstandingProvider(
+            ocr_provider=ocr_provider,
+            asset_loader=HttpMediaAssetLoader(
+                max_image_bytes=int(settings.ocr_max_image_bytes)
             ),
-            "min_confidence": min_confidence,
-        },
+        ),
     )
+    provider = registry.build(provider_name)
     return provider, max_media_assets, min_confidence
 
 

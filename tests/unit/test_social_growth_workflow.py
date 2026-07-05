@@ -163,6 +163,37 @@ def test_xhs_provider_bundle_rejects_unknown_media_provider(monkeypatch):
         )
 
 
+def test_xhs_ocr_adapter_skips_when_global_ocr_provider_is_none(monkeypatch, tmp_path):
+    from agentkit.config import Settings
+    from agentkit.core.media import MediaAsset
+
+    settings = Settings(_env_file=None, ocr_provider="none")
+    monkeypatch.setattr(_PROVIDERS, "get_settings", lambda: settings)
+    bundle = default_provider_bundle(
+        provider_config={
+            "research_provider": "playwright",
+            "browser_profile_root": str(tmp_path),
+            "media_understanding_provider": "ocr",
+        }
+    )
+
+    result = bundle.research.media_provider.analyze(
+        (
+            MediaAsset(
+                asset_id="a",
+                source_url="https://example.test/a.png",
+                media_type="image",
+                source_kind="detail",
+                index=0,
+            ),
+        ),
+        context={},
+    )
+
+    assert result.status == "skipped"
+    assert result.reason == "ocr_not_configured"
+
+
 def test_xhs_provider_bundle_builds_playwright_publisher(monkeypatch, tmp_path):
     from agentkit.config import Settings
     from agentkit.connectors.xhs_publisher_playwright import (
