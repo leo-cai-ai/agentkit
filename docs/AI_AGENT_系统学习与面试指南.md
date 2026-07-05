@@ -147,6 +147,17 @@ README.md
 
 LangGraph 可以理解为“带状态持久化的 Agent 工作流引擎”。它适合有分支、循环、人工介入、失败恢复的任务，而不仅仅是顺序调用多个函数。
 
+当前项目使用 LangChain Core 1.x、LangChain OpenAI 1.x 和 LangGraph 1.x。学习时需要区分三个层次：
+
+- LangChain `create_agent`：适合标准 Tool Calling Agent，通过 Middleware 扩展提示词、Tool 和 Guardrail。
+- LangGraph `StateGraph`：适合 AgentKit 这种确定性节点、条件分支、审批恢复和自定义治理图。
+- Deep Agents：建立在 LangChain/LangGraph 上的长任务 Harness；当前项目尚未安装。
+
+LangGraph 1.1+ 的 `version="v2"` 是调用和 Streaming 输出协议，不是 LangGraph 2.0。
+v2 调用返回 `GraphOutput`，状态位于 `.value`，中断位于 `.interrupts`。审批节点应使用
+公开的 `interrupt()` 暂停，并用 `Command(resume=...)` 恢复，不要继续使用已弃用的
+`NodeInterrupt`。
+
 ### 4.1 必须掌握的五个对象
 
 | 对象 | 作用 | 在项目中的意义 |

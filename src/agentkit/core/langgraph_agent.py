@@ -8,8 +8,8 @@ from collections.abc import Callable
 from dataclasses import replace
 from typing import Any, Protocol, TypedDict, cast
 
-from langgraph.errors import NodeInterrupt
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, interrupt
 
 from agentkit.runtime.conversation_context import (
     AgentConversationContext,
@@ -34,6 +34,7 @@ from .execution.protocol import ExecutionContext
 from .execution.registry import StrategyRegistry
 from .execution.selector import StrategySelection, StrategySelector
 from .idempotency import IdempotencyStore
+from .langgraph_runtime import invoke_graph_v2
 from .registry import AgentRegistry, SkillRegistry, ToolRegistry
 from .router import CapabilityResolutionError, IntentRouter
 from .tool_backends import PythonToolBackend, ToolBackendRegistry
@@ -141,7 +142,11 @@ class UnifiedAgentGraph:
         thread = thread_id or str(uuid.uuid4())
         config = {"configurable": {"thread_id": thread}}
         try:
-            self._graph.invoke({"request": request, "thread_id": thread}, config)
+            invoke_graph_v2(
+                self._graph,
+                {"request": request, "thread_id": thread},
+                config=config,
+            )
         except Exception as exc:  # noqa: BLE001 - 未处理异常必须收口为可审计终态
             return self._failure_response(thread, config, exc)
         return self._response_from_state(thread, config)
@@ -203,7 +208,7 @@ class UnifiedAgentGraph:
         )
         self._graph.update_state(config, {"request": resumed_request})
         try:
-            self._graph.invoke(None, config)
+            invoke_graph_v2(self._graph, Command(resume=True), config=config)
         except Exception as exc:  # noqa: BLE001 - 恢复执行也必须形成终态
             return self._failure_response(thread_id, config, exc)
         return self._response_from_state(thread_id, config)
@@ -457,7 +462,13 @@ class UnifiedAgentGraph:
         approved = set(request.context.get("approved_skills", []))
         if set(state["approval_required"]) <= approved:
             return {}
-        raise NodeInterrupt("等待人工审批")
+        interrupt(
+            {
+                "type": "approval_required",
+                "skills": list(state["approval_required"]),
+            }
+        )
+        return {}
 
     def _execute_strategy(self, state: UnifiedAgentState) -> dict[str, Any]:
         if "result" in state:
@@ -548,7 +559,13 @@ class UnifiedAgentGraph:
         if skill_name in rejected:
             return {"result": StrategyResult(status="rejected", output={})}
         if skill_name not in approved:
-            raise NodeInterrupt("等待人工审批延迟副作用")
+            interrupt(
+                {
+                    "type": "approval_required",
+                    "skills": list(state["approval_required"]),
+                }
+            )
+            return {}
         invoker = ToolExecutor(
             tenant_id=self._tenant_id,
             audit=self._audit,

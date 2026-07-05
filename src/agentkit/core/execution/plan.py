@@ -11,6 +11,8 @@ from jsonschema import validate as validate_json
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ConfigDict, Field
 
+from agentkit.core.langgraph_runtime import invoke_graph_v2
+
 from .models import (
     AutonomyBudget,
     CapabilityResolution,
@@ -394,7 +396,8 @@ class PlanExecuteStrategy:
         graph.add_edge("fail", END)
         final = cast(
             PlanState,
-            graph.compile(checkpointer=self._checkpointer).invoke(
+            invoke_graph_v2(
+                graph.compile(checkpointer=self._checkpointer),
                 PlanState(
                     plan=None,
                     completed={},

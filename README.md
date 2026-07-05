@@ -43,6 +43,21 @@ flowchart LR
 
 LLM 可以建议策略，但不能扩大 Agent 的 Skill 白名单、Tool 白名单、权限或预算。
 
+## LangChain / LangGraph 版本基线
+
+- LangChain Core：`>=1.4.8,<2.0.0`
+- LangChain OpenAI：`>=1.3.3,<2.0.0`
+- LangGraph：`>=1.2.7,<2.0.0`
+- Checkpoint SQLite / PostgreSQL：`>=3.1.0,<4.0.0`
+
+AgentKit 使用自定义 `StateGraph` 承载确定性工作流和受控自主策略，不使用 LangChain
+`create_agent` 替代统一业务图。Runtime 统一采用 LangGraph v2 输出协议，并通过公开的
+`interrupt` / `Command` API 实现审批暂停和恢复。这里的 v2 是调用输出协议，不是
+LangGraph 2.0。
+
+完整迁移说明和验证命令见
+[`docs/LANGCHAIN_LANGGRAPH_UPGRADE.md`](docs/LANGCHAIN_LANGGRAPH_UPGRADE.md)。
+
 ## 目录
 
 ```text
