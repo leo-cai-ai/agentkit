@@ -1410,7 +1410,7 @@ body[data-page="chat"] .ak-app-main {
 .ak-chat-surface {
   min-block-size: 0;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto auto;
   gap: var(--ak-sys-space-3);
 }
 
@@ -1850,14 +1850,8 @@ button.conversation-new {
     );
   }
 
-  .ak-chat-workspace {
-    block-size: auto;
-    min-block-size: 0;
-  }
-
   .ak-chat-surface {
-    grid-template-rows: auto auto minmax(18rem, 50vh) auto;
-    grid-template-rows: auto auto minmax(18rem, 50dvh) auto;
+    grid-template-rows: minmax(0, 1fr) auto auto;
   }
 }
 

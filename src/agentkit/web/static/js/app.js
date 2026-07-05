@@ -1255,7 +1255,8 @@ function renderResult(payload, requestPayload = null, options = {}) {
   const conversationMessage = final.message || response.output?.message || "";
   const rawPlan = escapeHtml(JSON.stringify(response.plan || {}, null, 2));
   const rawAudit = escapeHtml(JSON.stringify(response.audit_events || [], null, 2));
-  const hidePrimaryPanel = options.hidePrimaryPanel === true;
+  const suppressPrimaryPanel =
+    document.body.dataset.page === "chat" || options.hidePrimaryPanel === true;
   const primaryTitle = waitingForApproval
     ? "Approval Required"
     : rejected
@@ -1274,8 +1275,8 @@ function renderResult(payload, requestPayload = null, options = {}) {
     ? `<p class="response-text">${escapeHtml(conversationMessage)}</p>${approvalActionHtml(waitingForApproval, approval)}`
     : renderBusinessOutput(final);
 
-  region.hidden = hidePrimaryPanel;
-  region.innerHTML = hidePrimaryPanel ? "" : `
+  region.hidden = suppressPrimaryPanel;
+  region.innerHTML = suppressPrimaryPanel ? "" : `
     <article class="panel ak-panel result-card ak-result-card" aria-labelledby="result-primary-title">
       <div class="panel-head ak-panel-header">
         <h2 id="result-primary-title">${primaryTitle}</h2>

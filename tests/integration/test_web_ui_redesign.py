@@ -83,6 +83,25 @@ def test_mobile_navigation_has_a_focused_controller(client) -> None:
     assert 'toggle.setAttribute("aria-expanded", String(open))' in js
 
 
+def test_chat_surface_anchors_composer_after_flexible_message_area(client) -> None:
+    css = client.get("/static/css/pages.css").get_data(as_text=True)
+
+    assert "grid-template-rows: minmax(0, 1fr) auto auto" in css
+    assert "grid-template-rows: auto auto minmax(0, 1fr) auto" not in css
+    assert "grid-template-rows: auto auto minmax(18rem, 50dvh) auto" not in css
+
+
+def test_chat_result_renderer_only_updates_conversation_and_trace(client) -> None:
+    login(client)
+    html = client.get("/chat").get_data(as_text=True)
+    js = client.get("/static/js/app.js").get_data(as_text=True)
+
+    assert 'id="result-region"' in html
+    assert 'document.body.dataset.page === "chat"' in js
+    assert "region.hidden = suppressPrimaryPanel" in js
+    assert 'region.innerHTML = suppressPrimaryPanel ? ""' in js
+
+
 def test_compact_navigation_explains_icons_with_tooltips(client) -> None:
     login(client)
     html = client.get("/chat").get_data(as_text=True)
