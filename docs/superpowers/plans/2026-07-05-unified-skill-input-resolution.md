@@ -41,7 +41,7 @@
 ### Task 3: 实现统一输入解析器
 
 **Files:**
-- Create: `src/agentkit/core/input_resolution.py`
+- Create: `src/agentkit/core/schema_input_resolver.py`
 - Create: `tests/unit/test_input_resolution.py`
 
 - [ ] 编写规则已完整时不调用 LLM 的失败测试。
@@ -73,4 +73,3 @@
 
 - [ ] 运行输入解析相关测试。
 - [ ] 运行完整测试集，确认三个 Agent 与现有策略不回归。
-

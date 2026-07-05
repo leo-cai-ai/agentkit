@@ -36,6 +36,9 @@ def format_task_output_text(*, status: str, output: Mapping[str, Any]) -> str:
         skills = ", ".join(str(item) for item in approval.get("skills", []))
         return f"当前任务等待人工审批: {skills}" if skills else "当前任务等待人工审批。"
     if status == "needs_clarification":
+        clarification = str(data.get("clarification") or "").strip()
+        if clarification:
+            return clarification
         missing = ", ".join(str(item) for item in data.get("missing_required", []))
         return f"请补充必填参数: {missing}" if missing else "请补充任务所需信息。"
     ranked = data.get("ranked_candidates")

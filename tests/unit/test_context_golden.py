@@ -32,6 +32,17 @@ CASES = {
         "request.goal": "FAKE-GOAL",
         "routing.candidate_skills": [{"id": "FAKE-SKILL"}],
     },
+    "runtime.input-resolve": {
+        "request.message": "FAKE-REQUEST",
+        "conversation.summary": "FAKE-SUMMARY",
+        "request.arguments": {"top_n": 5},
+        "skill.missing_fields": ["topic"],
+        "skill.input_schema": {
+            "type": "object",
+            "required": ["topic"],
+            "properties": {"topic": {"type": "string", "description": "研究主题"}},
+        },
+    },
     "runtime.general-answer": {
         "request.message": "FAKE-REQUEST",
         "conversation.summary": "FAKE-SUMMARY",

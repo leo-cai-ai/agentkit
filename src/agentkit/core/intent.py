@@ -80,7 +80,15 @@ class IntentDecomposer:
             target = {"kind": "platform_handler", "name": "default"}
         entities = dict(baseline.entities)
         if isinstance(data.get("entities"), dict):
-            entities.update({str(key): value for key, value in data["entities"].items()})
+            entities.update(
+                {
+                    str(key): value
+                    for key, value in data["entities"].items()
+                    if value is not None
+                    and not (isinstance(value, str) and not value.strip())
+                    and not (isinstance(value, list | tuple | dict) and not value)
+                }
+            )
         signals = list(baseline.signals)
         signals.append("llm_required:intent")
         if isinstance(data.get("signals"), list):
@@ -206,6 +214,32 @@ def detect_language(text: str) -> str:
     return "zh-CN" if re.search(r"[\u4e00-\u9fff]", text) else "en"
 
 
+def extract_topic_from_text(text: str) -> str:
+    """从常见自然语言表达中提取主题，兼容方向误用的中文引号。"""
+
+    quote_chars = '“”"「」『』'
+    quoted_patterns = (
+        rf"(?:围绕|关于|以)?\s*[{quote_chars}]([^{quote_chars}\r\n]{{1,100}})[{quote_chars}]\s*(?:为)?主题",
+        rf"(?:围绕|关于)\s*[{quote_chars}]([^{quote_chars}\r\n]{{1,100}})[{quote_chars}]",
+    )
+    for pattern in quoted_patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+
+    plain_patterns = (
+        r"以\s*([^，,。；;\r\n]{1,100}?)\s*为主题",
+        r"(?:主题(?:是|为)?|选题)\s*[:：]\s*([^，,。；;\r\n]{1,100})",
+        r"(?:围绕|关于)\s*([^，,。；;\r\n]{1,100}?)(?=\s*(?:，|,|。|；|;|研究|搜索|整理|分析|$))",
+        r"(?:about|topic:)\s*([^.，,;；\r\n]{1,100})",
+    )
+    for pattern in plain_patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).strip().strip(quote_chars)
+    return ""
+
+
 def extract_entities(request: TaskRequest) -> dict[str, Any]:
     entities: dict[str, Any] = {}
     job_id = request.context.get("job_id")
@@ -221,11 +255,7 @@ def extract_entities(request: TaskRequest) -> dict[str, Any]:
         entities["candidate_ids"] = [str(item).upper() for item in candidate_ids]
     topic = request.context.get("topic")
     if not topic:
-        topic_match = re.search(
-            r"(?:围绕|以)?\s*[“\"](?P<topic>[^”\"\n]{1,100})[”\"]\s*(?:为)?主题",
-            request.text,
-        )
-        topic = topic_match.group("topic").strip() if topic_match else ""
+        topic = extract_topic_from_text(request.text)
     if topic:
         entities["topic"] = str(topic)
     top_n = request.context.get("top_n")

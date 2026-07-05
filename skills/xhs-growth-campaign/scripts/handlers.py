@@ -782,8 +782,7 @@ def build_publish_deferred_action(
             "media_paths": list(publish.get("media_paths") or []),
             "media_preview_urls": list(publish.get("media_preview_urls") or []),
             "media_strategy": publish.get("media_strategy", "upload"),
-            "card_pages": list(publish.get("card_pages") or []),
-            "card_page_count": len(publish.get("card_pages") or []),
+            "card_text": publish.get("card_text", ""),
             "card_style": publish.get("card_style", ""),
             "review": review,
         },
@@ -904,22 +903,9 @@ def topic_source_for(*, text: str) -> str:
 
 
 def _extract_explicit_topic(text: str) -> str:
-    patterns = [
-        r"(?:围绕|关于)\s*[“\"「『]([^”\"」』\r\n]{1,100})[”\"」』]",
-        r"(?:主题(?:是|为)?|选题)\s*[:：]\s*[“\"「『]?([^”\"」』，,。；;\r\n]{1,100})",
-        r"(?:about|topic:)\s*([^.，,;；\r\n]{1,100})",
-        (
-            r"(?:围绕|关于)\s*([^，,。；;\r\n]{1,100}?)"
-            r"(?=\s*(?:，|,|。|；|;|研究|搜索|整理|分析|$))"
-        ),
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match:
-            topic = match.group(1).strip().strip('“”"「」『』')
-            if topic:
-                return topic
-    return ""
+    from agentkit.core.intent import extract_topic_from_text
+
+    return extract_topic_from_text(text)
 
 
 def compare_cases(top_cases: list[dict], *, language: str = "en") -> list[dict]:

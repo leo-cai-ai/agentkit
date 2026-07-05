@@ -66,16 +66,10 @@ class MockXhsProvider:
         *,
         media_strategy: str = "upload",
         text_image_style: str = "涂鸦",
-        text_image_min_pages: int = 3,
-        text_image_max_pages: int = 8,
-        text_image_target_chars_per_page: int = 180,
     ) -> None:
         self._connector = connector or MockXhsConnector()
         self._media_strategy = validate_publish_media_strategy(media_strategy)
         self._text_image_style = str(text_image_style).strip()
-        self._text_image_min_pages = int(text_image_min_pages)
-        self._text_image_max_pages = int(text_image_max_pages)
-        self._text_image_target_chars_per_page = int(text_image_target_chars_per_page)
         self._published: dict[str, dict[str, Any]] = {}
         self._publish_lock = Lock()
 
@@ -88,9 +82,6 @@ class MockXhsProvider:
             article,
             default_media_strategy=self._media_strategy,
             default_card_style=self._text_image_style,
-            text_image_min_pages=self._text_image_min_pages,
-            text_image_max_pages=self._text_image_max_pages,
-            text_image_target_chars_per_page=self._text_image_target_chars_per_page,
         )
         package.update(content)
         package["content_hash"] = publication_content_hash(content)
@@ -181,18 +172,6 @@ def default_provider_bundle(
                 )
             ),
             text_image_style=str(config.get("text_image_style", settings.xhs_text_image_style)),
-            text_image_min_pages=int(
-                config.get("text_image_min_pages", settings.xhs_text_image_min_pages)
-            ),
-            text_image_max_pages=int(
-                config.get("text_image_max_pages", settings.xhs_text_image_max_pages)
-            ),
-            text_image_target_chars_per_page=int(
-                config.get(
-                    "text_image_target_chars_per_page",
-                    settings.xhs_text_image_target_chars_per_page,
-                )
-            ),
         )
     elif publishing_name == "playwright":
         publishing = build_playwright_publishing_provider(settings, config)
@@ -320,18 +299,6 @@ def build_playwright_publishing_provider(
             config.get(
                 "text_image_generation_timeout_seconds",
                 settings.xhs_text_image_generation_timeout_seconds,
-            )
-        ),
-        text_image_min_pages=int(
-            config.get("text_image_min_pages", settings.xhs_text_image_min_pages)
-        ),
-        text_image_max_pages=int(
-            config.get("text_image_max_pages", settings.xhs_text_image_max_pages)
-        ),
-        text_image_target_chars_per_page=int(
-            config.get(
-                "text_image_target_chars_per_page",
-                settings.xhs_text_image_target_chars_per_page,
             )
         ),
         observation_seconds=observation_seconds,

@@ -73,6 +73,18 @@ def test_generic_output_prefers_explicit_message() -> None:
     )
 
 
+def test_clarification_prefers_natural_question_over_internal_field_name() -> None:
+    text = format_task_output_text(
+        status="needs_clarification",
+        output={
+            "missing_required": ["topic"],
+            "clarification": "我还没识别到你想研究的主题，可以再具体说一下吗？",
+        },
+    )
+
+    assert text == "我还没识别到你想研究的主题，可以再具体说一下吗？"
+
+
 def test_unknown_structured_output_does_not_dump_json() -> None:
     text = format_task_output_text(
         status="completed",

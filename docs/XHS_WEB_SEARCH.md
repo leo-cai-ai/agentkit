@@ -47,14 +47,8 @@ docker compose up -d
 
 ### 文字图片分页
 
-当 `publishing_media_strategy=xhs_text_image` 时，发布包会在审批前根据已审核正文动态规划 3–8 张卡片，封面计入总数。默认目标为每个正文页 180 个有效字符，可通过以下配置调整：
+当 `publishing_media_strategy=xhs_text_image` 时，发布包冻结完整的已审核 `card_text` 和卡片样式，并把两者写入不可变 Hash。Playwright 进入“写文字”后只填写第一个输入框，回读确认全文持久化，然后立即点击“生成图片”；封面和正文分页由小红书原生生成器完成。
 
-- `AGENTKIT_XHS_TEXT_IMAGE_MIN_PAGES`：最少总页数，默认 3。
-- `AGENTKIT_XHS_TEXT_IMAGE_MAX_PAGES`：最多总页数，默认 8。
-- `AGENTKIT_XHS_TEXT_IMAGE_TARGET_CHARS_PER_PAGE`：动态计算页数时的目标字符数，默认 180。
-
-租户 `social_growth` 可用不带 `AGENTKIT_XHS_` 前缀的小写字段覆盖全局配置。配置必须满足 `3 <= min_pages <= max_pages <= 8`。
-
-每页内容、页面顺序和卡片样式都会进入不可变 Hash。Playwright 会逐页点击“再写一张”，并在“生成图片”前校验编辑器数量和值；页面缺失、数量不一致或内容未持久化时会停止发布并保存诊断信息。
+框架不再逐页点击“再写一张”，也不再配置或承诺精确页数。中文文案生成约束会提供适合自动分页的完整正文，但最终图片数量仍由平台页面决定。生成按钮、样式或下一步不可用时会在发布前停止并保存诊断信息。
 
 Linux 服务器可以运行 Headless Chromium，但扫码、短信、风控和网络稳定性会影响 RPA。生产建议优先使用官方 API；必须使用 RPA 时，将浏览器 Worker 与主 Runtime 隔离，并使用队列、资源上限、会话锁和可观测诊断。

@@ -27,12 +27,6 @@ from agentkit.connectors.xhs_publication import (
     resolve_publish_content,
     validate_publish_media_strategy,
 )
-from agentkit.connectors.xhs_text_image_cards import (
-    DEFAULT_MAX_PAGES,
-    DEFAULT_MIN_PAGES,
-    DEFAULT_TARGET_CHARS_PER_PAGE,
-    validate_page_settings,
-)
 from agentkit.core.logging_config import get_logger
 
 _log = get_logger("agentkit.xhs.publish")
@@ -194,27 +188,6 @@ _CLICK_TEXT_IMAGE_NEXT = r"""
 }
 """
 
-_CLICK_TEXT_IMAGE_ADD_PAGE = r"""
-() => {
-  const label = "再写一张";
-  const candidates = Array.from(document.querySelectorAll("button,[role='button'],div,span"));
-  const node = candidates.find((candidate) => {
-    if (String(candidate.textContent || "").trim() !== label) return false;
-    const rect = candidate.getBoundingClientRect();
-    const style = getComputedStyle(candidate);
-    return style.display !== "none" && style.visibility !== "hidden"
-      && Number(style.opacity || "1") > 0.5
-      && style.pointerEvents !== "none"
-      && rect.width > 0 && rect.height > 0;
-  });
-  if (!node) return false;
-  const target = node.closest("button,[role='button']") || node;
-  target.click();
-  return true;
-}
-"""
-
-
 class XhsPublishOutcomeUnknown(WebSearchError):
     """The publish click occurred but the final platform outcome is unknown."""
 
@@ -352,9 +325,6 @@ class XhsPublishAdapter:
         media_strategy: str = "upload",
         text_image_style: str = "涂鸦",
         text_image_generation_timeout_seconds: float = 120.0,
-        text_image_min_pages: int = DEFAULT_MIN_PAGES,
-        text_image_max_pages: int = DEFAULT_MAX_PAGES,
-        text_image_target_chars_per_page: int = DEFAULT_TARGET_CHARS_PER_PAGE,
         observation_seconds: float = 0.0,
     ) -> None:
         parsed = urlparse(publish_url)
@@ -372,17 +342,9 @@ class XhsPublishAdapter:
             raise ValueError("XHS text-image style must not be empty")
         if text_image_generation_timeout_seconds <= 0:
             raise ValueError("XHS text-image generation timeout must be positive")
-        validate_page_settings(
-            min_pages=text_image_min_pages,
-            max_pages=text_image_max_pages,
-            target_chars_per_page=text_image_target_chars_per_page,
-        )
         if observation_seconds < 0:
             raise ValueError("XHS publish observation duration must not be negative")
         self.text_image_generation_timeout_ms = int(text_image_generation_timeout_seconds * 1000)
-        self.text_image_min_pages = text_image_min_pages
-        self.text_image_max_pages = text_image_max_pages
-        self.text_image_target_chars_per_page = text_image_target_chars_per_page
         self.observation_seconds = float(observation_seconds)
 
     def prepare_package(
@@ -398,9 +360,6 @@ class XhsPublishAdapter:
             article,
             default_media_strategy=self.media_strategy,
             default_card_style=self.text_image_style,
-            text_image_min_pages=self.text_image_min_pages,
-            text_image_max_pages=self.text_image_max_pages,
-            text_image_target_chars_per_page=self.text_image_target_chars_per_page,
         )
         if not content["title"] or not content["body"]:
             raise ValueError("XHS publication requires a non-empty title and body")
@@ -430,9 +389,6 @@ class XhsPublishAdapter:
             article,
             default_media_strategy=self.media_strategy,
             default_card_style=self.text_image_style,
-            text_image_min_pages=self.text_image_min_pages,
-            text_image_max_pages=self.text_image_max_pages,
-            text_image_target_chars_per_page=self.text_image_target_chars_per_page,
         )
         return content["media_strategy"] == "upload" and not content["media_paths"]
 
@@ -451,17 +407,9 @@ class XhsPublishAdapter:
         ):
             raise ValueError("XHS upload publication requires existing local media files")
         if strategy == "xhs_text_image" and (
-            not content["card_pages"] or not content["card_style"]
+            not content["card_text"] or not content["card_style"]
         ):
-            raise ValueError("XHS text-image publication requires reviewed card pages and style")
-        if strategy == "xhs_text_image" and not (
-            self.text_image_min_pages
-            <= len(content["card_pages"])
-            <= self.text_image_max_pages
-        ):
-            raise ValueError(
-                "XHS text-image publication card page count is outside configured range"
-            )
+            raise ValueError("XHS text-image publication requires reviewed card text and style")
 
         publish_url = self._image_publish_url()
         _log.info(
@@ -478,7 +426,7 @@ class XhsPublishAdapter:
         else:
             self._generate_text_images(
                 page,
-                card_pages=content["card_pages"],
+                card_text=content["card_text"],
                 card_style=content["card_style"],
                 timeout_ms=max(timeout_ms, self.text_image_generation_timeout_ms),
             )
@@ -629,7 +577,7 @@ class XhsPublishAdapter:
         self,
         page: Any,
         *,
-        card_pages: list[str],
+        card_text: str,
         card_style: str,
         timeout_ms: int,
     ) -> None:
@@ -645,51 +593,19 @@ class XhsPublishAdapter:
             field_name="text-image entry",
         )
         entry.click()
-        editors = self._wait_text_image_editors(
+        editor = self._wait_locator(
             page,
-            expected_count=1,
+            _TEXT_IMAGE_EDITOR_SELECTORS,
             timeout_ms=remaining_ms(),
+            field_name="text-image editor",
         )
         self._fill_and_verify(
             page=page,
-            locator=editors.nth(0),
-            expected=card_pages[0],
-            field_name="text-image page 1",
+            locator=editor,
+            expected=card_text,
+            field_name="text-image content",
         )
-        for page_index, card_page in enumerate(card_pages[1:], start=2):
-            self._add_text_image_page(
-                page,
-                expected_count=page_index,
-                timeout_ms=remaining_ms(),
-            )
-            editors = self._wait_text_image_editors(
-                page,
-                expected_count=page_index,
-                timeout_ms=remaining_ms(),
-            )
-            self._fill_and_verify(
-                page=page,
-                locator=editors.nth(page_index - 1),
-                expected=card_page,
-                field_name=f"text-image page {page_index}",
-            )
-
-        editors = self._wait_text_image_editors(
-            page,
-            expected_count=len(card_pages),
-            timeout_ms=remaining_ms(),
-        )
-        for page_index, expected in enumerate(card_pages, start=1):
-            actual = self._read_locator_value(editors.nth(page_index - 1))
-            if self._normalized_field_value(actual) != self._normalized_field_value(expected):
-                diagnostics = self._capture_diagnostics(
-                    page,
-                    field_name=f"text-image-page-{page_index}-value",
-                )
-                raise BrowserPageChanged(
-                    f"Xiaohongshu text-image page {page_index} value mismatch; {diagnostics}"
-                )
-        _log.info("Xiaohongshu text-image pages populated: count=%d", len(card_pages))
+        _log.info("Xiaohongshu text-image content populated: chars=%d", len(card_text))
 
         if not self._poll_evaluate(
             page,
@@ -736,63 +652,6 @@ class XhsPublishAdapter:
                 "Xiaohongshu text-image next button did not become ready; " f"{diagnostics}"
             )
         _log.info("Xiaohongshu text-image cards generated; opening final editor")
-
-    def _wait_text_image_editors(
-        self,
-        page: Any,
-        *,
-        expected_count: int,
-        timeout_ms: int,
-    ) -> Any:
-        deadline = time.monotonic() + max(timeout_ms, 1) / 1000
-        observed_count = 0
-        while True:
-            for context in self._locator_contexts(page):
-                for selector in _TEXT_IMAGE_EDITOR_SELECTORS:
-                    try:
-                        editors = context.locator(selector)
-                        observed_count = editors.count()
-                    except Exception:  # noqa: BLE001 - 页面可能在创建新卡片时重绘
-                        continue
-                    if observed_count == expected_count and all(
-                        editors.nth(index).is_visible() for index in range(expected_count)
-                    ):
-                        return editors
-            self._raise_for_state(page)
-            remaining_ms = int((deadline - time.monotonic()) * 1000)
-            if remaining_ms <= 0:
-                diagnostics = self._capture_diagnostics(
-                    page,
-                    field_name="text-image-editor-count",
-                    extra=f"expected={expected_count} observed={observed_count}",
-                )
-                raise BrowserPageChanged(
-                    "Xiaohongshu text-image editor count did not reach the reviewed page count; "
-                    f"{diagnostics}"
-                )
-            self._wait_for_timeout(page, min(200, remaining_ms))
-
-    def _add_text_image_page(
-        self,
-        page: Any,
-        *,
-        expected_count: int,
-        timeout_ms: int,
-    ) -> None:
-        if not self._evaluate_any(page, _CLICK_TEXT_IMAGE_ADD_PAGE):
-            diagnostics = self._capture_diagnostics(
-                page,
-                field_name="add-text-image-page",
-                extra=f"expected={expected_count}",
-            )
-            raise BrowserPageChanged(
-                "Xiaohongshu add text-image page control is unavailable; " f"{diagnostics}"
-            )
-        self._wait_text_image_editors(
-            page,
-            expected_count=expected_count,
-            timeout_ms=timeout_ms,
-        )
 
     def _render_cover(self, page: Any, content: dict[str, Any]) -> str:
         seed = publication_content_hash({**content, "media_paths": []})

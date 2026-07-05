@@ -61,8 +61,8 @@ capabilities:
       type: object
       required: [topic]
       properties:
-        topic: {type: string, minLength: 1, maxLength: 100}
-        top_n: {type: integer, minimum: 1, maximum: 20, default: 5}
+        topic: {type: string, minLength: 1, maxLength: 100, description: 要研究和创作的小红书主题}
+        top_n: {type: integer, minimum: 1, maximum: 20, default: 5, description: 要研究的热门内容数量}
         goal_days: {type: integer, minimum: 1, maximum: 365, default: 30}
         target_followers: {type: integer, minimum: 1, default: 10000}
         cadence: {type: string, enum: [daily, weekdays, weekly], default: daily}
@@ -79,7 +79,7 @@ capabilities:
     input_schema:
       type: object
       required: [topic]
-      properties: {topic: {type: string, minLength: 1, maxLength: 100}, top_n: {type: integer, minimum: 1, maximum: 20, default: 5}}
+      properties: {topic: {type: string, minLength: 1, maxLength: 100, description: 要研究的小红书主题}, top_n: {type: integer, minimum: 1, maximum: 20, default: 5, description: 要研究的热门内容数量}}
     output_schema: {type: object, properties: {}}
     keywords: [top, research, notes, videos, 爆款, 案例]
   - id: xhs.case.extract

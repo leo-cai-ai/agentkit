@@ -214,9 +214,6 @@ def test_xhs_provider_bundle_builds_playwright_publisher(monkeypatch, tmp_path):
             "publishing_media_strategy": "xhs_text_image",
             "text_image_style": "涂鸦",
             "text_image_generation_timeout_seconds": 90,
-            "text_image_min_pages": 4,
-            "text_image_max_pages": 7,
-            "text_image_target_chars_per_page": 150,
         }
     )
 
@@ -226,9 +223,6 @@ def test_xhs_provider_bundle_builds_playwright_publisher(monkeypatch, tmp_path):
     assert bundle.publishing.adapter.media_strategy == "xhs_text_image"
     assert bundle.publishing.adapter.text_image_style == "涂鸦"
     assert bundle.publishing.adapter.text_image_generation_timeout_ms == 90_000
-    assert bundle.publishing.adapter.text_image_min_pages == 4
-    assert bundle.publishing.adapter.text_image_max_pages == 7
-    assert bundle.publishing.adapter.text_image_target_chars_per_page == 150
 
 
 def test_interactive_search_login_disables_media_analysis(monkeypatch) -> None:
@@ -598,15 +592,11 @@ def test_xhs_review_failure_revises_once_then_prepares_publication() -> None:
     assert result["publish"]["status"] == "awaiting_approval"
     assert "deferred_action" in result
     deferred_action = result["deferred_action"]
-    assert 3 <= len(deferred_action["preview"]["card_pages"]) <= 8
-    assert deferred_action["preview"]["card_page_count"] == len(
-        deferred_action["preview"]["card_pages"]
-    )
+    assert deferred_action["preview"]["card_text"] == result["article"]["body"]
     assert (
-        deferred_action["tool_calls"][0]["args"]["package"]["card_pages"]
-        == result["publish"]["card_pages"]
+        deferred_action["tool_calls"][0]["args"]["package"]["card_text"]
+        == result["publish"]["card_text"]
     )
-    assert "card_text" not in deferred_action["preview"]
     assert [request.context_id for request in spy.requests] == [
         "skill.xhs-growth-campaign.article-generate",
         "skill.xhs-growth-campaign.content-review",

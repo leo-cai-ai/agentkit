@@ -23,9 +23,10 @@ from .execution.selector import StrategySelector
 from .execution.workflow import WorkflowStrategy
 from .idempotency import IdempotencyStore
 from .intent import IntentDecomposer
-from .langgraph_agent import IntentResolver, UnifiedAgentGraph
+from .langgraph_agent import InputResolver, IntentResolver, UnifiedAgentGraph
 from .registry import AgentRegistry, SkillRegistry, ToolRegistry
 from .router import IntentRouter
+from .schema_input_resolver import SchemaInputResolver
 from .tool_backends import ToolBackendRegistry
 
 
@@ -48,6 +49,7 @@ class AgentGateway:
         selector: StrategySelector | None = None,
         strategies: StrategyRegistry | None = None,
         intent_resolver: IntentResolver | None = None,
+        input_resolver: InputResolver | None = None,
         conversation_context: ConversationContextService | None = None,
         conversation_persistence: ConversationPersistenceService | None = None,
         artifact_store_factory: Callable[[str], ArtifactStore] | None = None,
@@ -85,6 +87,11 @@ class AgentGateway:
                 tenant_selector=tenant_selector,
             )
             intent_resolver = decomposer.decompose
+        input_resolver = input_resolver or SchemaInputResolver(
+            context_invoker=context_invoker,
+            tenant_id=tenant_id,
+            tenant_selector=tenant_selector,
+        )
         self._agent_graph = UnifiedAgentGraph(
             tenant_id=tenant_id,
             tenant_selector=tenant_selector,
@@ -98,6 +105,7 @@ class AgentGateway:
             selector=selector,
             strategies=strategies,
             intent_resolver=intent_resolver,
+            input_resolver=input_resolver,
             checkpointer=checkpointer,
             conversation_context=conversation_context,
             conversation_persistence=conversation_persistence,

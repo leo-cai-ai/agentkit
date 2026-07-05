@@ -80,6 +80,8 @@ flowchart TD
 
 `/api/chat` 调用 `MultiAgentCoordinator.handle/resume`，负责 General 会话和父子运行；`/api/tasks` 与 CLI 继续调用 `AgentGateway.handle/resume`，用于明确指定 Agent 的系统集成。两条入口最终共用同一 `UnifiedAgentGraph`、Tool 治理和审计存储。
 
+`resolve_inputs` 不是各 Agent 自己实现的参数判断。Runtime 先合并显式参数、请求上下文和 `runtime.intent` 提取的实体；若所选 Skill 的输入 Schema 仍缺少必填字段，再调用统一的 `runtime.input-resolve`。该节点只补全 Schema 允许且有消息或会话依据的字段，结果必须通过 JSON Schema 校验；仍不能确定时才返回自然语言追问。这样招聘、客服和小红书 Agent 使用同一判断流程，只由各自 Skill Schema 表达输入差异。
+
 ## 4. 策略选择
 
 | 条件 | 策略 | 企业约束 |

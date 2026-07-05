@@ -37,6 +37,8 @@ DEFAULT_SOURCES = frozenset(
         "skill.article_evidence",
         "skill.article_patterns",
         "skill.campaign",
+        "skill.missing_fields",
+        "skill.input_schema",
     }
 )
 

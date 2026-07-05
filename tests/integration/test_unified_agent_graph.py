@@ -36,6 +36,7 @@ from agentkit.core.memory.store import ConversationStore
 from agentkit.core.registry import AgentRegistry, SkillRegistry, ToolRegistry
 from agentkit.runtime.conversation_context import ConversationContextService
 from agentkit.runtime.conversation_persistence import ConversationPersistenceService
+from tests.context_support import SpyContextInvoker
 
 
 def _intent(
@@ -116,7 +117,7 @@ def gateway(tmp_path):
     return _build_gateway(tmp_path)
 
 
-def _build_gateway(tmp_path, *, intent_resolver=_intent):
+def _build_gateway(tmp_path, *, intent_resolver=_intent, context_invoker=None):
     agents, skills, tools = AgentRegistry(), SkillRegistry(), ToolRegistry()
     for agent_id in ("customer_service", "hr_recruiter", "xhs_growth"):
         skill_name = f"{agent_id}.echo"
@@ -140,7 +141,7 @@ def _build_gateway(tmp_path, *, intent_resolver=_intent):
         skills=skills,
         tools=tools,
         audit=audit,
-        context_invoker=SimpleNamespace(manifest_hash="sha256:test"),
+        context_invoker=context_invoker or SimpleNamespace(manifest_hash="sha256:test"),
         checkpointer=MemorySaver(),
         selector=StrategySelector(
             skills=skills,
@@ -253,6 +254,66 @@ def test_intent_entities_fill_missing_skill_arguments(tmp_path) -> None:
 
     assert response.status == "completed"
     assert response.output == {"agent": "xhs_growth", "marker": "from-intent"}
+
+
+def test_missing_skill_input_uses_unified_schema_resolution(tmp_path) -> None:
+    invoker = SpyContextInvoker(
+        {
+            "resolved": {"marker": "from-schema-llm"},
+            "unresolved": [],
+            "clarification": "",
+            "confidence": "high",
+        }
+    )
+    gateway = _build_gateway(tmp_path, context_invoker=invoker)
+
+    response = gateway.handle(
+        TaskRequest(
+            user_id="u1",
+            roles=[],
+            text="执行这个任务",
+            context={"agent": "xhs_growth", "skill": "xhs_growth.echo"},
+        )
+    )
+
+    assert response.status == "completed"
+    assert response.output == {"agent": "xhs_growth", "marker": "from-schema-llm"}
+    assert invoker.requests[0].context_id == "runtime.input-resolve"
+    event = next(item for item in response.audit_events if item["type"] == "inputs_resolved")
+    assert event["payload"] == {
+        "skill": "xhs_growth.echo",
+        "missing_fields": [],
+        "resolved_fields": ["marker"],
+        "confidence": "high",
+        "llm_used": True,
+    }
+
+
+def test_unresolved_skill_input_returns_natural_clarification(tmp_path) -> None:
+    invoker = SpyContextInvoker(
+        {
+            "resolved": {},
+            "unresolved": ["marker"],
+            "clarification": "你希望我使用哪个标记来执行这个任务？",
+            "confidence": "low",
+        }
+    )
+    gateway = _build_gateway(tmp_path, context_invoker=invoker)
+
+    response = gateway.handle(
+        TaskRequest(
+            user_id="u1",
+            roles=[],
+            text="执行这个任务",
+            context={"agent": "xhs_growth", "skill": "xhs_growth.echo"},
+        )
+    )
+
+    assert response.status == "needs_clarification"
+    assert response.output == {
+        "missing_required": ["marker"],
+        "clarification": "你希望我使用哪个标记来执行这个任务？",
+    }
 
 
 def test_side_effect_resume_keeps_run_and_does_not_repeat_planning(tmp_path) -> None:

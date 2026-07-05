@@ -21,7 +21,7 @@ from agentkit.runtime.conversation_runs import conversation_outcome
 from .artifacts import ArtifactStore, InMemoryArtifactStore
 from .audit import InMemoryAuditLog, PostgresAuditLog, SQLiteAuditLog
 from .context.errors import ContextHashMismatchError
-from .contracts import AgentProfile, IntentFrame, TaskRequest, TaskResponse
+from .contracts import AgentProfile, IntentFrame, SkillDefinition, TaskRequest, TaskResponse
 from .execution.models import (
     CapabilityResolution,
     StrategyRequest,
@@ -37,6 +37,7 @@ from .idempotency import IdempotencyStore
 from .langgraph_runtime import invoke_graph_v2
 from .registry import AgentRegistry, SkillRegistry, ToolRegistry
 from .router import CapabilityResolutionError, IntentRouter
+from .schema_input_resolver import InputResolution
 from .tool_backends import PythonToolBackend, ToolBackendRegistry
 from .tool_executor import ToolExecutor
 
@@ -51,6 +52,18 @@ class IntentResolver(Protocol):
         agent: AgentProfile,
         run_id: str,
     ) -> IntentFrame: ...
+
+
+class InputResolver(Protocol):
+    def resolve(
+        self,
+        request: TaskRequest,
+        *,
+        agent: AgentProfile,
+        skill: SkillDefinition,
+        arguments: dict[str, Any],
+        run_id: str,
+    ) -> InputResolution: ...
 
 
 class UnifiedAgentState(TypedDict, total=False):
@@ -103,6 +116,7 @@ class UnifiedAgentGraph:
         selector: StrategySelector,
         strategies: StrategyRegistry,
         intent_resolver: IntentResolver,
+        input_resolver: InputResolver,
         checkpointer: Any,
         conversation_context: ConversationContextService | None = None,
         conversation_persistence: ConversationPersistenceService | None = None,
@@ -122,6 +136,7 @@ class UnifiedAgentGraph:
         self._selector = selector
         self._strategies = strategies
         self._intent_resolver = intent_resolver
+        self._input_resolver = input_resolver
         self._checkpointer = checkpointer
         self._conversation_context = conversation_context
         self._conversation_persistence = conversation_persistence
@@ -412,16 +427,36 @@ class UnifiedAgentGraph:
                     arguments[name] = request_context[name]
                 elif name in intent_entities:
                     arguments[name] = intent_entities[name]
-        required = skill.input_schema.get("required", [])
-        missing = [name for name in required if name not in arguments]
-        if missing:
+        initial_fields = set(arguments)
+        input_resolution = self._input_resolver.resolve(
+            state["request"],
+            agent=state["agent"],
+            skill=skill,
+            arguments=arguments,
+            run_id=state["run_id"],
+        )
+        self._audit.record(
+            state["run_id"],
+            "inputs_resolved",
+            {
+                "skill": skill.name,
+                "missing_fields": list(input_resolution.missing),
+                "resolved_fields": sorted(set(input_resolution.arguments) - initial_fields),
+                "confidence": input_resolution.confidence,
+                "llm_used": input_resolution.llm_used,
+            },
+        )
+        if input_resolution.missing:
             return {
                 "result": StrategyResult(
                     status="needs_clarification",
-                    output={"missing_required": missing},
+                    output={
+                        "missing_required": list(input_resolution.missing),
+                        "clarification": input_resolution.clarification,
+                    },
                 )
             }
-        return {"arguments": arguments}
+        return {"arguments": input_resolution.arguments}
 
     def _select_strategy(self, state: UnifiedAgentState) -> dict[str, Any]:
         if "result" in state:

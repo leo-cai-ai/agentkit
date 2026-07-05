@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal, Self
+from typing import Literal
 
-from pydantic import AliasChoices, Field, SecretStr, model_validator
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -244,9 +244,6 @@ class Settings(BaseSettings):
     xhs_publish_media_strategy: Literal["upload", "xhs_text_image"] = "upload"
     xhs_text_image_style: str = "涂鸦"
     xhs_text_image_generation_timeout_seconds: float = Field(default=120.0, gt=0.0)
-    xhs_text_image_min_pages: int = Field(default=3, ge=3, le=8)
-    xhs_text_image_max_pages: int = Field(default=8, ge=3, le=8)
-    xhs_text_image_target_chars_per_page: int = Field(default=180, ge=40, le=500)
     xhs_enrich_details: bool = True
     xhs_detail_limit: int = Field(default=5, ge=0, le=20)
     xhs_detail_timeout_seconds: float = Field(default=6.0, gt=0.0)
@@ -277,15 +274,6 @@ class Settings(BaseSettings):
     pg_user: str = "agentkit"
     pg_password: SecretStr | None = None
     pg_sslmode: str = "prefer"
-
-    @model_validator(mode="after")
-    def validate_xhs_text_image_page_range(self) -> Self:
-        if self.xhs_text_image_min_pages > self.xhs_text_image_max_pages:
-            raise ValueError(
-                "xhs_text_image_min_pages must not exceed xhs_text_image_max_pages"
-            )
-        return self
-
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

@@ -43,6 +43,19 @@ def test_extract_entities_recovers_xhs_topic_and_top_n() -> None:
     assert entities["top_n"] == 5
 
 
+def test_extract_entities_accepts_reversed_curly_quotes_around_topic() -> None:
+    request = TaskRequest(
+        user_id="u",
+        roles=[],
+        text='以”AI 改变生活“为主题，研究小红书 top 5 的文案，比较写一篇文案并发布。',
+    )
+
+    entities = extract_entities(request)
+
+    assert entities["topic"] == "AI 改变生活"
+    assert entities["top_n"] == 5
+
+
 def test_looks_like_business_task_detects_action_term():
     assert looks_like_business_task(text="please rank them", entities={}) is True
     assert looks_like_business_task(text="hello there", entities={}) is False
@@ -92,3 +105,33 @@ def test_intent_decomposer_only_passes_declared_context_sources() -> None:
     assert rendered_request.values["conversation.summary"] == "用户正在跟进订单"
     assert "knowledge" not in str(rendered_request.values)
     assert "tool_credentials" not in str(rendered_request.values)
+
+
+def test_intent_llm_empty_entity_does_not_erase_rule_extraction() -> None:
+    invoker = SpyContextInvoker(
+        {
+            "language": "zh-CN",
+            "intent_type": "business_task",
+            "goal": "研究并发布小红书文案",
+            "target": {"kind": "business_skill", "name": "xhs.growth.campaign"},
+            "entities": {"topic": ""},
+            "confidence": "high",
+            "clarification": "",
+            "signals": [],
+        }
+    )
+    decomposer = IntentDecomposer(
+        context_invoker=invoker,
+        tenant_id="AI-ABC",
+        tenant_selector="company_alpha",
+    )
+    request = TaskRequest(
+        user_id="u1",
+        roles=[],
+        text='以”AI 改变生活“为主题，研究小红书 top 5 并发布。',
+    )
+
+    result = decomposer.decompose(request, agent=_agent(), run_id="r1")
+
+    assert result.entities["topic"] == "AI 改变生活"
+    assert result.entities["top_n"] == 5
