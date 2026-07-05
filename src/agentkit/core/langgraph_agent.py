@@ -16,6 +16,7 @@ from agentkit.runtime.conversation_context import (
     ConversationContextService,
 )
 from agentkit.runtime.conversation_persistence import ConversationPersistenceService
+from agentkit.runtime.conversation_runs import conversation_outcome
 
 from .artifacts import ArtifactStore, InMemoryArtifactStore
 from .audit import InMemoryAuditLog, PostgresAuditLog, SQLiteAuditLog
@@ -599,6 +600,10 @@ class UnifiedAgentGraph:
             assistant_message=json.dumps(result.output, ensure_ascii=False, default=str),
             run_id=state["run_id"],
             window_turns=state["agent"].context_policy.memory.window_turns,
+            retry_of_run_id=str(
+                state["request"].context.get("retry_of_run_id") or ""
+            ),
+            outcome=conversation_outcome(result.status),
         )
         return {}
 

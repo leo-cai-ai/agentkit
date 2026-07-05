@@ -10,6 +10,19 @@ from typing import Any, Protocol
 from agentkit.core.audit import TERMINAL_RUN_STATUSES
 
 
+def conversation_outcome(status: str) -> str:
+    """把内部执行状态收敛为稳定、可面向业务用户展示的结果。"""
+    if status == "idle":
+        return "idle"
+    if status == "running":
+        return "processing"
+    if status == "completed":
+        return "succeeded"
+    if status in {"waiting_for_approval", "needs_clarification"}:
+        return "action_required"
+    return "not_completed"
+
+
 class ConversationRunAudit(Protocol):
     def runs_for_conversation(
         self,
@@ -37,10 +50,16 @@ class ConversationExecution:
     requires_second_delete_confirmation: bool = False
     non_terminal_run_ids: tuple[str, ...] = ()
 
+    @property
+    def outcome(self) -> str:
+        """返回不暴露内部状态枚举的用户态结果。"""
+        return conversation_outcome(self.status)
+
     def to_dict(self) -> dict[str, object]:
         """返回不包含内部 Run 集合的稳定公开契约。"""
         return {
             "status": self.status,
+            "outcome": self.outcome,
             "latest_run_id": self.latest_run_id,
             "original_request": self.original_request,
             "reason": self.reason,
@@ -243,4 +262,8 @@ class ConversationRunStateResolver:
         return ""
 
 
-__all__ = ["ConversationExecution", "ConversationRunStateResolver"]
+__all__ = [
+    "ConversationExecution",
+    "ConversationRunStateResolver",
+    "conversation_outcome",
+]

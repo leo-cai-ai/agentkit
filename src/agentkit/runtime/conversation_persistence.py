@@ -36,6 +36,19 @@ class ConversationWriter(Protocol):
 
     def all_messages(self, conversation_id: str) -> list[dict[str, Any]]: ...
 
+    def replace_turn_messages(
+        self,
+        *,
+        conversation_id: str,
+        previous_run_id: str,
+        run_id: str,
+        user_content: str,
+        user_token_estimate: int,
+        assistant_content: str,
+        assistant_token_estimate: int,
+        assistant_agent_id: str,
+    ) -> bool: ...
+
     def get_summary(self, conversation_id: str) -> dict[str, Any] | None: ...
 
     def upsert_summary(
@@ -158,6 +171,8 @@ class ConversationPersistenceService:
         run_id: str,
         window_turns: int,
         assistant_agent_id: str | None = None,
+        retry_of_run_id: str = "",
+        outcome: str = "succeeded",
     ) -> None:
         conversation = self._store.get_conversation(conversation_id)
         if conversation is None:
@@ -172,23 +187,46 @@ class ConversationPersistenceService:
             raise ValueError("会话当前不可写入")
 
         assistant_text = strip_reasoning_tags(assistant_message)
-        if user_message:
+        actual_assistant_agent = assistant_agent_id or agent_id
+        replaced = False
+        if retry_of_run_id:
+            replaced = self._store.replace_turn_messages(
+                conversation_id=conversation_id,
+                previous_run_id=retry_of_run_id,
+                run_id=run_id,
+                user_content=user_message,
+                user_token_estimate=self._tokenizer.estimate(user_message),
+                assistant_content=assistant_text,
+                assistant_token_estimate=self._tokenizer.estimate(assistant_text),
+                assistant_agent_id=actual_assistant_agent,
+            )
+        if not replaced:
+            if user_message:
+                self._store.add_message(
+                    conversation_id=conversation_id,
+                    role="user",
+                    content=user_message,
+                    token_estimate=self._tokenizer.estimate(user_message),
+                    run_id=run_id,
+                )
             self._store.add_message(
                 conversation_id=conversation_id,
-                role="user",
-                content=user_message,
-                token_estimate=self._tokenizer.estimate(user_message),
+                role="assistant",
+                content=assistant_text,
+                token_estimate=self._tokenizer.estimate(assistant_text),
                 run_id=run_id,
+                agent_id=actual_assistant_agent,
             )
-        self._store.add_message(
-            conversation_id=conversation_id,
-            role="assistant",
-            content=assistant_text,
-            token_estimate=self._tokenizer.estimate(assistant_text),
-            run_id=run_id,
-            agent_id=assistant_agent_id or agent_id,
-        )
-        if self._memory is not None:
+            if retry_of_run_id and self._audit is not None:
+                self._audit.record(
+                    run_id,
+                    "conversation_retry_replace_missed",
+                    {
+                        "conversation_id": conversation_id,
+                        "retry_of_run_id": retry_of_run_id,
+                    },
+                )
+        if outcome == "succeeded" and self._memory is not None:
             self._memory.record(
                 tenant_id=tenant_id,
                 agent_id=agent_id,

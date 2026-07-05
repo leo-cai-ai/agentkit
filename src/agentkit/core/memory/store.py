@@ -184,6 +184,71 @@ class ConversationStore:
             )
             return int(cursor.lastrowid or 0)
 
+    def replace_turn_messages(
+        self,
+        *,
+        conversation_id: str,
+        previous_run_id: str,
+        run_id: str,
+        user_content: str,
+        user_token_estimate: int,
+        assistant_content: str,
+        assistant_token_estimate: int,
+        assistant_agent_id: str,
+    ) -> bool:
+        """仅当旧 Run 恰好对应一组问答时原子替换该逻辑轮次。"""
+        now = round(time.time(), 3)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, role FROM messages
+                WHERE conversation_id = ? AND run_id = ?
+                ORDER BY id ASC
+                """,
+                (conversation_id, previous_run_id),
+            ).fetchall()
+            by_role = {str(row["role"]): int(row["id"]) for row in rows}
+            if len(rows) != 2 or set(by_role) != {"user", "assistant"}:
+                return False
+            conn.execute(
+                """
+                UPDATE messages
+                SET content = ?, token_estimate = ?, run_id = ?, agent_id = NULL
+                WHERE id = ? AND conversation_id = ?
+                """,
+                (
+                    user_content,
+                    user_token_estimate,
+                    run_id,
+                    by_role["user"],
+                    conversation_id,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE messages
+                SET content = ?, token_estimate = ?, run_id = ?, agent_id = ?
+                WHERE id = ? AND conversation_id = ?
+                """,
+                (
+                    assistant_content,
+                    assistant_token_estimate,
+                    run_id,
+                    assistant_agent_id,
+                    by_role["assistant"],
+                    conversation_id,
+                ),
+            )
+            conn.execute(
+                "DELETE FROM conversation_summaries WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+            conn.execute(
+                "UPDATE conversations SET updated_at = ? WHERE id = ?",
+                (now, conversation_id),
+            )
+        return True
+
     def recent_messages(self, *, conversation_id: str, limit: int) -> list[dict[str, Any]]:
         """Return up to the last ``limit`` messages in chronological order."""
         if limit <= 0:

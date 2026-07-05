@@ -183,6 +183,26 @@ def test_general_agent_owns_conversation_and_answers_normal_message() -> None:
     assert audit.get_run(response.run_id)["agent_id"] == "general_agent"
 
 
+def test_retry_relationship_and_user_outcome_reach_conversation_persistence() -> None:
+    service, _gateway, _audit, _invoker, _contexts, persistence = _service()
+
+    response = service.handle(
+        TaskRequest(
+            user_id="u1",
+            roles=["employee"],
+            text="你好",
+            context={
+                "conversation_id": "conversation-existing",
+                "retry_of_run_id": "run-old",
+            },
+        )
+    )
+
+    assert response.status == "completed"
+    assert persistence.turns[0]["retry_of_run_id"] == "run-old"
+    assert persistence.turns[0]["outcome"] == "succeeded"
+
+
 def test_explicit_mention_skips_router_and_creates_child_run() -> None:
     service, gateway, audit, invoker, contexts, persistence = _service()
 
@@ -363,6 +383,44 @@ def test_approval_resume_returns_to_the_original_general_conversation() -> None:
     assert response.agent == "hr_recruiter"
     assert persistence.turns[0]["user_message"] == "@招聘 发出录用通知"
     assert persistence.turns[0]["assistant_agent_id"] == "hr_recruiter"
+
+
+def test_retry_relationship_survives_approval_pause_and_resume() -> None:
+    service, _gateway, audit, _invoker, _contexts, persistence = _service()
+    parent = audit.start_run(
+        tenant_id="tenant-a",
+        user_id="u1",
+        text="@招聘 发出录用通知",
+        agent_id="general_agent",
+        conversation_id="conversation-approval",
+    )
+    child = audit.start_run(
+        tenant_id="tenant-a",
+        user_id="u1",
+        text="发出录用通知",
+        agent_id="hr_recruiter",
+        parent_run_id=parent,
+        conversation_id="conversation-approval",
+    )
+    audit.record(
+        parent,
+        "conversation_retry_started",
+        {"retry_of_run_id": "run-old"},
+    )
+    audit.record(
+        child,
+        "run_paused",
+        {"status": "waiting_for_approval", "thread_id": "approval-retry"},
+    )
+
+    service.resume(
+        "approval-retry",
+        user_id="u1",
+        roles=["recruiter"],
+        approved_skills=["offer.send"],
+    )
+
+    assert persistence.turns[0]["retry_of_run_id"] == "run-old"
 
 
 def test_context_failure_finishes_parent_run_without_persisting_turn() -> None:

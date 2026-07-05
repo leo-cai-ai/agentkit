@@ -34,3 +34,44 @@ def test_postgres_transition_conversation_status_uses_conditional_update(
     assert "status IN (%s, %s)" in sql
     assert params[0] == "deletion_pending"
     assert params[2:] == ("conversation-a", "active", "deletion_pending")
+
+
+def test_postgres_replace_turn_messages_is_atomic_and_invalidates_summary(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class Result:
+        def __init__(self, rows=()) -> None:
+            self._rows = rows
+
+        def fetchall(self):
+            return list(self._rows)
+
+    class Connection:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+            if "SELECT id, role FROM messages" in sql:
+                return Result(((11, "user"), (12, "assistant")))
+            return Result()
+
+    store = object.__new__(PgConversationStore)
+    store._settings = None
+    monkeypatch.setattr(store, "_connect", lambda: nullcontext(Connection()))
+
+    replaced = store.replace_turn_messages(
+        conversation_id="conversation-a",
+        previous_run_id="run-old",
+        run_id="run-new",
+        user_content="原始问题",
+        user_token_estimate=4,
+        assistant_content="最新结果",
+        assistant_token_estimate=8,
+        assistant_agent_id="xhs_growth",
+    )
+
+    assert replaced is True
+    assert "FOR UPDATE" in calls[0][0]
+    assert calls[0][1] == ("conversation-a", "run-old")
+    assert any("DELETE FROM conversation_summaries" in sql for sql, _ in calls)
+    assert all("?" not in sql for sql, _ in calls)

@@ -432,6 +432,7 @@ def _task_request(
         "context",
         "message",
         "rejected_skills",
+        "retry_of_run_id",
         "roles",
         "text",
         "user_id",
@@ -504,12 +505,15 @@ def _run_chat(
     *,
     runtime: AgentKitRuntime | None = None,
     principal: Principal | None = None,
+    trusted_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     runtime = runtime if runtime is not None else get_runtime()
     principal = principal if principal is not None else current_principal()
     if runtime.chat_service is None:
         raise RuntimeError("多 Agent 聊天服务未初始化")
     task = _chat_task_request(payload, runtime=runtime, principal=principal)
+    if trusted_context:
+        task = replace(task, context={**task.context, **trusted_context})
     conversation_id = str(task.context.get("conversation_id") or "")
     if conversation_id:
         conversation = runtime.conversations.get_conversation(conversation_id)
@@ -765,7 +769,14 @@ def api_retry_conversation_stream(conversation_id: str):
         "message": execution.original_request,
         "context": {"conversation_id": conversation_id},
     }
-    return _sse(lambda: _run_chat(payload, runtime=runtime, principal=principal))
+    return _sse(
+        lambda: _run_chat(
+            payload,
+            runtime=runtime,
+            principal=principal,
+            trusted_context={"retry_of_run_id": execution.latest_run_id},
+        )
+    )
 
 
 @app.get("/api/conversations/<conversation_id>/messages")

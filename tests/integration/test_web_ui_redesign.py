@@ -153,8 +153,21 @@ def test_chat_has_conversation_recovery_and_two_stage_delete_controls(client) ->
     assert "data-conversation-execution-title" in html
     assert "data-conversation-execution-reason" in html
     assert "data-conversation-retry" in html
+    assert "data-conversation-execution-trace" in html
     assert "data-conversation-delete-stage" in html
     assert "/retry/stream" in js
+    assert 'outcome: "processing"' in js
+    assert 'operation: "retry"' in js
+    assert "正在重新运行上一次请求，请稍候。" in js
+    assert "重新运行完成" in js
+    assert "重新运行未完成" in js
+    assert 'card.dataset.outcome = outcome' in js
+    assert 'showConversationNotice("正在重新执行原始请求…"' not in js
+    assert "任务状态已更新" not in js
+    assert (
+        'setChatBusy(conversationOutcome(currentConversationExecution) === "processing")'
+        in js
+    )
     assert "/terminate-and-delete" in js
     assert "requires_second_delete_confirmation" in js
     assert "任务正在运行，请等待完成后再删除" in js
@@ -245,16 +258,10 @@ def test_business_result_tables_render_nested_objects_as_json(client) -> None:
 
 
 def test_history_messages_render_normalized_content_not_business_json(client) -> None:
-    import re
-
     script = client.get("/static/js/app.js").get_data(as_text=True)
-    function = re.search(
-        r"async function loadConversationMessages\(conversationId\) \{(?P<body>[\s\S]*?)\n\}",
-        script,
-    )
-
-    assert function is not None
-    body = function.group("body")
+    start = script.index("async function loadConversationMessages(")
+    end = script.index("async function refreshConversationExecution(", start)
+    body = script[start:end]
     assert "msg.content" in body
     assert "JSON.stringify(msg" not in body
     assert "addChatMessage(" in body

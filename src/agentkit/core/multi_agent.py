@@ -9,6 +9,7 @@ from typing import Any
 
 from agentkit.runtime.conversation_context import ConversationContextService
 from agentkit.runtime.conversation_persistence import ConversationPersistenceService
+from agentkit.runtime.conversation_runs import conversation_outcome
 
 from .audit import TERMINAL_RUN_STATUSES
 from .context.models import ContextRenderRequest
@@ -221,6 +222,13 @@ class MultiAgentCoordinator:
             agent_id=GENERAL_AGENT_ID,
             conversation_id=conversation_id,
         )
+        retry_of_run_id = str(request.context.get("retry_of_run_id") or "")
+        if retry_of_run_id:
+            self._audit.record(
+                parent_run_id,
+                "conversation_retry_started",
+                {"retry_of_run_id": retry_of_run_id},
+            )
         try:
             return self._handle_started(
                 request=request,
@@ -460,7 +468,10 @@ class MultiAgentCoordinator:
                 user_id=user_id,
                 roles=list(roles),
                 text=str(parent_run.get("text") or ""),
-                context={"conversation_id": conversation_id},
+                context={
+                    "conversation_id": conversation_id,
+                    "retry_of_run_id": self._retry_origin(parent_run_id),
+                },
             )
             self._persist_turn(
                 request=original_request,
@@ -687,6 +698,8 @@ class MultiAgentCoordinator:
             assistant_message=assistant_message,
             run_id=run_id,
             window_turns=general.context_policy.memory.window_turns,
+            retry_of_run_id=str(request.context.get("retry_of_run_id") or ""),
+            outcome=conversation_outcome(status),
         )
 
     def _fail_parent_run(self, run_id: str, exc: Exception) -> None:
@@ -715,6 +728,14 @@ class MultiAgentCoordinator:
             if event.get("type") == "agent_route_decided":
                 return dict(event.get("payload") or {})
         return {"type": "general_delegate", "target_agent": None, "reason": ""}
+
+    def _retry_origin(self, run_id: str) -> str:
+        """从父 Run 审计中恢复跨审批暂停的可信重试关联。"""
+        for event in reversed(self._audit.events_for(run_id)):
+            if event.get("type") == "conversation_retry_started":
+                payload = dict(event.get("payload") or {})
+                return str(payload.get("retry_of_run_id") or "")
+        return ""
 
 
 __all__ = [

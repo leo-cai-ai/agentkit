@@ -389,6 +389,19 @@ def test_retry_creates_a_new_run_in_the_same_conversation(client) -> None:
         conversation_id=conversation_id,
     )
     runtime.gateway.audit.record(old_run_id, "run_finished", {"status": "failed"})
+    runtime.conversations.add_message(
+        conversation_id=conversation_id,
+        role="user",
+        content="你好",
+        run_id=old_run_id,
+    )
+    runtime.conversations.add_message(
+        conversation_id=conversation_id,
+        role="assistant",
+        content="旧失败结果",
+        run_id=old_run_id,
+        agent_id="general_agent",
+    )
 
     response = client.post(
         f"/api/conversations/{conversation_id}/retry/stream",
@@ -400,6 +413,60 @@ def test_retry_creates_a_new_run_in_the_same_conversation(client) -> None:
     assert final["conversation_id"] == conversation_id
     assert final["run_id"] != old_run_id
     assert runtime.gateway.audit.get_run(old_run_id)["status"] == "failed"
+    messages = runtime.conversations.all_messages(conversation_id)
+    assert len(messages) == 2
+    assert {row["run_id"] for row in messages} == {final["run_id"]}
+    assert messages[0]["content"] == "你好"
+
+
+def test_regular_chat_cannot_inject_retry_run_relationship(client) -> None:
+    from agentkit.web.app import get_runtime
+
+    token = _login(client)
+    runtime = get_runtime()
+    tenant_id = str(runtime.tenant_config["tenant_id"])
+    conversation_id = runtime.conversations.create_conversation(
+        tenant_id=tenant_id,
+        agent="general_agent",
+        user_id="console-admin",
+        title="普通聊天不可伪造重试",
+    )
+    old_run_id = runtime.gateway.audit.start_run(
+        tenant_id=tenant_id,
+        user_id="console-admin",
+        text="旧问题",
+        agent_id="general_agent",
+        conversation_id=conversation_id,
+    )
+    runtime.gateway.audit.record(old_run_id, "run_finished", {"status": "failed"})
+    runtime.conversations.add_message(
+        conversation_id=conversation_id,
+        role="user",
+        content="旧问题",
+        run_id=old_run_id,
+    )
+    runtime.conversations.add_message(
+        conversation_id=conversation_id,
+        role="assistant",
+        content="旧结果",
+        run_id=old_run_id,
+        agent_id="general_agent",
+    )
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "新问题",
+            "conversation_id": conversation_id,
+            "retry_of_run_id": old_run_id,
+        },
+        headers={"X-CSRF-Token": token},
+    )
+
+    assert response.status_code == 200
+    messages = runtime.conversations.all_messages(conversation_id)
+    assert len(messages) == 4
+    assert [row["content"] for row in messages[:2]] == ["旧问题", "旧结果"]
 
 
 def test_reconciled_conversation_requires_termination_endpoint(client) -> None:

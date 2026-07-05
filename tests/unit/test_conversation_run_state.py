@@ -1,7 +1,36 @@
 from __future__ import annotations
 
+import pytest
+
 from agentkit.core.audit import InMemoryAuditLog
-from agentkit.runtime.conversation_runs import ConversationRunStateResolver
+from agentkit.runtime.conversation_runs import (
+    ConversationExecution,
+    ConversationRunStateResolver,
+)
+
+
+@pytest.mark.parametrize(
+    ("status", "outcome"),
+    [
+        ("idle", "idle"),
+        ("running", "processing"),
+        ("completed", "succeeded"),
+        ("waiting_for_approval", "action_required"),
+        ("needs_clarification", "action_required"),
+        ("failed", "not_completed"),
+        ("blocked", "not_completed"),
+        ("cancelled", "not_completed"),
+        ("unexpected_terminal", "not_completed"),
+    ],
+)
+def test_execution_projects_internal_status_to_user_outcome(
+    status: str,
+    outcome: str,
+) -> None:
+    execution = ConversationExecution(status=status)
+
+    assert execution.outcome == outcome
+    assert execution.to_dict()["outcome"] == outcome
 
 
 def _root(audit: InMemoryAuditLog, *, text: str = "原始请求") -> str:
