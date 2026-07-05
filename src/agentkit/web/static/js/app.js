@@ -571,36 +571,34 @@ function renderConversationExecution(execution) {
   const status = String(execution?.status || "idle");
   const outcome = conversationOutcome(execution);
   const operation = String(execution?.operation || "");
-  const visible = outcome !== "idle";
+  const retryableFailure = outcome === "not_completed" &&
+    Boolean(execution?.retryable);
+  const visible = outcome === "processing" || retryableFailure;
   card.hidden = !visible;
   card.dataset.status = status;
   card.dataset.outcome = outcome;
+  card.dataset.mode = retryableFailure ? "recovery" : "status";
   if (!visible) {
     setChatBusy(false);
     return;
   }
+  const copy = card.querySelector("[data-conversation-execution-copy]");
   const title = card.querySelector("[data-conversation-execution-title]");
   const reason = card.querySelector("[data-conversation-execution-reason]");
   const retry = card.querySelector("[data-conversation-retry]");
+  if (copy) copy.hidden = retryableFailure;
   const titles = {
     processing: operation === "retry" ? "正在重新运行" : "正在处理",
-    succeeded: operation === "retry" ? "重新运行完成" : "已完成",
-    not_completed: operation === "retry" ? "重新运行未完成" : "未完成",
-    action_required:
-      status === "needs_clarification" ? "需要补充信息" : "等待你的确认",
   };
   const reasons = {
     processing: operation === "retry" ? "正在重新运行上一次请求，请稍候。" : "任务正在处理中。",
-    succeeded: "任务已完成，可在对话中查看结果。",
-    not_completed: "任务未完成，可查看详情了解原因。",
-    action_required: "需要你的操作后才能继续。",
   };
   if (title) title.textContent = titles[outcome];
   if (reason) reason.textContent = execution?.reason || reasons[outcome];
   if (retry) {
-    retry.hidden = outcome === "processing" || !execution?.retryable;
-    retry.disabled = chatBusy || !execution?.retryable;
-    retry.textContent = outcome === "processing" ? "重新运行中" : "重新执行";
+    retry.hidden = !retryableFailure;
+    retry.disabled = chatBusy || !retryableFailure;
+    retry.textContent = "重新执行";
   }
 }
 
@@ -963,7 +961,7 @@ async function retryConversation(conversationId) {
           status: "failed",
           outcome: "not_completed",
           operation: "retry",
-          reason: error.message || "重新运行未完成，请稍后重试。",
+          reason: error.message || "请求失败，请稍后重试。",
           retryable: true,
         });
       }
@@ -1973,12 +1971,6 @@ function bindConversationHistory() {
   });
   document.querySelector("[data-conversation-retry]")?.addEventListener("click", () => {
     if (currentConversationId) retryConversation(currentConversationId);
-  });
-  document
-    .querySelector("[data-conversation-execution-trace]")
-    ?.addEventListener("click", () => setTraceDrawerOpen(true, { focus: true }));
-  document.querySelector("[data-conversation-state-delete]")?.addEventListener("click", async () => {
-    if (currentConversationId) await openConversationDeleteDialog(currentConversationId);
   });
   deleteDialog?.addEventListener("cancel", (event) => {
     if (deleteDialog.dataset.busy === "true") {

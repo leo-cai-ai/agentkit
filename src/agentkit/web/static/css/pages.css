@@ -222,16 +222,12 @@
   background: var(--ak-sys-color-status-info-bg);
 }
 
-.ak-conversation-execution[data-outcome="succeeded"] {
-  border-color: var(--ak-sys-color-status-success-border);
-  border-inline-start-color: var(--ak-sys-color-status-success-fg);
-  background: var(--ak-sys-color-status-success-bg);
-}
-
-.ak-conversation-execution[data-outcome="action_required"] {
-  border-color: var(--ak-sys-color-status-warning-border);
-  border-inline-start-color: var(--ak-sys-color-status-warning-fg);
-  background: var(--ak-sys-color-status-warning-bg);
+.ak-conversation-execution[data-mode="recovery"] {
+  justify-content: flex-end;
+  margin-block: 0;
+  padding: 0 var(--ak-sys-space-4);
+  border: 0;
+  background: transparent;
 }
 
 .ak-conversation-execution h3 {

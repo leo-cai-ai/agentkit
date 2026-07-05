@@ -153,15 +153,23 @@ def test_chat_has_conversation_recovery_and_two_stage_delete_controls(client) ->
     assert "data-conversation-execution-title" in html
     assert "data-conversation-execution-reason" in html
     assert "data-conversation-retry" in html
-    assert "data-conversation-execution-trace" in html
+    assert "data-conversation-execution-copy" in html
+    assert "data-conversation-execution-trace" not in html
+    assert "data-conversation-state-delete" not in html
     assert "data-conversation-delete-stage" in html
     assert "/retry/stream" in js
     assert 'outcome: "processing"' in js
     assert 'operation: "retry"' in js
     assert "正在重新运行上一次请求，请稍候。" in js
-    assert "重新运行完成" in js
-    assert "重新运行未完成" in js
+    assert "重新运行完成" not in js
+    assert "重新运行未完成" not in js
     assert 'card.dataset.outcome = outcome' in js
+    assert 'const retryableFailure = outcome === "not_completed" &&' in js
+    assert "Boolean(execution?.retryable)" in js
+    assert 'const visible = outcome === "processing" || retryableFailure' in js
+    assert "copy.hidden = retryableFailure" in js
+    assert 'querySelector("[data-conversation-execution-trace]")' not in js
+    assert 'querySelector("[data-conversation-state-delete]")' not in js
     assert 'showConversationNotice("正在重新执行原始请求…"' not in js
     assert "任务状态已更新" not in js
     assert (
@@ -180,6 +188,8 @@ def test_chat_has_conversation_recovery_and_two_stage_delete_controls(client) ->
     assert "No messages were saved for this conversation" not in js
     assert ".ak-conversation-execution" in css
     assert ".ak-conversation-execution-actions" in css
+    assert "data-conversation-delete-dialog" in html
+    assert "remove.dataset.deleteConversationId" in js
 
 
 def test_history_preference_never_stores_conversation_content(client) -> None:
