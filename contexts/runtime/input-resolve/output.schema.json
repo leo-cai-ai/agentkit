@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["resolved", "unresolved", "clarification", "confidence"],
+  "properties": {
+    "resolved": {"type": "object"},
+    "unresolved": {
+      "type": "array",
+      "items": {"type": "string"},
+      "uniqueItems": true,
+      "maxItems": 32
+    },
+    "clarification": {"type": "string", "maxLength": 500},
+    "confidence": {"enum": ["high", "medium", "low"]}
+  },
+  "additionalProperties": false
+}

@@ -26,7 +26,10 @@
 #   docker compose -f docker-compose.external.yml run --rm web agentkit init-db
 services:
   web:
-    build: .
+    # 默认 Agent 集合包含 XHS 浏览器 Tool，因此使用已安装 Chromium 的运行阶段。
+    build:
+      context: .
+      target: browser-runtime
     image: agentkit-web:latest
     env_file:
       - .env
@@ -36,6 +39,10 @@ services:
       AGENTKIT_STORAGE_BACKEND: postgres
       AGENTKIT_VECTOR_STORE_BACKEND: postgres
       AGENTKIT_APPROVAL_CHECKPOINTER: postgres
+      # 容器使用镜像内置 Chromium；忽略宿主机 Chrome/Edge 的路径与 Channel。
+      AGENTKIT_WEB_SEARCH_HEADLESS: "true"
+      AGENTKIT_WEB_SEARCH_BROWSER_CHANNEL: ""
+      AGENTKIT_WEB_SEARCH_EXECUTABLE_PATH: ""
       # Read-only root FS: keep every runtime write inside the writable tmpfs
       # (/tmp) — no bytecode/cache/HOME writes into /opt/venv or ~/.cache.
       PYTHONDONTWRITEBYTECODE: "1"
@@ -46,7 +53,8 @@ services:
       - "8501:8501"
     volumes:
       - ./tenants:/app/tenants:ro
-      - ./prompts:/app/prompts:ro
+      - ./agents:/app/agents:ro
+      - ./contexts:/app/contexts:ro
       - ./skills:/app/skills:ro
       - agentkit_data:/app/data
     security_opt:

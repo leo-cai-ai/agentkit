@@ -7,6 +7,7 @@ import pytest
 from agentkit.core.artifacts import InMemoryArtifactStore
 from agentkit.core.contracts import SkillContext, TaskRequest, ToolDefinition
 from agentkit.core.execution.models import AutonomyBudget, AutonomyLimits
+from agentkit.core.review import ReviewPolicy
 from agentkit.runtime.declarative_catalog import (
     load_capability_handler,
     load_catalog,
@@ -25,6 +26,7 @@ _maybe_llm_article = _HANDLERS._maybe_llm_article
 _parse_generated_article = _HANDLERS._parse_generated_article
 assess_research_quality = _HANDLERS.assess_research_quality
 compare_cases = _HANDLERS.compare_cases
+compact_cases = _HANDLERS.compact_cases
 extract_topic = _HANDLERS.extract_topic
 review_copy = _HANDLERS.review_copy
 topic_source_for = _HANDLERS.topic_source_for
@@ -49,8 +51,12 @@ def _campaign_context(
     context_invoker: object,
     *,
     publishing_mode: str = "draft",
+    publishing_media_strategy: str = "upload",
+    request_text: str = (
+        "Research top 3 Xiaohongshu cases and prepare copy for 30 days 1w followers."
+    ),
 ) -> tuple[SkillContext, InMemoryArtifactStore]:
-    mock_xhs = MockXhsProvider()
+    mock_xhs = MockXhsProvider(media_strategy=publishing_media_strategy)
     mock_metrics = MockXhsMetricsProvider()
     artifacts = InMemoryArtifactStore()
     agent = SimpleNamespace(
@@ -60,6 +66,7 @@ def _campaign_context(
     )
     skill = SimpleNamespace(
         autonomy=AutonomyLimits(),
+        review=ReviewPolicy(enabled=True, max_revisions=1),
         skill_instructions="测试小红书 Skill 指令",
     )
     return (
@@ -76,6 +83,7 @@ def _campaign_context(
                     "target_followers": 10000,
                     "cadence": "daily",
                     "publishing_mode": publishing_mode,
+                    "publishing_media_strategy": publishing_media_strategy,
                 }
             },
             tools={
@@ -101,10 +109,7 @@ def _campaign_context(
             request=TaskRequest(
                 user_id="u",
                 roles=["growth_manager"],
-                text=(
-                    "Research top 3 Xiaohongshu cases and prepare copy "
-                    "for 30 days 1w followers."
-                ),
+                text=request_text,
             ),
             context_invoker=context_invoker,
             artifacts=artifacts,
@@ -144,6 +149,49 @@ def test_xhs_provider_bundle_accepts_tenant_playwright_override(monkeypatch, tmp
     assert isinstance(bundle.research, PlaywrightXhsResearchProvider)
     assert bundle.research.client.config.headless is False
     assert bundle.research.adapter.enrich_details is False
+    assert bundle.research.media_provider.name == "none"
+    assert bundle.research.max_media_assets == 3
+
+
+def test_xhs_provider_bundle_rejects_unknown_media_provider(monkeypatch):
+    from agentkit.config import Settings
+
+    settings = Settings(_env_file=None)
+    monkeypatch.setattr(_PROVIDERS, "get_settings", lambda: settings)
+
+    with pytest.raises(ValueError, match="未注册的媒体理解 Provider: missing"):
+        default_provider_bundle(provider_config={"media_understanding_provider": "missing"})
+
+
+def test_xhs_ocr_adapter_skips_when_global_ocr_provider_is_none(monkeypatch, tmp_path):
+    from agentkit.config import Settings
+    from agentkit.core.media import MediaAsset
+
+    settings = Settings(_env_file=None, ocr_provider="none")
+    monkeypatch.setattr(_PROVIDERS, "get_settings", lambda: settings)
+    bundle = default_provider_bundle(
+        provider_config={
+            "research_provider": "playwright",
+            "browser_profile_root": str(tmp_path),
+            "media_understanding_provider": "ocr",
+        }
+    )
+
+    result = bundle.research.media_provider.analyze(
+        (
+            MediaAsset(
+                asset_id="a",
+                source_url="https://example.test/a.png",
+                media_type="image",
+                source_kind="detail",
+                index=0,
+            ),
+        ),
+        context={},
+    )
+
+    assert result.status == "skipped"
+    assert result.reason == "ocr_not_configured"
 
 
 def test_xhs_provider_bundle_builds_playwright_publisher(monkeypatch, tmp_path):
@@ -175,6 +223,42 @@ def test_xhs_provider_bundle_builds_playwright_publisher(monkeypatch, tmp_path):
     assert bundle.publishing.adapter.text_image_generation_timeout_ms == 90_000
 
 
+def test_interactive_search_login_disables_media_analysis(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class Client:
+        def open_interactive(self, **kwargs) -> None:
+            captured["open_interactive"] = kwargs
+
+    adapter = SimpleNamespace(
+        site_key="xiaohongshu",
+        search_url=lambda query: f"https://www.xiaohongshu.com/search?keyword={query}",
+        interactive_login_complete=lambda _page: True,
+    )
+
+    def build_research(settings, config, *, media_provider, max_media_assets):
+        captured["settings"] = settings
+        captured["config"] = config
+        captured["media_provider"] = media_provider
+        captured["max_media_assets"] = max_media_assets
+        return SimpleNamespace(client=Client(), adapter=adapter)
+
+    settings = SimpleNamespace()
+    monkeypatch.setattr(_TOOLS, "get_settings", lambda: settings)
+    monkeypatch.setattr(_PROVIDERS, "build_playwright_research_provider", build_research)
+
+    result = _TOOLS._interactive_login(
+        {"target": "search", "query": "AI Agent"},
+        {},
+    )
+
+    assert result == {"status": "authenticated", "target": "search"}
+    assert captured["settings"] is settings
+    assert captured["media_provider"].name == "none"
+    assert captured["max_media_assets"] == 0
+    assert captured["open_interactive"]["site_key"] == "xiaohongshu"
+
+
 def test_research_quality_reports_default_topic_and_card_only_evidence():
     quality = assess_research_quality(
         [
@@ -197,6 +281,132 @@ def test_research_quality_reports_default_topic_and_card_only_evidence():
     assert quality["recurring_schedule_configured"] is False
     assert any("tenant default" in item for item in quality["warnings"])
     assert any("search-card" in item for item in quality["warnings"])
+
+
+def test_compact_cases_defaults_media_understanding_to_none_skipped():
+    compacted = compact_cases([{"note_id": "n1", "title": "case"}])
+
+    assert compacted[0]["media_assets"] == []
+    assert compacted[0]["media_understanding"] == {
+        "status": "skipped",
+        "provider": "none",
+        "evidence": [],
+        "reason": "not_configured",
+        "usage": {},
+    }
+
+
+def test_research_quality_summarizes_media_evidence_without_warning_for_none():
+    quality = assess_research_quality(
+        compact_cases(
+            [
+                {
+                    "note_id": "n1",
+                    "title": "case",
+                    "detail_enriched": True,
+                    "published_at": "2026-07-04",
+                    "media_understanding": {
+                        "status": "completed",
+                        "provider": "recording",
+                        "reason": "",
+                        "usage": {"images": 1},
+                        "evidence": [
+                            {
+                                "asset_id": "n1:cover:0",
+                                "text": "图片显示：工具清单",
+                                "provider": "recording",
+                                "model": "fake-vision",
+                                "confidence": 0.9,
+                                "metadata": {},
+                            }
+                        ],
+                    },
+                },
+                {"note_id": "n2", "title": "text only", "detail_enriched": True},
+            ]
+        ),
+        requested_top_n=2,
+        topic_source="request",
+        language="zh-CN",
+    )
+
+    assert quality["media_status_counts"] == {
+        "completed": 1,
+        "skipped": 1,
+        "failed": 0,
+    }
+    assert quality["media_evidence_count"] == 1
+    assert quality["media_evidence"][0]["text"] == "图片显示：工具清单"
+    assert not any("none" in warning.lower() for warning in quality["warnings"])
+
+
+def test_media_evidence_reaches_generation_and_review_contexts():
+    spy = SpyContextInvoker(
+        "TITLE: AI工具观察\nBODY: 基于可见证据整理的正文。" * 10,
+        {"status": "approved", "reason": "证据可核查", "findings": []},
+    )
+    ctx, _artifacts = _campaign_context(spy, publishing_mode="direct")
+    top_cases = compact_cases(
+        [
+            {
+                "note_id": "n1",
+                "title": "AI 工具清单",
+                "detail_enriched": True,
+                "published_at": "2026-07-04",
+                "media_understanding": {
+                    "status": "completed",
+                    "provider": "recording",
+                    "reason": "",
+                    "usage": {"images": 1},
+                    "evidence": [
+                        {
+                            "asset_id": "n1:cover:0",
+                            "text": "图片显示：工具清单",
+                            "provider": "recording",
+                            "model": "fake-vision",
+                            "confidence": 0.9,
+                            "metadata": {},
+                        }
+                    ],
+                },
+            }
+        ]
+    )
+    quality = assess_research_quality(
+        top_cases,
+        requested_top_n=1,
+        topic_source="request",
+        language="zh-CN",
+    )
+    article = _maybe_llm_article(
+        ctx=ctx,
+        article={
+            "title": "fallback",
+            "body": "fallback",
+            "source_case_ids": ["n1"],
+        },
+        topic="AI 工具",
+        goal={"days": 30, "target_followers": 10000},
+        cadence="daily",
+        comparison=[],
+        top_cases=top_cases,
+        language="zh-CN",
+        research_quality=quality,
+    )
+    review_copy(
+        ctx,
+        {
+            "article": article,
+            "top_cases": top_cases,
+            "research_quality": quality,
+        },
+    )
+
+    article_evidence = spy.requests[0].values["skill.article_evidence"]
+    assert article_evidence[0]["media_evidence"][0]["text"] == "图片显示：工具清单"
+    review_quality = spy.requests[1].values["skill.research_quality"]
+    assert review_quality["media_evidence_count"] == 1
+    assert review_quality["media_evidence"][0]["asset_id"] == "n1:cover:0"
 
 
 def test_compare_cases_uses_observed_metrics_without_inventing_saves():
@@ -309,6 +519,8 @@ def test_xhs_growth_campaign_runs_isolated_workflow():
     )
 
     assert out["campaign_id"] == "XHS-30D-10000"
+    assert out["campaign_summary"] == ""
+    assert "10000 new followers" not in out["campaign_summary"]
     assert out["article"]["body"] == "LLM body"
     assert out["publish"]["status"] == "draft_created"
     assert out["research_quality"]["status"] == "limited"
@@ -350,3 +562,70 @@ def test_xhs_article_and_review_use_distinct_contexts() -> None:
         "skill.xhs-growth-campaign.article-generate",
         "skill.xhs-growth-campaign.content-review",
     ]
+
+
+def test_xhs_review_failure_revises_once_then_prepares_publication() -> None:
+    spy = SpyContextInvoker(
+        "TITLE: AI副业避坑\nBODY: 根据热门博主经历，轻松月入过万。",
+        {
+            "status": "failed",
+            "reason": "存在无证据收益表述",
+            "findings": [{"severity": "error", "message": "删除无证据收益表述"}],
+        },
+        "TITLE: AI副业避坑\nBODY: 仅根据可见搜索卡片提出以下原创建议。" * 4,
+        {"status": "approved", "reason": "表述已限定", "findings": []},
+    )
+    ctx, _artifacts = _campaign_context(
+        spy,
+        publishing_mode="direct",
+        publishing_media_strategy="xhs_text_image",
+        request_text="围绕 AI 副业生成并发布小红书文案",
+    )
+
+    result = run_growth_campaign(ctx, {"topic": "AI副业", "top_n": 5})
+
+    assert result["revision_count"] == 1
+    assert result["review"]["status"] == "approved_with_warnings"
+    assert result["article"]["body"].startswith("仅根据可见搜索卡片")
+    assert result["publish"]["status"] == "awaiting_approval"
+    assert "deferred_action" in result
+    deferred_action = result["deferred_action"]
+    assert deferred_action["preview"]["card_text"] == result["article"]["body"]
+    assert (
+        deferred_action["tool_calls"][0]["args"]["package"]["card_text"]
+        == result["publish"]["card_text"]
+    )
+    assert [request.context_id for request in spy.requests] == [
+        "skill.xhs-growth-campaign.article-generate",
+        "skill.xhs-growth-campaign.content-review",
+        "skill.xhs-growth-campaign.article-revise",
+        "skill.xhs-growth-campaign.content-review",
+    ]
+
+
+def test_xhs_review_blocks_after_single_revision_is_exhausted() -> None:
+    failed_review = {
+        "status": "failed",
+        "reason": "证据仍不足",
+        "findings": [{"severity": "error", "message": "仍含无证据事实"}],
+    }
+    spy = SpyContextInvoker(
+        "TITLE: AI副业\nBODY: 初稿正文 " * 20,
+        failed_review,
+        "TITLE: AI副业\nBODY: 修订正文 " * 20,
+        failed_review,
+    )
+    ctx, _artifacts = _campaign_context(
+        spy,
+        publishing_mode="direct",
+        request_text="围绕 AI 副业生成并发布小红书文案",
+    )
+
+    result = run_growth_campaign(ctx, {"topic": "AI副业", "top_n": 5})
+
+    assert result["revision_count"] == 1
+    assert result["workflow_status"] == "blocked"
+    assert result["publish"]["status"] == "blocked"
+    assert result["metrics"]["status"] == "not_started"
+    assert "deferred_action" not in result
+    assert result["campaign_summary"].startswith("内容审核未通过")

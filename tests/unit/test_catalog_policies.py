@@ -34,9 +34,7 @@ from tests.unit.test_declarative_catalog import _write_catalog
         ({"tool_changes": {"server": None}}, "MCP Tool 必须声明 server 和 tool"),
     ],
 )
-def test_catalog_rejects_invalid_policy(
-    tmp_path: Path, kwargs: dict, message: str
-) -> None:
+def test_catalog_rejects_invalid_policy(tmp_path: Path, kwargs: dict, message: str) -> None:
     _write_catalog(tmp_path, **kwargs)
 
     with pytest.raises(ValueError, match=message):

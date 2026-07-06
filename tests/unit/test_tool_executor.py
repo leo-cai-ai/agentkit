@@ -349,12 +349,14 @@ def test_durable_non_success_finish_errors_preserve_tool_failure_semantics(
     caplog, failing_finish: str, call_kind: str, expected_error: type[Exception]
 ) -> None:
     if call_kind == "timeout":
+
         def handler(_: dict) -> dict:
             time.sleep(0.1)
             return {"ok": True}
 
         timeout_seconds = 0.01
     else:
+
         def handler(_: dict) -> dict:
             raise ToolSafeFailureError("tool failed")
 
@@ -397,9 +399,7 @@ def test_durable_success_persistence_failure_raises_unknown_and_audits(
     assert isinstance(failure.value.__cause__, IdempotencyError)
     assert store.finish_calls == ["success", "unknown"]
     unknown_events = [
-        event
-        for event in audit.events_for("r1")
-        if event["type"] == "idempotency_outcome_unknown"
+        event for event in audit.events_for("r1") if event["type"] == "idempotency_outcome_unknown"
     ]
     assert [event["payload"] for event in unknown_events] == [
         {
@@ -470,9 +470,7 @@ def test_durable_timeout_audits_redacted_outcome_unknown(tmp_path) -> None:
         executor.call(_tool(slow), {"_idempotency_key": raw_key})
 
     unknown_events = [
-        event
-        for event in audit.events_for("r1")
-        if event["type"] == "idempotency_outcome_unknown"
+        event for event in audit.events_for("r1") if event["type"] == "idempotency_outcome_unknown"
     ]
     assert [event["payload"] for event in unknown_events] == [
         {"tool": "t.x", "key_digest": key_digest(raw_key), "category": "timeout"}
@@ -501,9 +499,7 @@ def test_durable_idempotency_audits_redacted_cache_hit(tmp_path) -> None:
 
     assert cached == result
     idempotency_events = [
-        event
-        for event in audit.events_for("second")
-        if event["type"].startswith("idempotency_")
+        event for event in audit.events_for("second") if event["type"].startswith("idempotency_")
     ]
     assert len(idempotency_events) == 1
     assert idempotency_events[0]["type"] == "idempotency_cache_hit"

@@ -16,7 +16,7 @@ from agentkit.core.migrations import run_sqlite_migrations
 def test_sqlite_migrations_bootstrap_and_record_version(tmp_path) -> None:
     db_path = tmp_path / "runtime.sqlite"
 
-    assert run_sqlite_migrations(db_path) == [1, 2]
+    assert run_sqlite_migrations(db_path) == [1, 2, 3]
     assert run_sqlite_migrations(db_path) == []
 
     with sqlite3.connect(db_path) as conn:
@@ -38,9 +38,7 @@ def test_sqlite_migrations_bootstrap_and_record_version(tmp_path) -> None:
                 """
             )
         ]
-        versions = conn.execute(
-            "SELECT version FROM schema_migrations ORDER BY version"
-        ).fetchall()
+        versions = conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()
 
     assert table_names == [
         "audit_events",
@@ -49,7 +47,10 @@ def test_sqlite_migrations_bootstrap_and_record_version(tmp_path) -> None:
         "tool_idempotency_records",
         "workflow_artifacts",
     ]
-    assert versions == [(1,), (2,)]
+    assert versions == [(1,), (2,), (3,)]
+    with sqlite3.connect(db_path) as conn:
+        run_columns = {row[1] for row in conn.execute("PRAGMA table_info(task_runs)").fetchall()}
+    assert {"agent_id", "parent_run_id", "conversation_id"} <= run_columns
 
 
 def test_sqlite_migrations_accept_existing_audit_schema(tmp_path) -> None:
@@ -78,7 +79,7 @@ def test_sqlite_migrations_accept_existing_audit_schema(tmp_path) -> None:
             """
         )
 
-    assert run_sqlite_migrations(db_path) == [1, 2]
+    assert run_sqlite_migrations(db_path) == [1, 2, 3]
 
 
 def test_sqlite_migrations_record_applied_timestamp(tmp_path) -> None:
@@ -87,9 +88,7 @@ def test_sqlite_migrations_record_applied_timestamp(tmp_path) -> None:
     run_sqlite_migrations(db_path)
 
     with sqlite3.connect(db_path) as conn:
-        row = conn.execute(
-            "SELECT version, applied_at FROM schema_migrations"
-        ).fetchone()
+        row = conn.execute("SELECT version, applied_at FROM schema_migrations").fetchone()
         columns = conn.execute("PRAGMA table_info(schema_migrations)").fetchall()
 
     assert row is not None
@@ -109,8 +108,7 @@ def test_sqlite_migrations_create_workflow_artifact_schema(tmp_path) -> None:
     with sqlite3.connect(db_path) as conn:
         columns = conn.execute("PRAGMA table_info(workflow_artifacts)").fetchall()
         index_columns = [
-            row[2]
-            for row in conn.execute("PRAGMA index_info(idx_workflow_artifacts_scope)")
+            row[2] for row in conn.execute("PRAGMA index_info(idx_workflow_artifacts_scope)")
         ]
         foreign_keys = conn.execute("PRAGMA foreign_key_list(workflow_artifacts)").fetchall()
 
@@ -128,9 +126,7 @@ def test_sqlite_migrations_create_workflow_artifact_schema(tmp_path) -> None:
     ]
     assert [(row[1], row[5]) for row in columns if row[5]] == [("artifact_id", 1)]
     assert index_columns == ["tenant_id", "run_id", "created_at", "artifact_id"]
-    assert [(row[2], row[3], row[4]) for row in foreign_keys] == [
-        ("task_runs", "run_id", "run_id")
-    ]
+    assert [(row[2], row[3], row[4]) for row in foreign_keys] == [("task_runs", "run_id", "run_id")]
     assert all(
         row[3] == 1
         for row in columns
@@ -202,7 +198,7 @@ def test_sqlite_migrations_are_safe_during_concurrent_bootstrap(tmp_path) -> Non
 
     assert not any(caller.is_alive() for caller in callers)
     assert errors == []
-    assert sorted(results) == [[], [1, 2]]
+    assert sorted(results) == [[], [1, 2, 3]]
 
 
 def test_sqlite_migrations_close_connection(tmp_path, monkeypatch) -> None:
@@ -236,7 +232,7 @@ def test_sqlite_migrations_close_connection(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(migrations.sqlite3, "connect", tracking_connect)
 
-    assert run_sqlite_migrations(db_path) == [1, 2]
+    assert run_sqlite_migrations(db_path) == [1, 2, 3]
     assert len(connections) == 1
     assert connections[0].closed is True
 
@@ -247,7 +243,11 @@ def test_sqlite_audit_log_bootstraps_migrations(tmp_path) -> None:
     SQLiteAuditLog(db_path)
 
     with sqlite3.connect(db_path) as conn:
-        assert conn.execute("SELECT version FROM schema_migrations").fetchall() == [(1,), (2,)]
+        assert conn.execute("SELECT version FROM schema_migrations").fetchall() == [
+            (1,),
+            (2,),
+            (3,),
+        ]
 
 
 def test_sqlite_v2_adopts_legacy_artifacts_without_losing_valid_rows(tmp_path) -> None:
@@ -284,7 +284,7 @@ def test_sqlite_v2_adopts_legacy_artifacts_without_losing_valid_rows(tmp_path) -
             ),
         )
 
-    assert run_sqlite_migrations(db_path) == [2]
+    assert run_sqlite_migrations(db_path) == [2, 3]
 
     with sqlite3.connect(db_path) as conn:
         preserved = conn.execute(
@@ -292,14 +292,11 @@ def test_sqlite_v2_adopts_legacy_artifacts_without_losing_valid_rows(tmp_path) -
         ).fetchall()
         foreign_keys = conn.execute("PRAGMA foreign_key_list(workflow_artifacts)").fetchall()
         index_columns = [
-            row[2]
-            for row in conn.execute("PRAGMA index_info(idx_workflow_artifacts_scope)")
+            row[2] for row in conn.execute("PRAGMA index_info(idx_workflow_artifacts_scope)")
         ]
 
     assert preserved == [("artifact-valid", "run-valid", '{"value":1}')]
-    assert [(row[2], row[3], row[4]) for row in foreign_keys] == [
-        ("task_runs", "run_id", "run_id")
-    ]
+    assert [(row[2], row[3], row[4]) for row in foreign_keys] == [("task_runs", "run_id", "run_id")]
     assert index_columns == ["tenant_id", "run_id", "created_at", "artifact_id"]
 
 
@@ -333,9 +330,9 @@ def test_sqlite_v2_rejects_orphan_legacy_artifacts_without_deleting_them(tmp_pat
         run_sqlite_migrations(db_path)
 
     with sqlite3.connect(db_path) as conn:
-        assert conn.execute(
-            "SELECT artifact_id, run_id FROM workflow_artifacts"
-        ).fetchall() == [("artifact-orphan", "run-missing")]
+        assert conn.execute("SELECT artifact_id, run_id FROM workflow_artifacts").fetchall() == [
+            ("artifact-orphan", "run-missing")
+        ]
         assert conn.execute("SELECT version FROM schema_migrations").fetchall() == [(1,)]
 
 
@@ -343,7 +340,7 @@ def test_sqlite_migrations_log_new_versions_once(tmp_path, caplog) -> None:
     db_path = tmp_path / "runtime.sqlite"
     caplog.set_level(logging.INFO, logger="agentkit.core.migrations")
 
-    assert run_sqlite_migrations(db_path) == [1, 2]
+    assert run_sqlite_migrations(db_path) == [1, 2, 3]
 
     migration_records = [
         record for record in caplog.records if record.getMessage() == "schema_migrated"
@@ -351,6 +348,7 @@ def test_sqlite_migrations_log_new_versions_once(tmp_path, caplog) -> None:
     assert [(record.backend, record.version) for record in migration_records] == [
         ("sqlite", 1),
         ("sqlite", 2),
+        ("sqlite", 3),
     ]
 
     caplog.clear()

@@ -2,20 +2,24 @@
 
 AgentKit 是一个面向企业的通用 AI Agent 框架，目标是让业务 Agent 可快速交付，同时具备稳定性、并发能力、可追溯性、可维护性、可扩展性、可评测性和可控的 Token 成本。
 
-当前仓库只有 3 个对外业务 Agent：
+当前仓库包含 1 个协调 Agent 和 3 个业务 Agent：
+
+- `general_agent`：统一聊天、澄清和受控委派，不直接拥有业务工具。
 
 - `customer_service`：客服问答、订单、物流和退款。
 - `hr_recruiter`：候选人批量评估与排序。
 - `xhs_growth`：小红书研究、策略、文案、审核、发布与指标。
 
-运行时不再注册隐式的平台 Agent，所有请求都由显式选择的业务 Agent 进入同一张 LangGraph。
+Web 默认只有一个聊天入口。普通消息由 General Agent 处理；`@招聘`、`@客服`、`@小红书` 只对当前消息生效，下一条未提及消息重新由 General Agent 判断。业务 Agent 进入同一张 LangGraph，General 与业务运行通过父子 `run_id` 追踪。
 
 ## 核心设计
 
 ```mermaid
 flowchart LR
-    A[Web / CLI / API] --> G[AgentGateway]
-    G --> U[UnifiedAgentGraph]
+    A[Web Chat] --> M[MultiAgentCoordinator]
+    M --> G[General Agent]
+    G -->|受控委派| U[UnifiedAgentGraph]
+    B[CLI / Task API] --> U
     U --> C[Context: Conversation / Memory / RAG]
     U --> R[Capability Resolution]
     R --> S[Strategy Selector]
@@ -38,6 +42,21 @@ flowchart LR
 - 多步依赖、运行时才能确定路径的任务使用 `plan_execute`。
 
 LLM 可以建议策略，但不能扩大 Agent 的 Skill 白名单、Tool 白名单、权限或预算。
+
+## LangChain / LangGraph 版本基线
+
+- LangChain Core：`>=1.4.8,<2.0.0`
+- LangChain OpenAI：`>=1.3.3,<2.0.0`
+- LangGraph：`>=1.2.7,<2.0.0`
+- Checkpoint SQLite / PostgreSQL：`>=3.1.0,<4.0.0`
+
+AgentKit 使用自定义 `StateGraph` 承载确定性工作流和受控自主策略，不使用 LangChain
+`create_agent` 替代统一业务图。Runtime 统一采用 LangGraph v2 输出协议，并通过公开的
+`interrupt` / `Command` API 实现审批暂停和恢复。这里的 v2 是调用输出协议，不是
+LangGraph 2.0。
+
+完整迁移说明和验证命令见
+[`docs/LANGCHAIN_LANGGRAPH_UPGRADE.md`](docs/LANGCHAIN_LANGGRAPH_UPGRADE.md)。
 
 ## 目录
 
@@ -71,6 +90,23 @@ agentkit --tenant company_alpha web
 ```
 
 Web 控制台默认地址为 `http://127.0.0.1:8501`。
+
+### 验证本地 Ollama OCR
+
+XHS 图片理解与 RAG 文档摄取共用同一个 OCR Provider。目标机器安装
+`glm-ocr:latest` 后，可直接使用生产代码路径验证一张已知文字图片：
+
+```powershell
+$env:AGENTKIT_OCR_PROVIDER="ollama"
+$env:AGENTKIT_OCR_URL="http://localhost:11434/api/generate"
+$env:AGENTKIT_OCR_MODEL="glm-ocr:latest"
+agentkit ocr-check .\test-image.png
+agentkit ocr-check .\test-image.png --json
+```
+
+成功标准是退出码为 `0`、状态为 `completed`、模型为 `glm-ocr:latest`，且 `text`
+包含图片中的已知文字。`AGENTKIT_OCR_PROVIDER=none` 是全局硬关闭：命令返回
+`SKIPPED`，不会读取图片、访问 Ollama 或回退到 Tesseract。
 
 ## 声明式扩展
 
@@ -113,7 +149,7 @@ Python Tool 通过 `entrypoint` 加载；MCP Tool 通过 `server` 和 `tool` 声
 
 ## Context Packs
 
-三个 Agent 的 `agent.md` 正文是 Agent 长期指令的唯一来源，`SKILL.md` 是 Skill 业务指令的唯一来源。
+四个 Agent 的 `agent.md` 正文是 Agent 长期指令的唯一来源，`SKILL.md` 是 Skill 业务指令的唯一来源。
 `contexts/` 不复制这些说明，也不保存会话、Memory、RAG 原文或 Tool 输出；它只声明某个 LLM 节点允许读取哪些
 运行时数据、如何分配 Token、是否注入 Agent/Skill 指令，以及输出必须满足的 Schema。
 
@@ -121,7 +157,7 @@ Python Tool 通过 `entrypoint` 加载；MCP Tool 通过 `server` 和 `tool` 声
 `owner_skill` 关联根目录 `skills/` 中的能力包。后者不保存 Workflow、Tool 实现或完整业务说明。
 
 动态数据统一进入 User Message，并被标记为不可信；System Message 由不可覆盖的安全 Fragment、节点规则和显式允许的
-Agent/Skill 指令组成。Registry 在启动时严格校验 11 个 Pack 并生成 Hash。审批恢复时如果 Context Manifest Hash 已变化，
+Agent/Skill 指令组成。Registry 在启动时严格校验 13 个 Pack 并生成 Hash。审批恢复时如果 Context Manifest Hash 已变化，
 运行会拒绝继续，避免用新规则恢复旧任务。租户只能通过 `contexts/overrides/<tenant>/` 覆盖 System/User 模板，不能改变
 安全 Fragment、输入白名单、预算或 Schema。
 

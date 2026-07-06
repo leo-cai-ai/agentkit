@@ -1,5 +1,4 @@
-/* LoginShell: isolated from the authenticated console shell. */
-
+/* 登录页与认证后工作台隔离，只共享 Token 和基础组件。 */
 html {
   min-block-size: 100%;
   background: var(--ak-sys-color-bg-canvas);
@@ -11,9 +10,7 @@ html {
   min-block-size: 100dvh;
   margin: 0;
   color: var(--ak-sys-color-text-primary);
-  background:
-    radial-gradient(circle at 50% 0%, var(--ak-sys-color-accent-soft), transparent 38rem),
-    var(--ak-sys-color-bg-canvas);
+  background: var(--ak-sys-color-bg-canvas);
   color-scheme: var(--ak-sys-color-scheme);
 }
 
@@ -23,123 +20,188 @@ html {
   box-sizing: border-box;
 }
 
-.login-shell {
-  min-block-size: inherit;
+.ak-login-shell {
+  min-block-size: 100vh;
+  min-block-size: 100dvh;
   display: grid;
-  place-items: center;
-  padding: clamp(var(--ak-sys-space-4), 5vw, 3rem);
+  grid-template-columns: minmax(0, 1.25fr) minmax(24rem, 0.75fr);
 }
 
-.login-card {
-  inline-size: min(100%, 25rem);
-  display: grid;
-  gap: var(--ak-sys-space-6);
-  padding: clamp(var(--ak-sys-space-5), 4vw, 1.75rem);
-  border: 1px solid var(--ak-sys-color-border-default);
-  border-radius: var(--ak-sys-radius-lg);
-  background: var(--ak-sys-color-bg-surface);
+.ak-login-story {
+  min-inline-size: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: clamp(2rem, 8vw, 8rem);
+  border-inline-end: 1px solid var(--ak-sys-color-border-default);
+  background: var(--ak-sys-color-bg-elevated);
 }
 
-.login-brand {
+.ak-login-brand {
   display: flex;
   align-items: center;
   gap: var(--ak-sys-space-3);
+  margin-block-end: auto;
 }
 
-.login-brand-mark {
+.ak-login-brand > span {
   inline-size: 2.5rem;
   block-size: 2.5rem;
-  flex: 0 0 auto;
   display: grid;
   place-items: center;
-  border-radius: var(--ak-sys-radius-sm);
+  border-radius: var(--ak-sys-radius-control);
   color: var(--ak-sys-color-text-inverse);
   background: var(--ak-sys-color-accent-default);
-  font-size: 0.8125rem;
+  font-size: 0.75rem;
   font-weight: 800;
-  letter-spacing: 0.04em;
 }
 
-.login-brand-copy {
-  min-inline-size: 0;
-  display: grid;
-  gap: 0.125rem;
+.ak-login-brand strong {
+  font-size: 1rem;
 }
 
-.login-brand-name {
-  color: var(--ak-sys-color-text-primary);
-  font-size: 0.9375rem;
-  font-weight: 750;
-  line-height: 1.25;
-}
-
-.login-brand-product {
-  color: var(--ak-sys-color-text-subtle);
-  font-family: var(--ak-sys-font-mono);
+.ak-login-eyebrow {
+  color: var(--ak-sys-color-accent-strong);
   font-size: 0.6875rem;
-  letter-spacing: 0.12em;
-  line-height: 1.4;
+  font-weight: 750;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
 }
 
-.login-heading {
-  display: grid;
-  gap: var(--ak-sys-space-2);
+.ak-login-story h1 {
+  max-inline-size: 13ch;
+  margin: var(--ak-sys-space-3) 0;
+  font-size: clamp(2.25rem, 5vw, 4.75rem);
+  line-height: 1.05;
+  letter-spacing: -0.055em;
 }
 
-.login-heading h1,
-.login-heading p {
+.ak-login-story > p {
+  max-inline-size: 42rem;
+  margin: 0;
+  color: var(--ak-sys-color-text-secondary);
+  font-size: clamp(1rem, 1.6vw, 1.25rem);
+  line-height: 1.7;
+}
+
+.ak-login-story ul {
+  display: grid;
+  gap: var(--ak-sys-space-2);
+  margin: var(--ak-sys-space-6) 0 auto;
+  padding: 0;
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.8125rem;
+  list-style: none;
+}
+
+.ak-login-story li::before {
+  content: "—";
+  margin-inline-end: var(--ak-sys-space-2);
+  color: var(--ak-sys-color-accent-default);
+}
+
+.ak-login-panel {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: clamp(2rem, 6vw, 5rem);
+}
+
+.ak-login-panel > header {
+  display: grid;
+  gap: var(--ak-sys-space-2);
+  margin-block-end: var(--ak-sys-space-6);
+}
+
+.ak-login-panel h2,
+.ak-login-panel p {
   margin: 0;
 }
 
-.login-heading h1 {
-  font-size: clamp(1.5rem, 4vw, 1.75rem);
-  line-height: 1.2;
-  letter-spacing: -0.025em;
+.ak-login-panel h2 {
+  font-size: 1.75rem;
+  letter-spacing: -0.03em;
 }
 
-.login-heading p {
+.ak-login-panel header p {
   color: var(--ak-sys-color-text-subtle);
   font-size: 0.875rem;
-  line-height: 1.6;
 }
 
-.login-form {
+.ak-login-form {
   display: grid;
   gap: var(--ak-sys-space-4);
 }
 
-.login-feedback {
-  min-block-size: 2.375rem;
+.ak-secret-input {
   display: grid;
-  align-items: center;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.ak-secret-input .ak-input {
+  border-radius: var(--ak-sys-radius-control) 0 0 var(--ak-sys-radius-control);
+}
+
+.ak-secret-input button {
+  min-inline-size: 4rem;
+  border: 1px solid var(--ak-sys-color-border-interactive);
+  border-inline-start: 0;
+  border-radius: 0 var(--ak-sys-radius-control) var(--ak-sys-radius-control) 0;
+  color: var(--ak-sys-color-text-secondary);
+  background: var(--ak-sys-color-bg-surface);
+  cursor: pointer;
+}
+
+.ak-secret-input button:focus-visible {
+  outline: var(--ak-sys-focus-width) solid var(--ak-sys-color-focus-ring);
+  outline-offset: var(--ak-sys-focus-offset);
+}
+
+.ak-login-status {
+  min-block-size: 2.5rem;
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.75rem;
+}
+
+@media (max-width: 52rem) {
+  .ak-login-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ak-login-story {
+    min-block-size: 18rem;
+    padding: var(--ak-sys-space-6);
+    border-inline-end: 0;
+    border-block-end: 1px solid var(--ak-sys-color-border-default);
+  }
+
+  .ak-login-brand {
+    margin-block-end: var(--ak-sys-space-8);
+  }
+
+  .ak-login-story h1 {
+    font-size: clamp(2rem, 10vw, 3.5rem);
+  }
+
+  .ak-login-story ul {
+    display: none;
+  }
+
+  .ak-login-panel {
+    padding: var(--ak-sys-space-6);
+  }
 }
 
 @media (max-width: 30rem) {
-  .login-shell {
+  .ak-login-story,
+  .ak-login-panel {
     padding: var(--ak-sys-space-4);
-  }
-
-  .login-card {
-    gap: var(--ak-sys-space-5);
-    padding: var(--ak-sys-space-5);
-  }
-}
-
-@media (max-height: 40rem) {
-  .login-shell {
-    place-items: start center;
   }
 }
 
 @media (forced-colors: active) {
-  .login-page {
+  .login-page,
+  .ak-login-story {
     background: Canvas;
-  }
-
-  .login-brand-mark {
-    border: 1px solid CanvasText;
-    color: ButtonText;
-    background: ButtonFace;
   }
 }

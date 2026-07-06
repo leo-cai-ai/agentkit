@@ -22,9 +22,7 @@ class StrategyPolicyError(ValueError):
     """候选策略越过 Agent、Skill、风险或编排边界。"""
 
 
-StrategySuggestion = Callable[
-    [AgentProfile, CapabilityResolution, ExecutionStrategyName], str
-]
+StrategySuggestion = Callable[[AgentProfile, CapabilityResolution, ExecutionStrategyName], str]
 
 
 @dataclass(frozen=True)
@@ -81,8 +79,10 @@ class StrategySelector:
 
         self._validate_strategy(agent, resolution, selected)
         budget = self._global_budget.restrict(agent.autonomy_budget)
-        for skill in skills:
-            budget = skill.autonomy.apply_to(budget)
+        is_multi_skill_plan = selected is ExecutionStrategyName.PLAN_EXECUTE and len(skills) > 1
+        if not is_multi_skill_plan:
+            for skill in skills:
+                budget = skill.autonomy.apply_to(budget)
         return StrategySelection(
             strategy=selected,
             orchestration=_strategy_orchestration(selected),

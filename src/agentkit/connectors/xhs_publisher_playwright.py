@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import sqlite3
 import time
 from datetime import UTC, datetime
@@ -407,7 +408,7 @@ class XhsPublishAdapter:
         ):
             raise ValueError("XHS upload publication requires existing local media files")
         if strategy == "xhs_text_image" and (not content["card_text"] or not content["card_style"]):
-            raise ValueError("XHS text-image publication requires card text and style")
+            raise ValueError("XHS text-image publication requires reviewed card text and style")
 
         publish_url = self._image_publish_url()
         _log.info(
@@ -455,6 +456,7 @@ class XhsPublishAdapter:
             field_name="body",
         )
         _log.info("Xiaohongshu reviewed title and body populated")
+        self._stabilize_publish_surface(page)
 
         _log.info("Xiaohongshu publish button ready; submitting reviewed content")
         evidence = _PublishEvidenceRecorder()
@@ -541,6 +543,18 @@ class XhsPublishAdapter:
             f"expected_length={len(expected)} actual_length={len(actual)}; {diagnostics}"
         )
 
+    def _stabilize_publish_surface(self, page: Any) -> None:
+        keyboard = getattr(page, "keyboard", None)
+        press = getattr(keyboard, "press", None)
+        if callable(press):
+            press("Escape")
+        page.evaluate(
+            "() => { const active = document.activeElement; "
+            "if (active instanceof HTMLElement) active.blur(); }"
+        )
+        self._wait_for_timeout(page, 250)
+        _log.info("Xiaohongshu transient editor overlays dismissed")
+
     def _upload_media(
         self,
         page: Any,
@@ -584,8 +598,13 @@ class XhsPublishAdapter:
             timeout_ms=remaining_ms(),
             field_name="text-image editor",
         )
-        editor.fill(card_text)
-        _log.info("Xiaohongshu text-image card text populated")
+        self._fill_and_verify(
+            page=page,
+            locator=editor,
+            expected=card_text,
+            field_name="text-image content",
+        )
+        _log.info("Xiaohongshu text-image content populated: chars=%d", len(card_text))
 
         if not self._poll_evaluate(
             page,
@@ -735,20 +754,162 @@ class XhsPublishAdapter:
         if not box or box.get("width", 0) <= 0 or box.get("height", 0) <= 0:
             raise BrowserPageChanged("Xiaohongshu publish control has no clickable bounds")
 
-        width = float(box["width"])
-        height = float(box["height"])
-        right_button_width = min(120.0, width / 2.0)
-
-        # xhs-publish-btn 的 closed shadow root 包含左侧暂存和右侧发布按钮。
-        # 已确认右侧按钮宽度为 120 像素；窄宿主退化为右半区域的中心。
-        position = {
-            "x": max(width / 2.0, width - right_button_width / 2.0),
-            "y": height / 2.0,
-        }
         host_box = {name: float(box[name]) for name in ("x", "y", "width", "height")}
-        _log.info("Xiaohongshu publish click target: host=%s position=%s", host_box, position)
-        control.click(position=position)
-        return {"host_box": host_box, "position": position}
+        target = self._closed_shadow_publish_target(page)
+        if target is None:
+            raise BrowserPageChanged(
+                "Xiaohongshu closed shadow publish button could not be identified exactly"
+            )
+        session, position, target_backend_node_id = target
+        if not self._hit_belongs_to_target(
+            session,
+            position=position,
+            target_backend_node_id=target_backend_node_id,
+        ):
+            raise BrowserPageChanged("Xiaohongshu publish button is covered by a transient overlay")
+        _log.info(
+            "Xiaohongshu publish click target: method=cdp host=%s absolute_position=%s",
+            host_box,
+            position,
+        )
+        self._dispatch_cdp_click(session, position=position)
+        return {
+            "method": "cdp",
+            "host_box": host_box,
+            "position": position,
+            "relative_position": {
+                "x": position["x"] - host_box["x"],
+                "y": position["y"] - host_box["y"],
+            },
+        }
+
+    @staticmethod
+    def _closed_shadow_publish_target(
+        page: Any,
+    ) -> tuple[Any, dict[str, float], int] | None:
+        context = getattr(page, "context", None)
+        session_factory = getattr(context, "new_cdp_session", None)
+        if not callable(session_factory):
+            return None
+        try:
+            session = session_factory(page)
+            session.send("DOM.enable")
+            nodes = session.send(
+                "DOM.getFlattenedDocument",
+                {"depth": -1, "pierce": True},
+            ).get("nodes", [])
+            candidates: list[tuple[dict[str, float], int]] = []
+            for node in nodes:
+                if str(node.get("nodeName") or "").lower() != "button":
+                    continue
+                raw_attributes = list(node.get("attributes") or [])
+                attributes = dict(zip(raw_attributes[::2], raw_attributes[1::2], strict=False))
+                classes = set(str(attributes.get("class") or "").split())
+                if "bg-red" not in classes or "disabled" in attributes:
+                    continue
+                if str(attributes.get("aria-disabled") or "").lower() == "true":
+                    continue
+                backend_node_id = node.get("backendNodeId")
+                if backend_node_id is None:
+                    continue
+                outer_html = str(
+                    session.send(
+                        "DOM.getOuterHTML",
+                        {"backendNodeId": backend_node_id},
+                    ).get("outerHTML", "")
+                )
+                text = html.unescape(re.sub(r"<!--.*?-->|<[^>]+>", " ", outer_html, flags=re.S))
+                if " ".join(text.split()) != "发布":
+                    continue
+                model = session.send(
+                    "DOM.getBoxModel",
+                    {"backendNodeId": backend_node_id},
+                ).get("model", {})
+                border = list(model.get("border") or [])
+                if len(border) != 8:
+                    continue
+                candidates.append(
+                    (
+                        {
+                            "x": sum(float(value) for value in border[0::2]) / 4.0,
+                            "y": sum(float(value) for value in border[1::2]) / 4.0,
+                        },
+                        int(backend_node_id),
+                    )
+                )
+            if len(candidates) != 1:
+                return None
+            position, backend_node_id = candidates[0]
+            return session, position, backend_node_id
+        except Exception:  # noqa: BLE001 - 精确定位失败时必须安全停止，不能猜坐标
+            return None
+
+    @staticmethod
+    def _hit_belongs_to_target(
+        session: Any,
+        *,
+        position: dict[str, float],
+        target_backend_node_id: int,
+    ) -> bool:
+        try:
+            hit = session.send(
+                "DOM.getNodeForLocation",
+                {
+                    "x": int(round(position["x"])),
+                    "y": int(round(position["y"])),
+                    "includeUserAgentShadowDOM": True,
+                    "ignorePointerEventsNone": False,
+                },
+            )
+            hit_backend_node_id = int(hit.get("backendNodeId") or 0)
+            if hit_backend_node_id == target_backend_node_id:
+                return True
+            node_ids = session.send(
+                "DOM.pushNodesByBackendIdsToFrontend",
+                {"backendNodeIds": [hit_backend_node_id]},
+            ).get("nodeIds", [])
+            if not node_ids:
+                return False
+            node_id = int(node_ids[0])
+            for _ in range(8):
+                node = session.send(
+                    "DOM.describeNode",
+                    {"nodeId": node_id},
+                ).get("node", {})
+                if int(node.get("backendNodeId") or 0) == target_backend_node_id:
+                    return True
+                parent_id = int(node.get("parentId") or 0)
+                if not parent_id:
+                    break
+                node_id = parent_id
+        except Exception:  # noqa: BLE001 - CDP 命中检查失败时必须安全停止
+            return False
+        return False
+
+    @staticmethod
+    def _dispatch_cdp_click(session: Any, *, position: dict[str, float]) -> None:
+        coordinates = {"x": position["x"], "y": position["y"]}
+        session.send("Input.dispatchMouseEvent", {"type": "mouseMoved", **coordinates})
+        session.send(
+            "Input.dispatchMouseEvent",
+            {
+                "type": "mousePressed",
+                "button": "left",
+                "buttons": 1,
+                "clickCount": 1,
+                **coordinates,
+            },
+        )
+        session.send(
+            "Input.dispatchMouseEvent",
+            {
+                "type": "mouseReleased",
+                "button": "left",
+                "buttons": 0,
+                "clickCount": 1,
+                **coordinates,
+            },
+        )
 
     def _poll_evaluate(
         self,

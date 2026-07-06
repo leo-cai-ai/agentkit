@@ -38,9 +38,7 @@ def _durable_gateway(tmp_path, calls: list[str], *, context_invoker=None) -> Age
         tools=tools,
         audit=SQLiteAuditLog(tmp_path / "audit.sqlite"),
         context_invoker=context_invoker or SimpleNamespace(manifest_hash="sha256:test"),
-        checkpointer=build_checkpointer(
-            mode="sqlite", sqlite_path=tmp_path / "checkpoints.sqlite"
-        ),
+        checkpointer=build_checkpointer(mode="sqlite", sqlite_path=tmp_path / "checkpoints.sqlite"),
         selector=StrategySelector(
             skills=skills,
             global_budget=AutonomyBudget(20, 20, 10, 10, 2, 50000, 600),
@@ -66,9 +64,7 @@ def test_sqlite_checkpoint_resumes_across_runtime_restart(tmp_path) -> None:
     waiting = _durable_gateway(tmp_path, calls).handle(request)
 
     resumed_gateway = _durable_gateway(tmp_path, calls)
-    resumed = resumed_gateway.resume(
-        waiting.thread_id, approved_skills=["refund.apply"]
-    )
+    resumed = resumed_gateway.resume(waiting.thread_id, approved_skills=["refund.apply"])
 
     assert waiting.status == "waiting_for_approval"
     assert resumed.status == "completed"

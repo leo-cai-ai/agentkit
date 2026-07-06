@@ -5,8 +5,10 @@ from types import SimpleNamespace
 
 import agentkit.cli as cli
 import agentkit.config as config_mod
+import agentkit.runtime.ocr as ocr_runtime
 from agentkit.cli import _runtime_doctor_checks
 from agentkit.core import migrations
+from agentkit.core.ocr import NoneOcrProvider, OcrProviderError, OcrResult
 from agentkit.runtime import bootstrap
 
 
@@ -39,7 +41,7 @@ def test_cli_exposes_validate_contexts() -> None:
 def test_validate_contexts_json(capsys) -> None:
     assert cli._validate_contexts(tenant_id="company_alpha", as_json=True) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["count"] == 11
+    assert payload["count"] == 15
     assert payload["manifest_hash"].startswith("sha256:")
 
 
@@ -52,9 +54,114 @@ def test_runtime_doctor_reports_unknown_tenant() -> None:
     assert "agentkit new-tenant does_not_exist" in checks[0]["detail"]
 
 
-def test_init_db_runs_sqlite_migrations_for_selected_tenant(
-    monkeypatch, tmp_path, capsys
+class RecordingOcrProvider:
+    name = "ollama"
+    model = "glm-ocr:latest"
+    enabled = True
+
+    def analyze(
+        self,
+        image_bytes: bytes,
+        *,
+        mime_type: str,
+        hint: str = "",
+    ) -> OcrResult:
+        del hint
+        assert image_bytes == b"png"
+        assert mime_type == "image/png"
+        return OcrResult(
+            status="completed",
+            text="识别文本",
+            provider=self.name,
+            model=self.model,
+            usage={"total_duration": 42},
+        )
+
+
+def test_ocr_check_none_reports_skipped_without_reading_file(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        config_mod,
+        "get_settings",
+        lambda: SimpleNamespace(ocr_provider="none"),
+    )
+    monkeypatch.setattr(
+        ocr_runtime,
+        "build_configured_ocr_provider",
+        lambda _settings: NoneOcrProvider(),
+    )
+
+    assert cli._ocr_check("missing.png", as_json=False) == 0
+
+    assert "SKIPPED: OCR provider is none" in capsys.readouterr().out
+
+
+def test_ocr_check_runs_configured_provider_and_emits_json(
+    monkeypatch,
+    tmp_path,
+    capsys,
 ) -> None:
+    image = tmp_path / "sample.png"
+    image.write_bytes(b"png")
+    monkeypatch.setattr(
+        ocr_runtime,
+        "build_configured_ocr_provider",
+        lambda _settings: RecordingOcrProvider(),
+    )
+
+    assert cli._ocr_check(str(image), as_json=True) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "completed"
+    assert payload["provider"] == "ollama"
+    assert payload["model"] == "glm-ocr:latest"
+    assert payload["text"] == "识别文本"
+    assert payload["elapsed_seconds"] >= 0
+
+
+def test_ocr_check_reports_missing_or_unsupported_image(
+    monkeypatch,
+    tmp_path,
+    capsys,
+) -> None:
+    monkeypatch.setattr(
+        ocr_runtime,
+        "build_configured_ocr_provider",
+        lambda _settings: RecordingOcrProvider(),
+    )
+
+    assert cli._ocr_check(str(tmp_path / "missing.png"), as_json=False) == 1
+    missing_error = capsys.readouterr().err
+    unsupported = tmp_path / "sample.gif"
+    unsupported.write_bytes(b"gif")
+    assert cli._ocr_check(str(unsupported), as_json=False) == 1
+    unsupported_error = capsys.readouterr().err
+
+    assert "image_not_found" in missing_error
+    assert "unsupported_mime_type" in unsupported_error
+
+
+def test_ocr_check_reports_safe_provider_error(monkeypatch, tmp_path, capsys) -> None:
+    class FailingProvider(RecordingOcrProvider):
+        def analyze(self, image_bytes: bytes, *, mime_type: str, hint: str = ""):
+            del image_bytes, mime_type, hint
+            raise OcrProviderError("request_failed")
+
+    image = tmp_path / "sample.png"
+    image.write_bytes(b"secret-image")
+    monkeypatch.setattr(
+        ocr_runtime,
+        "build_configured_ocr_provider",
+        lambda _settings: FailingProvider(),
+    )
+
+    assert cli._ocr_check(str(image), as_json=False) == 1
+
+    stderr = capsys.readouterr().err
+    assert "request_failed" in stderr
+    assert "secret-image" not in stderr
+
+
+def test_init_db_runs_sqlite_migrations_for_selected_tenant(monkeypatch, tmp_path, capsys) -> None:
     data_dir = tmp_path / "data"
     settings = SimpleNamespace(storage_backend="sqlite", vector_store_backend="sqlite")
     migration_call: dict[str, object] = {}
@@ -101,9 +208,7 @@ def test_init_db_fails_when_runtime_migrations_raise(monkeypatch, tmp_path, caps
     assert "[FAIL] could not apply runtime migrations: migration failure" in capsys.readouterr().err
 
 
-def test_init_db_runs_postgres_migrations_before_schema_readiness(
-    monkeypatch, tmp_path
-) -> None:
+def test_init_db_runs_postgres_migrations_before_schema_readiness(monkeypatch, tmp_path) -> None:
     settings = SimpleNamespace(storage_backend="postgres", vector_store_backend="sqlite")
     events: list[str] = []
 

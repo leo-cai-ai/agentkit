@@ -15,6 +15,7 @@ from .execution.models import (
     ToolProvider,
     ToolRisk,
 )
+from .review import ReviewPolicy
 
 IntentType = Literal[
     "business_task",
@@ -107,8 +108,10 @@ class SkillDefinition:
     autonomy: AutonomyLimits
     tools: list[str]
     handler: Callable[[SkillContext, dict[str, Any]], dict[str, Any]]
+    review: ReviewPolicy | None = None
     batch_key: str | None = None
     keywords: list[str] = field(default_factory=list)
+    composes: tuple[str, ...] = ()
     skill_folder: str = ""
     skill_file: str = ""
     skill_instructions: str = ""

@@ -22,6 +22,8 @@ DEFAULT_SOURCES = frozenset(
         "rag.query",
         "rag.candidates",
         "routing.candidate_skills",
+        "routing.candidate_agents",
+        "routing.decision",
         "execution.allowed_tools",
         "execution.allowed_skills",
         "execution.observations",
@@ -30,10 +32,13 @@ DEFAULT_SOURCES = frozenset(
         "execution.remaining_budget",
         "skill.ranking_result",
         "skill.article",
+        "skill.review",
         "skill.research_quality",
         "skill.article_evidence",
         "skill.article_patterns",
         "skill.campaign",
+        "skill.missing_fields",
+        "skill.input_schema",
     }
 )
 

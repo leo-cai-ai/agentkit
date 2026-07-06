@@ -35,9 +35,9 @@ def _ctx(
     )
 
 
-def _candidate_rank_components() -> tuple[
-    AgentProfile, ToolDefinition, ToolDefinition, SkillDefinition
-]:
+def _candidate_rank_components() -> (
+    tuple[AgentProfile, ToolDefinition, ToolDefinition, SkillDefinition]
+):
     catalog = load_catalog(REPO_ROOT)
     agents, skills, tools = AgentRegistry(), SkillRegistry(), ToolRegistry()
     register_catalog(

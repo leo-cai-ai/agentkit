@@ -9,12 +9,27 @@ function readUiConfig() {
 }
 
 const UI_CONFIG = readUiConfig();
+const AGENT_DIRECTORY = (() => {
+  const node = document.getElementById("agent-directory");
+  if (!node) return [];
+  try {
+    return JSON.parse(node.textContent || "[]");
+  } catch {
+    return [];
+  }
+})();
 const DEMO_PROMPT = UI_CONFIG.demo_prompt || "Rank the top 3 candidates for JOB-001 and explain why.";
 let pendingApproval = null;
 let pendingInput = null;
 let currentConversationId = null;
 let conversationCache = [];
 let chatBusy = false;
+let pendingDeleteConversationId = null;
+let pendingDeleteExecution = null;
+let currentConversationExecution = null;
+const HISTORY_COLLAPSED_KEY = "agentkit:chat-history-collapsed";
+const chatSessionGuard = window.AgentKitChatSession.createChatSessionGuard();
+const TRACE_ATTENTION_STATES = new Set(["waiting_approval", "failed", "blocked"]);
 
 // Progressive tab enhancement: without JavaScript the anchors still navigate
 // to fully visible sections; once initialized, the same markup follows the
@@ -158,6 +173,8 @@ function syncChatComposerState() {
 function setChatBusy(busy) {
   chatBusy = busy;
   syncChatComposerState();
+  const retry = document.querySelector("[data-conversation-retry]");
+  if (retry) retry.disabled = busy || !currentConversationExecution?.retryable;
 }
 
 function escapeHtml(value) {
@@ -317,13 +334,12 @@ function finalizeAssistantBubble(bubble, text) {
 // The server owns trusted identity/RBAC and routes the selected agent to
 // answer-only memory or the governed action graph.
 function collectChatPayload(message, extraContext = {}) {
-  const selectedAgent = getSelectedAgentName();
   const context = {
-    agent: selectedAgent,
+    agent: "general_agent",
     message,
     ...extraContext,
   };
-  if (pendingInput?.agent === selectedAgent) {
+  if (pendingInput?.agent === "general_agent") {
     context.skill = pendingInput.skill_name;
     context.skill_args = { ...(pendingInput.arguments || {}) };
   }
@@ -335,7 +351,7 @@ function collectChatPayload(message, extraContext = {}) {
 }
 
 function getSelectedAgentName() {
-  return document.querySelector('input[name="agent"]:checked')?.value || UI_CONFIG.default_agent || "";
+  return "general_agent";
 }
 
 function getAgentCard(agentName) {
@@ -345,7 +361,36 @@ function getAgentCard(agentName) {
 function getSelectedAgentLabel() {
   const selected = getSelectedAgentName();
   const card = getAgentCard(selected);
-  return card?.querySelector("strong")?.textContent?.trim() || selected || "Agent";
+  return card?.querySelector("strong")?.textContent?.trim() || agentLabel(selected);
+}
+
+function bindPrimaryNavigation() {
+  const toggle = document.querySelector("[data-mobile-navigation-toggle]");
+  const navigation = document.getElementById("primary-navigation");
+  if (!toggle || !navigation) return;
+
+  const setOpen = (open, restoreFocus = false) => {
+    document.body.classList.toggle("ak-mobile-nav-open", open);
+    toggle.setAttribute("aria-expanded", String(open));
+    if (restoreFocus) toggle.focus();
+  };
+
+  toggle.addEventListener("click", () => {
+    setOpen(toggle.getAttribute("aria-expanded") !== "true");
+  });
+  navigation.addEventListener("click", (event) => {
+    if (event.target.closest("a")) setOpen(false);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && toggle.getAttribute("aria-expanded") === "true") {
+      setOpen(false, true);
+    }
+  });
+}
+
+function agentLabel(agentName) {
+  const entry = AGENT_DIRECTORY.find((agent) => agent.name === agentName);
+  return entry?.label || String(agentName || "General Agent").replaceAll("_", " ");
 }
 
 function getSelectedAgentDemoPrompt() {
@@ -358,7 +403,7 @@ function getCsrfToken() {
   return document.querySelector('meta[name="csrf-token"]')?.content || "";
 }
 
-async function postChat(payload) {
+async function postChat(payload, { signal } = {}) {
   const response = await fetch("/api/chat", {
     method: "POST",
     headers: {
@@ -366,6 +411,7 @@ async function postChat(payload) {
       "X-CSRF-Token": getCsrfToken(),
     },
     body: JSON.stringify(payload),
+    signal,
   });
   if (!response.ok) {
     let message = `Request failed with ${response.status}`;
@@ -405,6 +451,7 @@ async function streamSse(url, payload, handlers = {}) {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-CSRF-Token": getCsrfToken() },
     body: JSON.stringify(payload),
+    signal: handlers.signal,
   });
   const contentType = response.headers.get("Content-Type") || "";
   if (!response.ok || !contentType.includes("text/event-stream") || !response.body) {
@@ -465,12 +512,22 @@ function addLiveAssistantMessage(labelOverride = "") {
   return { node, p: paragraph };
 }
 
-function resetChatThread(greeting) {
+function getChatWelcomeMessage(agentName = getSelectedAgentName()) {
+  const thread = document.getElementById("chat-thread");
+  const generalWelcome = thread?.dataset.generalWelcome
+    || "你好，我负责理解你的需求并协调合适的业务 Agent。你也可以使用 @Agent名称，只指定当前这一轮。";
+  const agentWelcomeTemplate = thread?.dataset.agentWelcomeTemplate
+    || "你好，我是{agent}。本轮将由我直接协助你处理相关任务。";
+  if (agentName === "general_agent") return generalWelcome;
+  return agentWelcomeTemplate.replace("{agent}", agentLabel(agentName));
+}
+
+function resetChatThread(greeting, labelOverride = getSelectedAgentLabel()) {
   const thread = document.getElementById("chat-thread");
   if (!thread) return;
   thread.innerHTML = "";
   if (greeting) {
-    addChatMessage("assistant", greeting, getSelectedAgentLabel());
+    addChatMessage("assistant", greeting, labelOverride);
   }
 }
 
@@ -501,127 +558,454 @@ function formatRelativeTime(epochSeconds) {
 }
 
 function conversationTitle(conv) {
-  if (!conv) return "New conversation";
-  return (conv.title || "").trim() || "Untitled conversation";
+  if (!conv) return "新会话";
+  return (conv.title || "").trim() || "未命名会话";
+}
+
+function conversationOutcome(execution) {
+  if (execution?.outcome) return String(execution.outcome);
+  const status = String(execution?.status || "idle");
+  if (status === "idle") return "idle";
+  if (status === "running") return "processing";
+  if (status === "completed") return "succeeded";
+  if (["waiting_for_approval", "needs_clarification"].includes(status)) {
+    return "action_required";
+  }
+  return "not_completed";
+}
+
+function renderConversationExecution(execution) {
+  currentConversationExecution = execution || null;
+  const card = document.querySelector("[data-conversation-execution]");
+  if (!card) return;
+  const status = String(execution?.status || "idle");
+  const outcome = conversationOutcome(execution);
+  const operation = String(execution?.operation || "");
+  const retryableFailure = outcome === "not_completed" &&
+    Boolean(execution?.retryable);
+  const visible = outcome === "processing" || retryableFailure;
+  card.hidden = !visible;
+  card.dataset.status = status;
+  card.dataset.outcome = outcome;
+  card.dataset.mode = retryableFailure ? "recovery" : "status";
+  if (!visible) {
+    setChatBusy(false);
+    return;
+  }
+  const copy = card.querySelector("[data-conversation-execution-copy]");
+  const title = card.querySelector("[data-conversation-execution-title]");
+  const reason = card.querySelector("[data-conversation-execution-reason]");
+  const retry = card.querySelector("[data-conversation-retry]");
+  if (copy) copy.hidden = retryableFailure;
+  const titles = {
+    processing: operation === "retry" ? "正在重新运行" : "正在处理",
+  };
+  const reasons = {
+    processing: operation === "retry" ? "正在重新运行上一次请求，请稍候。" : "任务正在处理中。",
+  };
+  if (title) title.textContent = titles[outcome];
+  if (reason) reason.textContent = execution?.reason || reasons[outcome];
+  if (retry) {
+    retry.hidden = !retryableFailure;
+    retry.disabled = chatBusy || !retryableFailure;
+    retry.textContent = "重新执行";
+  }
+}
+
+function emptyConversationNotice(execution) {
+  const status = String(execution?.status || "idle");
+  if (status === "failed") return "本次任务未保存对话消息，可重新执行或查看运行追踪。";
+  if (status === "waiting_for_approval") return "任务正在等待人工审批。";
+  if (status === "running") return "任务仍在执行，请稍候。";
+  if (status === "cancelled") return "任务已取消，可重新执行或删除会话。";
+  return "该会话暂无消息。";
 }
 
 function conversationMeta(conv) {
-  if (!conv) return "Start a fresh thread";
+  if (!conv) return "开始新的对话";
   const when = formatRelativeTime(conv.updated_at || conv.created_at);
-  return when ? `Updated ${when}` : "Saved conversation";
+  return when ? `更新于 ${when}` : "已保存会话";
 }
 
-function setConversationTrigger(conv) {
-  const titleEl = document.querySelector("[data-conversation-current]");
-  const metaEl = document.querySelector("[data-conversation-current-meta]");
-  if (titleEl) titleEl.textContent = conversationTitle(conv);
-  if (metaEl) metaEl.textContent = conversationMeta(conv);
-}
-
-function renderConversationMenu() {
-  const menu = document.querySelector("[data-conversation-menu]");
-  if (!menu) return;
-  const newConversationActive = !currentConversationId;
-  const items = [
-    `<li class="conversation-item" role="option" tabindex="${newConversationActive ? "0" : "-1"}" aria-selected="${newConversationActive}" data-conversation-id="" data-active="${newConversationActive}">
-       <span class="conversation-item-title">New conversation</span>
-       <span class="conversation-item-meta">Start a fresh thread</span>
-     </li>`,
-  ];
-  for (const conv of conversationCache) {
-    const active = conv.id === currentConversationId;
-    items.push(
-      `<li class="conversation-item" role="option" tabindex="${active ? "0" : "-1"}" aria-selected="${active}" data-conversation-id="${escapeHtml(conv.id)}" data-active="${active}">
-         <span class="conversation-item-title">${escapeHtml(conversationTitle(conv))}</span>
-         <span class="conversation-item-meta">${escapeHtml(conversationMeta(conv))}</span>
-       </li>`
-    );
+function groupConversations(conversations, now = Date.now()) {
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+  const groups = { today: [], older: [] };
+  for (const conversation of conversations) {
+    const rawTimestamp = Number(conversation.updated_at || conversation.created_at || 0);
+    const timestamp = rawTimestamp < 1e12 ? rawTimestamp * 1000 : rawTimestamp;
+    const group = timestamp >= startOfToday.getTime() ? "today" : "older";
+    groups[group].push(conversation);
   }
-  menu.innerHTML = items.join("");
+  return groups;
 }
 
-function closeConversationMenu(restoreFocus = false) {
-  const picker = document.querySelector("[data-conversation-picker]");
-  const menu = document.querySelector("[data-conversation-menu]");
-  const trigger = document.querySelector("[data-conversation-trigger]");
-  picker?.classList.remove("open");
-  if (menu) menu.hidden = true;
-  trigger?.setAttribute("aria-expanded", "false");
-  if (restoreFocus) trigger?.focus();
-}
+function renderConversationHistory() {
+  const history = document.querySelector("[data-conversation-list]");
+  if (!history) return;
+  const groups = groupConversations(conversationCache);
+  for (const groupName of ["today", "older"]) {
+    const section = history.querySelector(`[data-conversation-group="${groupName}"]`);
+    const items = section?.querySelector("[data-conversation-items]");
+    if (!section || !items) continue;
+    items.replaceChildren();
+    for (const conversation of groups[groupName]) {
+      const active = conversation.id === currentConversationId;
+      const row = document.createElement("div");
+      row.className = "conversation-item-row";
 
-function openConversationMenu(focusPosition = "active") {
-  const picker = document.querySelector("[data-conversation-picker]");
-  const menu = document.querySelector("[data-conversation-menu]");
-  const trigger = document.querySelector("[data-conversation-trigger]");
-  if (!menu) return;
-  renderConversationMenu();
-  picker?.classList.add("open");
-  menu.hidden = false;
-  trigger?.setAttribute("aria-expanded", "true");
-  const options = Array.from(menu.querySelectorAll('[role="option"]'));
-  const target = focusPosition === "last"
-    ? options.at(-1)
-    : options.find((option) => option.getAttribute("aria-selected") === "true") || options[0];
-  target?.focus();
-}
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "conversation-item";
+      button.dataset.conversationId = conversation.id;
+      button.dataset.active = String(active);
+      if (active) button.setAttribute("aria-current", "page");
 
-function syncConversationTrigger() {
-  const conv = conversationCache.find((c) => c.id === currentConversationId);
-  setConversationTrigger(conv || null);
+      const title = document.createElement("span");
+      title.className = "conversation-item-title";
+      title.textContent = conversationTitle(conversation);
+      const meta = document.createElement("span");
+      meta.className = "conversation-item-meta";
+      meta.textContent = conversationMeta(conversation);
+      button.append(title, meta);
+
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "conversation-delete-button";
+      remove.dataset.deleteConversationId = conversation.id;
+      remove.setAttribute(
+        "aria-label",
+        `删除会话：${conversationTitle(conversation)}`,
+      );
+      const icon = document.querySelector("[data-conversation-delete-icon]");
+      if (icon) remove.append(icon.content.cloneNode(true));
+
+      row.append(button, remove);
+      items.appendChild(row);
+    }
+    section.hidden = groups[groupName].length === 0;
+  }
+  const empty = history.querySelector("[data-conversation-empty]");
+  if (empty) empty.hidden = conversationCache.length > 0;
 }
 
 async function loadConversations(agent) {
-  const menu = document.querySelector("[data-conversation-menu]");
-  if (!menu) return;
+  const history = document.querySelector("[data-conversation-list]");
+  if (!history) return;
   try {
-    const response = await fetch(`/api/conversations?agent=${encodeURIComponent(agent)}`);
+    const response = await fetch("/api/conversations");
     if (!response.ok) return;
     const data = await response.json();
     conversationCache = data.conversations || [];
   } catch {
     conversationCache = [];
   }
-  syncConversationTrigger();
-  renderConversationMenu();
+  renderConversationHistory();
 }
 
-async function loadConversationMessages(conversationId) {
+async function loadConversationMessages(
+  conversationId,
+  { operation = "", preserveWhileLoading = false } = {},
+) {
   if (!conversationId) {
+    chatSessionGuard.cancel();
     resetChatThread("");
     return;
   }
   const requestedConversationId = conversationId;
-  showConversationNotice("Loading conversation...", "loading");
+  const requestToken = chatSessionGuard.begin(requestedConversationId);
+  if (!preserveWhileLoading) showConversationNotice("Loading conversation...", "loading");
   try {
-    const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/messages`);
+    const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/messages`, {
+      signal: requestToken.signal,
+    });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
-    if (currentConversationId !== requestedConversationId) return;
+    if (
+      !chatSessionGuard.isCurrent(requestToken) ||
+      currentConversationId !== requestedConversationId
+    ) return;
+    renderConversationExecution({
+      ...(data.execution || { status: "idle" }),
+      ...(operation ? { operation } : {}),
+    });
     const messages = data.messages || [];
     if (!messages.length) {
-      showConversationNotice(
-        "No messages were saved for this conversation. It may have stopped before execution completed."
-      );
+      showConversationNotice(emptyConversationNotice(data.execution));
       return;
     }
     const thread = document.getElementById("chat-thread");
     if (thread) thread.innerHTML = "";
     for (const msg of messages) {
-      addChatMessage(msg.role === "user" ? "user" : "assistant", msg.content, msg.role === "user" ? "You" : getSelectedAgentLabel());
+      addChatMessage(
+        msg.role === "user" ? "user" : "assistant",
+        msg.content,
+        msg.role === "user" ? "你" : agentLabel(msg.agent_id || "general_agent"),
+      );
     }
-  } catch {
-    if (currentConversationId === requestedConversationId) {
-      showConversationNotice("Conversation messages could not be loaded.", "error");
+  } catch (error) {
+    if (error.name === "AbortError") return;
+    if (
+      chatSessionGuard.isCurrent(requestToken) &&
+      currentConversationId === requestedConversationId
+    ) {
+      if (!preserveWhileLoading) {
+        showConversationNotice("Conversation messages could not be loaded.", "error");
+      }
     }
   }
 }
 
+async function refreshConversationExecution(conversationId, operation = "") {
+  try {
+    const response = await fetch(
+      `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
+    );
+    if (!response.ok) return false;
+    const data = await response.json();
+    if (currentConversationId !== conversationId) return false;
+    renderConversationExecution({
+      ...(data.execution || { status: "idle" }),
+      ...(operation ? { operation } : {}),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function startNewConversation() {
+  chatSessionGuard.cancel();
+  setTraceDrawerOpen(false);
   currentConversationId = null;
-  resetChatThread("New conversation started. How can I help?");
-  closeConversationMenu();
-  syncConversationTrigger();
+  currentConversationExecution = null;
+  renderConversationExecution({ status: "idle" });
+  clearPendingResult();
+  setExecutionState("空闲");
+  resetChatThread(getChatWelcomeMessage());
+  renderConversationHistory();
+}
+
+function setConversationDeleteBusy(busy) {
+  const dialog = document.querySelector("[data-conversation-delete-dialog]");
+  if (!dialog) return;
+  dialog.dataset.busy = String(busy);
+  dialog
+    .querySelector("[data-conversation-delete-confirm]")
+    ?.toggleAttribute("disabled", busy);
+  dialog
+    .querySelector("[data-conversation-delete-cancel]")
+    ?.toggleAttribute("disabled", busy);
+}
+
+function setDeleteDialogStage(stage) {
+  const dialog = document.querySelector("[data-conversation-delete-dialog]");
+  if (!dialog) return;
+  dialog.dataset.conversationDeleteStage = String(stage);
+  const heading = dialog.querySelector("[data-conversation-delete-heading]");
+  const description = dialog.querySelector("[data-conversation-delete-description]");
+  const confirm = dialog.querySelector("[data-conversation-delete-confirm]");
+  if (stage === 2) {
+    if (heading) heading.textContent = "强制删除会话？";
+    if (description) {
+      description.textContent = "该任务已失败或正在等待审批。继续操作会永久删除会话消息、摘要和相关长期记忆；企业审计和运行追踪仍会保留。";
+    }
+    if (confirm) confirm.textContent = "强制删除会话";
+    return;
+  }
+  if (heading) heading.textContent = "删除会话？";
+  if (description) {
+    description.textContent = "删除后无法恢复。会话消息、摘要和相关长期记忆将被永久删除；企业审计和运行追踪仍会保留。";
+  }
+  if (confirm) confirm.textContent = "确认删除";
+}
+
+async function openConversationDeleteDialog(conversationId) {
+  const dialog = document.querySelector("[data-conversation-delete-dialog]");
+  const conversation = conversationCache.find((item) => item.id === conversationId);
+  if (!dialog || !conversation) return;
+  pendingDeleteConversationId = conversationId;
+  pendingDeleteExecution = null;
+  setDeleteDialogStage(1);
+  dialog.querySelector("[data-conversation-delete-title]").textContent =
+    conversationTitle(conversation);
+  dialog.querySelector("[data-conversation-delete-error]").textContent = "";
+  setConversationDeleteBusy(true);
+  dialog.showModal();
+  dialog.querySelector("[data-conversation-delete-cancel]")?.focus();
+  try {
+    const response = await fetch(
+      `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
+    );
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error || "无法读取会话状态");
+    pendingDeleteExecution = body.execution || { status: "idle" };
+    if (currentConversationId === conversationId) {
+      currentConversationExecution = pendingDeleteExecution;
+    }
+    if (pendingDeleteExecution.status === "running") {
+      dialog.querySelector("[data-conversation-delete-error]").textContent =
+        "任务正在运行，请等待完成后再删除";
+    }
+  } catch (error) {
+    dialog.querySelector("[data-conversation-delete-error]").textContent =
+      error.message || "无法读取会话状态，请重试";
+  } finally {
+    setConversationDeleteBusy(false);
+    if (pendingDeleteExecution?.status === "running") {
+      dialog
+        .querySelector("[data-conversation-delete-confirm]")
+        ?.setAttribute("disabled", "");
+    }
+  }
+}
+
+function closeConversationDeleteDialog() {
+  const dialog = document.querySelector("[data-conversation-delete-dialog]");
+  if (dialog?.open) dialog.close();
+  pendingDeleteConversationId = null;
+  pendingDeleteExecution = null;
+  if (dialog) {
+    setDeleteDialogStage(1);
+    dialog.querySelector("[data-conversation-delete-error]").textContent = "";
+  }
+}
+
+function applyDeletedConversation(conversationId) {
+  conversationCache = conversationCache.filter((item) => item.id !== conversationId);
+  if (currentConversationId === conversationId) startNewConversation();
+  else renderConversationHistory();
+}
+
+async function deleteConversation(conversationId) {
+  const dialog = document.querySelector("[data-conversation-delete-dialog]");
+  const error = dialog?.querySelector("[data-conversation-delete-error]");
+  setConversationDeleteBusy(true);
+  if (error) error.textContent = "";
+  try {
+    const response = await fetch(
+      `/api/conversations/${encodeURIComponent(conversationId)}`,
+      {
+        method: "DELETE",
+        headers: { "X-CSRF-Token": getCsrfToken() },
+      },
+    );
+    const body = await response.json().catch(() => ({}));
+    if (response.status === 404) {
+      applyDeletedConversation(conversationId);
+      closeConversationDeleteDialog();
+      return;
+    }
+    if (!response.ok) {
+      if (error) error.textContent = body.error || "删除失败，请重试";
+      return;
+    }
+    applyDeletedConversation(conversationId);
+    closeConversationDeleteDialog();
+  } catch {
+    if (error) error.textContent = "删除失败，请重试";
+  } finally {
+    setConversationDeleteBusy(false);
+  }
+}
+
+async function postTerminateAndDelete(conversationId) {
+  return fetch(
+    `/api/conversations/${encodeURIComponent(conversationId)}/terminate-and-delete`,
+    {
+      method: "POST",
+      headers: { "X-CSRF-Token": getCsrfToken() },
+    },
+  );
+}
+
+async function terminateAndDeleteConversation(conversationId) {
+  const dialog = document.querySelector("[data-conversation-delete-dialog]");
+  const error = dialog?.querySelector("[data-conversation-delete-error]");
+  setConversationDeleteBusy(true);
+  if (error) error.textContent = "";
+  try {
+    const response = await postTerminateAndDelete(conversationId);
+    const body = await response.json().catch(() => ({}));
+    if (response.status === 404 || (response.ok && body.status === "deleted")) {
+      applyDeletedConversation(conversationId);
+      closeConversationDeleteDialog();
+      return;
+    }
+    if (error) error.textContent = body.error || "强制删除失败，请重试";
+  } catch {
+    if (error) error.textContent = "强制删除失败，请重试";
+  } finally {
+    setConversationDeleteBusy(false);
+  }
+}
+
+async function retryConversation(conversationId) {
+  if (!conversationId || chatBusy) return;
+  setChatBusy(true);
+  renderConversationExecution({
+    ...(currentConversationExecution || {}),
+    status: "running",
+    outcome: "processing",
+    operation: "retry",
+    reason: "正在重新运行上一次请求，请稍候。",
+    retryable: false,
+  });
+  try {
+    await streamSse(
+      `/api/conversations/${encodeURIComponent(conversationId)}/retry/stream`,
+      {},
+    );
+    if (currentConversationId !== conversationId) return;
+    await loadConversationMessages(conversationId, {
+      operation: "retry",
+      preserveWhileLoading: true,
+    });
+    await loadConversations("general_agent");
+  } catch (error) {
+    if (currentConversationId === conversationId) {
+      const refreshed = await refreshConversationExecution(conversationId, "retry");
+      if (!refreshed) {
+        renderConversationExecution({
+          ...(currentConversationExecution || {}),
+          status: "failed",
+          outcome: "not_completed",
+          operation: "retry",
+          reason: error.message || "请求失败，请稍后重试。",
+          retryable: true,
+        });
+      }
+    }
+  } finally {
+    if (currentConversationId === conversationId) {
+      setChatBusy(conversationOutcome(currentConversationExecution) === "processing");
+    }
+  }
+}
+
+function shouldAutoOpenTrace(view) {
+  const status = String(view?.status || "").toLowerCase().replace("waiting_for_approval", "waiting_approval");
+  return Boolean(view?.waitingForApproval || view?.requiresHumanAction || TRACE_ATTENTION_STATES.has(status));
+}
+
+function setTraceDrawerOpen(open, { restoreFocus = false, focus = false } = {}) {
+  const drawer = document.querySelector("[data-trace-drawer]");
+  const trigger = document.querySelector("[data-trace-trigger]");
+  if (!drawer || !trigger) return;
+  drawer.setAttribute("aria-hidden", String(!open));
+  drawer.inert = !open;
+  trigger.setAttribute("aria-expanded", String(open));
+  document.body.classList.toggle("ak-trace-open", open);
+  if (open) {
+    document.body.classList.remove("ak-history-drawer-open");
+    if (focus) drawer.querySelector("[data-trace-close]")?.focus();
+  } else if (restoreFocus) {
+    trigger.focus();
+  }
+}
+
+function updateTraceFromView(view) {
+  if (shouldAutoOpenTrace(view)) setTraceDrawerOpen(true);
 }
 
 function setExecutionState(label, activeIndex = -1, done = false) {
@@ -663,7 +1047,7 @@ function bindAgentSelector() {
       // persisted history from the backend.
       currentConversationId = null;
       clearPendingResult();
-      resetChatThread(`Hi, I'm the ${getSelectedAgentLabel()}. How can I help?`);
+      resetChatThread(getChatWelcomeMessage(selected), agentLabel(selected));
       await loadConversations(selected);
     } else {
       await loadConversations(selected);
@@ -683,6 +1067,12 @@ function bindAgentSelector() {
   update(false);
 }
 
+function renderTableValue(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "object") return JSON.stringify(value, null, 2);
+  return String(value);
+}
+
 function tableHtml(rows, label = "Data") {
   if (!rows || rows.length === 0) {
     return '<div class="empty-state ak-empty-state">No records to display.</div>';
@@ -694,8 +1084,11 @@ function tableHtml(rows, label = "Data") {
       const cells = columns
         .map((column) => {
           const value = row[column];
-          const rendered = Array.isArray(value) ? value.join(", ") : value ?? "";
-          return `<td>${escapeHtml(rendered)}</td>`;
+          const rendered = escapeHtml(renderTableValue(value));
+          if (typeof value === "object" && value !== null) {
+            return `<td><pre class="table-json">${rendered}</pre></td>`;
+          }
+          return `<td>${rendered}</td>`;
         })
         .join("");
       return `<tr>${cells}</tr>`;
@@ -821,7 +1214,7 @@ function approvalActionHtml(waitingForApproval, approval) {
   const preview = approval?.preview || {};
   const textImagePreview = preview.media_strategy === "xhs_text_image"
     ? `<div class="approval-text-image">
-        <p><strong>Media</strong> Xiaohongshu text cards · <strong>Style</strong> ${escapeHtml(preview.card_style || "-")}</p>
+        <p><strong>Media</strong> Xiaohongshu text cards · <strong>Pagination</strong> generated by Xiaohongshu · <strong>Style</strong> ${escapeHtml(preview.card_style || "-")}</p>
         <blockquote>${escapeHtml(preview.card_text || "")}</blockquote>
       </div>`
     : "";
@@ -872,7 +1265,8 @@ function renderResult(payload, requestPayload = null, options = {}) {
   const conversationMessage = final.message || response.output?.message || "";
   const rawPlan = escapeHtml(JSON.stringify(response.plan || {}, null, 2));
   const rawAudit = escapeHtml(JSON.stringify(response.audit_events || [], null, 2));
-  const hidePrimaryPanel = options.hidePrimaryPanel === true;
+  const suppressPrimaryPanel =
+    document.body.dataset.page === "chat" || options.hidePrimaryPanel === true;
   const primaryTitle = waitingForApproval
     ? "Approval Required"
     : rejected
@@ -891,17 +1285,19 @@ function renderResult(payload, requestPayload = null, options = {}) {
     ? `<p class="response-text">${escapeHtml(conversationMessage)}</p>${approvalActionHtml(waitingForApproval, approval)}`
     : renderBusinessOutput(final);
 
-  region.hidden = false;
-  region.innerHTML = `
-    ${hidePrimaryPanel ? "" : `
-      <article class="panel ak-panel result-card ak-result-card" aria-labelledby="result-primary-title">
-        <div class="panel-head ak-panel-header">
-          <h2 id="result-primary-title">${primaryTitle}</h2>
-          <span>${escapeHtml(primarySubtitle)}</span>
-        </div>
-        ${primaryBody}
-      </article>
-    `}
+  region.hidden = suppressPrimaryPanel;
+  region.innerHTML = suppressPrimaryPanel ? "" : `
+    <article class="panel ak-panel result-card ak-result-card" aria-labelledby="result-primary-title">
+      <div class="panel-head ak-panel-header">
+        <h2 id="result-primary-title">${primaryTitle}</h2>
+        <span>${escapeHtml(primarySubtitle)}</span>
+      </div>
+      ${primaryBody}
+    </article>
+  `;
+  const traceDetails = document.querySelector("[data-trace-details]");
+  if (traceDetails) {
+    traceDetails.innerHTML = `
     <section class="result-grid ak-result-grid">
       <article class="panel ak-panel ak-panel--table" aria-labelledby="execution-plan-title">
         <div class="panel-head ak-panel-header"><h2 id="execution-plan-title">Execution Plan</h2><span>LangGraph route</span></div>
@@ -924,8 +1320,14 @@ function renderResult(payload, requestPayload = null, options = {}) {
         </div>
       </article>
     </section>
-  `;
-  if (options.scroll !== false) {
+    `;
+  }
+  updateTraceFromView({
+    status: outputStatus,
+    waitingForApproval,
+    requiresHumanAction: outputStatus === "needs_clarification",
+  });
+  if (!region.hidden && options.scroll !== false) {
     region.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 }
@@ -1013,6 +1415,10 @@ function clearPendingResult() {
   if (!region) return;
   region.innerHTML = "";
   region.hidden = true;
+  const traceDetails = document.querySelector("[data-trace-details]");
+  if (traceDetails) {
+    traceDetails.innerHTML = '<p class="ak-empty-state">运行后将在这里显示计划、审计事件和原始证据。</p>';
+  }
 }
 
 function bindRangeOutputs() {
@@ -1038,12 +1444,19 @@ function finalizeActionResult(result, requestPayload, bubble, selectedAgent, str
       skills: approval.skills || [],
       thread_id: response.output?.thread_id || "",
     };
-    addApprovalChatMessage(result.assistant_text, approval, getSelectedAgentLabel());
+    addApprovalChatMessage(
+      result.assistant_text,
+      approval,
+      agentLabel(result.agent || "general_agent"),
+    );
   } else if (bubble) {
     // Tokens emitted inside an action workflow may be an intermediate artifact
     // (for example, only the generated article body). Once the workflow ends,
     // prefer the server's complete evidence/report response.
     finalizeAssistantBubble(bubble, result.assistant_text || streamed || "");
+    const label = bubble.node.querySelector(":scope > span");
+    if (label) label.textContent = agentLabel(result.agent || "general_agent");
+    appendAgentTrace(bubble.node, result.response || {});
   }
   if (status === "needs_clarification") {
     const resolution = response.output?.input_resolution || {};
@@ -1066,6 +1479,242 @@ function finalizeActionResult(result, requestPayload, bubble, selectedAgent, str
     || ["waiting_for_approval", "needs_clarification", "rejected"].includes(status)
     || ["platform_question", "chit_chat", "unknown"].includes(intentType);
   renderResult(result, requestPayload, { hidePrimaryPanel });
+}
+
+function appendAgentTrace(node, response) {
+  if (!node || !response?.governance) return;
+  const route = response.governance.route || {};
+  const delegation = response.governance.delegation || {};
+  if (!route.type && !delegation.child_run_id) return;
+  const details = document.createElement("details");
+  details.className = "ak-agent-trace";
+  details.dataset.delegationSummary = "";
+  const summary = document.createElement("summary");
+  summary.textContent = delegation.child_run_id ? "查看 Agent 委派追踪" : "查看 General 决策摘要";
+  const list = document.createElement("dl");
+  const rows = [
+    ["路由", route.type || "general_answer"],
+    ["执行者", agentLabel(response.agent || delegation.target_agent || "general_agent")],
+    ["依据", route.reason || "General Agent 直接回答"],
+    ["父运行", delegation.parent_run_id || response.run_id || ""],
+    ["子运行", delegation.child_run_id || ""],
+  ];
+  for (const [name, value] of rows) {
+    if (!value) continue;
+    const term = document.createElement("dt");
+    term.textContent = name;
+    const description = document.createElement("dd");
+    description.textContent = value;
+    list.append(term, description);
+  }
+  details.append(summary, list);
+  node.appendChild(details);
+}
+
+function bindMentionAutocomplete() {
+  const input = document.querySelector("[data-chat-input]");
+  const menu = document.querySelector("[data-agent-mention-menu]");
+  if (!input || !menu) return;
+  let activeIndex = 0;
+  let visible = [];
+
+  const mentionState = () => {
+    const caret = input.selectionStart ?? input.value.length;
+    const before = input.value.slice(0, caret);
+    const match = before.match(/(?:^|\s)@([^\s@]*)$/);
+    return match ? { query: match[1].toLocaleLowerCase(), start: caret - match[1].length - 1, caret } : null;
+  };
+  const close = () => {
+    menu.hidden = true;
+    menu.innerHTML = "";
+    visible = [];
+    input.setAttribute("aria-expanded", "false");
+  };
+  const render = () => {
+    const state = mentionState();
+    if (!state) {
+      close();
+      return;
+    }
+    visible = AGENT_DIRECTORY.filter((agent) => agent.name !== "general_agent").filter((agent) => {
+      const haystack = [agent.name, agent.label, ...(agent.aliases || [])].join(" ").toLocaleLowerCase();
+      return haystack.includes(state.query);
+    });
+    if (!visible.length) {
+      close();
+      return;
+    }
+    activeIndex = Math.min(activeIndex, visible.length - 1);
+    menu.innerHTML = visible.map((agent, index) => {
+      const alias = agent.aliases?.[0] || agent.label || agent.name;
+      return `<button type="button" role="option" data-mention-index="${index}" aria-selected="${index === activeIndex}"><strong>@${escapeHtml(alias)}</strong><span>${escapeHtml(agent.mission || agent.description || agent.domain || "")}</span></button>`;
+    }).join("");
+    menu.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+  };
+  const choose = (index) => {
+    const state = mentionState();
+    const agent = visible[index];
+    if (!state || !agent) return;
+    const alias = agent.aliases?.[0] || agent.label || agent.name;
+    input.setRangeText(`@${alias} `, state.start, state.caret, "end");
+    close();
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.focus();
+  };
+
+  input.addEventListener("input", render);
+  input.addEventListener("click", render);
+  input.addEventListener("keydown", (event) => {
+    if (menu.hidden || !visible.length) return;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      activeIndex = (activeIndex + (event.key === "ArrowDown" ? 1 : -1) + visible.length) % visible.length;
+      render();
+    } else if (event.key === "Enter" || event.key === "Tab") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      choose(activeIndex);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      close();
+    }
+  }, true);
+  menu.addEventListener("click", (event) => {
+    const option = event.target.closest("[data-mention-index]");
+    if (option) choose(Number(option.dataset.mentionIndex));
+  });
+  document.addEventListener("click", (event) => {
+    if (event.target !== input && !menu.contains(event.target)) close();
+  });
+}
+
+function bindRunFilters() {
+  const form = document.querySelector("[data-run-filters]");
+  const list = document.querySelector("[data-run-list]");
+  if (!form || !list) return;
+  const rows = Array.from(list.querySelectorAll("[data-run-row]"));
+  const query = form.querySelector('[data-run-filter="query"]');
+  const status = form.querySelector('[data-run-filter="status"]');
+  const agent = form.querySelector('[data-run-filter="agent"]');
+  const empty = list.querySelector("[data-run-filter-empty]");
+  const count = document.querySelector("[data-run-filter-count]");
+  const normalize = (value) => String(value || "").trim().toLowerCase();
+
+  const update = () => {
+    const queryValue = normalize(query?.value);
+    const statusValue = normalize(status?.value);
+    const agentValue = normalize(agent?.value);
+    let visible = 0;
+    for (const row of rows) {
+      const matches = (
+        (!queryValue || normalize(row.dataset.runText).includes(queryValue)) &&
+        (!statusValue || normalize(row.dataset.runStatus) === statusValue) &&
+        (!agentValue || normalize(row.dataset.runAgent).includes(agentValue))
+      );
+      row.hidden = !matches;
+      if (matches) visible += 1;
+    }
+    if (empty) empty.hidden = visible > 0 || rows.length === 0;
+    if (count) count.textContent = String(visible);
+  };
+
+  form.addEventListener("input", update);
+  form.addEventListener("change", update);
+  form.addEventListener("reset", () => window.requestAnimationFrame(update));
+  update();
+}
+
+function bindGovernanceRegistry() {
+  const root = document.querySelector("[data-governance-registry]");
+  if (!root) return;
+  const search = root.querySelector("[data-governance-search]");
+  const count = root.querySelector("[data-governance-count]");
+  const drawer = root.querySelector("[data-governance-detail]");
+  const closeButton = root.querySelector("[data-governance-detail-close]");
+  const rows = Array.from(root.querySelectorAll("[data-governance-row]"));
+  let returnFocus = null;
+
+  const setDetailOpen = (open, restoreFocus = false) => {
+    if (!drawer) return;
+    drawer.setAttribute("aria-hidden", String(!open));
+    drawer.inert = !open;
+    document.body.classList.toggle("ak-governance-detail-open", open);
+    if (open) closeButton?.focus();
+    if (!open && restoreFocus) returnFocus?.focus();
+  };
+
+  const openDetail = (row) => {
+    let fields = {};
+    try {
+      fields = JSON.parse(row.dataset.detail || "{}");
+    } catch {
+      fields = {};
+    }
+    returnFocus = row;
+    const title = drawer?.querySelector("[data-governance-detail-title]");
+    const domain = drawer?.querySelector("[data-governance-detail-domain]");
+    const status = drawer?.querySelector("[data-governance-detail-status]");
+    const fieldList = drawer?.querySelector("[data-governance-detail-fields]");
+    if (title) title.textContent = row.dataset.objectName || "对象详情";
+    if (domain) domain.textContent = row.dataset.objectDomain || "未声明 Domain";
+    if (status) status.textContent = row.dataset.objectStatus || "状态未知";
+    if (fieldList) {
+      fieldList.replaceChildren();
+      for (const [label, value] of Object.entries(fields)) {
+        const item = document.createElement("div");
+        item.className = "ak-key-value-row";
+        const term = document.createElement("dt");
+        term.textContent = label;
+        const description = document.createElement("dd");
+        description.textContent = String(value ?? "—");
+        item.append(term, description);
+        fieldList.appendChild(item);
+      }
+    }
+    setDetailOpen(true);
+  };
+
+  const updateSearch = () => {
+    const value = String(search?.value || "").trim().toLowerCase();
+    let visibleTotal = 0;
+    root.querySelectorAll("[data-governance-list]").forEach((list) => {
+      const listRows = Array.from(list.querySelectorAll("[data-governance-row]"));
+      let listVisible = 0;
+      for (const row of listRows) {
+        const visible = !value || String(row.dataset.searchText || "").toLowerCase().includes(value);
+        row.hidden = !visible;
+        if (visible) listVisible += 1;
+      }
+      const empty = list.querySelector("[data-governance-empty]");
+      if (empty) empty.hidden = listVisible > 0 || listRows.length === 0;
+      visibleTotal += listVisible;
+    });
+    if (count) count.textContent = value ? `${visibleTotal} 个匹配对象` : `${rows.length} 个注册对象`;
+  };
+
+  root.addEventListener("click", (event) => {
+    const row = event.target.closest("[data-governance-row]");
+    if (row) openDetail(row);
+  });
+  search?.addEventListener("input", updateSearch);
+  closeButton?.addEventListener("click", () => setDetailOpen(false, true));
+  document.addEventListener("click", (event) => {
+    if (
+      document.body.classList.contains("ak-governance-detail-open") &&
+      !drawer?.contains(event.target) &&
+      !event.target.closest("[data-governance-row]")
+    ) {
+      setDetailOpen(false);
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && document.body.classList.contains("ak-governance-detail-open")) {
+      setDetailOpen(false, true);
+    }
+  });
+  updateSearch();
 }
 
 function agentFromRequestPayload(payload) {
@@ -1095,22 +1744,27 @@ function buildApprovalChatPayload(action) {
 async function runUnifiedChatTurn(message, selectedAgent) {
   const isNewConversation = !currentConversationId;
   const requestPayload = collectChatPayload(message);
+  const requestToken = chatSessionGuard.begin(currentConversationId);
   const bubble = addLiveAssistantMessage(getSelectedAgentLabel());
   let streamed = "";
   let errored = null;
   let errorConversationId = null;
   try {
     const finalData = await streamSse("/api/chat/stream", requestPayload, {
+      signal: requestToken.signal,
       onToken: (delta) => {
+        if (!chatSessionGuard.isCurrent(requestToken)) return;
         streamed += delta;
         if (bubble) bubble.p.textContent = streamed;
         scrollChatToBottom();
       },
       onError: (msg, details) => {
+        if (!chatSessionGuard.isCurrent(requestToken)) return;
         errored = msg;
         errorConversationId = details?.conversation_id || null;
       },
     });
+    if (!chatSessionGuard.isCurrent(requestToken)) return;
     if (errored && !finalData) throw new Error(errored);
     if (finalData) {
       if (finalData.response) {
@@ -1130,9 +1784,11 @@ async function runUnifiedChatTurn(message, selectedAgent) {
     setAgentStatus(selectedAgent, "completed");
     if (isNewConversation) await loadConversations(selectedAgent);
   } catch (error) {
+    if (error.name === "AbortError" || !chatSessionGuard.isCurrent(requestToken)) return;
     if (!streamed && !errored) {
       try {
-        const result = await postChat(requestPayload);
+        const result = await postChat(requestPayload, { signal: requestToken.signal });
+        if (!chatSessionGuard.isCurrent(requestToken)) return;
         if (result.response) {
           currentConversationId = result.conversation_id || currentConversationId;
           finalizeActionResult(result, requestPayload, bubble, selectedAgent, "");
@@ -1146,6 +1802,10 @@ async function runUnifiedChatTurn(message, selectedAgent) {
         }
         return;
       } catch (fallbackError) {
+        if (
+          fallbackError.name === "AbortError" ||
+          !chatSessionGuard.isCurrent(requestToken)
+        ) return;
         error = fallbackError;
       }
     }
@@ -1156,6 +1816,7 @@ async function runUnifiedChatTurn(message, selectedAgent) {
     }
     setExecutionState("Failed");
     setAgentStatus(selectedAgent, "failed");
+    updateTraceFromView({ status: "failed" });
   }
 }
 
@@ -1219,87 +1880,177 @@ function bindChatForm() {
   syncChatComposerState();
 }
 
-function bindConversationBar() {
+function bindConversationHistory() {
+  const sidebar = document.querySelector("[data-conversation-sidebar]");
+  const history = document.querySelector("[data-conversation-list]");
+  const collapseButton = document.querySelector("[data-conversation-sidebar-toggle]");
+  const openButton = document.querySelector("[data-conversation-sidebar-open]");
+  const deleteDialog = document.querySelector("[data-conversation-delete-dialog]");
+  const deleteCancel = deleteDialog?.querySelector("[data-conversation-delete-cancel]");
+  const deleteConfirm = deleteDialog?.querySelector("[data-conversation-delete-confirm]");
+  const mobileQuery = window.matchMedia("(max-width: 47.5rem)");
+
+  const readCollapsedPreference = () => {
+    try {
+      return localStorage.getItem(HISTORY_COLLAPSED_KEY) === "true";
+    } catch {
+      return false;
+    }
+  };
+
+  const syncSidebarControls = () => {
+    const expanded = mobileQuery.matches
+      ? document.body.classList.contains("ak-history-drawer-open")
+      : !document.body.classList.contains("ak-history-collapsed");
+    collapseButton?.setAttribute("aria-expanded", String(expanded));
+    openButton?.setAttribute("aria-expanded", String(expanded));
+  };
+
+  const setHistoryCollapsed = (collapsed, persist = true) => {
+    document.body.classList.toggle("ak-history-collapsed", collapsed);
+    if (persist) {
+      try {
+        localStorage.setItem(HISTORY_COLLAPSED_KEY, String(collapsed));
+      } catch {
+        // 隐私模式或存储策略禁止写入时，仍保留当前页面状态。
+      }
+    }
+    syncSidebarControls();
+  };
+
+  const closeMobileDrawer = (restoreFocus = false) => {
+    document.body.classList.remove("ak-history-drawer-open");
+    syncSidebarControls();
+    if (restoreFocus) openButton?.focus();
+  };
+
+  const openSidebar = () => {
+    if (mobileQuery.matches) {
+      document.body.classList.add("ak-history-drawer-open");
+      syncSidebarControls();
+      sidebar?.querySelector("[data-new-conversation]")?.focus();
+      return;
+    }
+    setHistoryCollapsed(false);
+  };
+
+  setHistoryCollapsed(readCollapsedPreference(), false);
+
   document.querySelector("[data-new-conversation]")?.addEventListener("click", () => {
     startNewConversation();
+    if (mobileQuery.matches) closeMobileDrawer();
   });
 
-  const trigger = document.querySelector("[data-conversation-trigger]");
-  const menu = document.querySelector("[data-conversation-menu]");
-  trigger?.addEventListener("click", (event) => {
-    event.stopPropagation();
-    const isOpen = document.querySelector("[data-conversation-picker]")?.classList.contains("open");
-    if (isOpen) {
-      closeConversationMenu();
-    } else {
-      openConversationMenu();
+  history?.addEventListener("click", async (event) => {
+    const remove = event.target.closest("[data-delete-conversation-id]");
+    if (remove) {
+      await openConversationDeleteDialog(remove.dataset.deleteConversationId);
+      return;
     }
-  });
-
-  trigger?.addEventListener("keydown", (event) => {
-    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-    event.preventDefault();
-    openConversationMenu(event.key === "ArrowUp" ? "last" : "active");
-  });
-
-  menu?.addEventListener("click", async (event) => {
     const item = event.target.closest("[data-conversation-id]");
     if (!item) return;
-    const id = item.dataset.conversationId || null;
-    closeConversationMenu(true);
-    currentConversationId = id;
-    syncConversationTrigger();
-    if (id) {
-      await loadConversationMessages(id);
-    } else {
-      startNewConversation();
-    }
+    currentConversationId = item.dataset.conversationId || null;
+    setTraceDrawerOpen(false);
+    clearPendingResult();
+    setExecutionState("历史会话");
+    renderConversationHistory();
+    await loadConversationMessages(currentConversationId);
+    if (mobileQuery.matches) closeMobileDrawer(true);
   });
 
-  menu?.addEventListener("keydown", (event) => {
-    const options = Array.from(menu.querySelectorAll('[role="option"]'));
-    const current = event.target.closest('[role="option"]');
-    const currentIndex = options.indexOf(current);
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      current?.click();
+  deleteCancel?.addEventListener("click", closeConversationDeleteDialog);
+  deleteConfirm?.addEventListener("click", async () => {
+    if (!pendingDeleteConversationId || !pendingDeleteExecution) return;
+    if (pendingDeleteExecution.status === "running") {
+      deleteDialog.querySelector("[data-conversation-delete-error]").textContent =
+        "任务正在运行，请等待完成后再删除";
       return;
     }
-    if (event.key === "Escape") {
-      event.preventDefault();
-      closeConversationMenu(true);
+    const requiresSecond = Boolean(
+      pendingDeleteExecution.requires_second_delete_confirmation,
+    );
+    if (requiresSecond && deleteDialog?.dataset.conversationDeleteStage !== "2") {
+      setDeleteDialogStage(2);
+      deleteCancel?.focus();
       return;
     }
-    let nextIndex = -1;
-    if (event.key === "ArrowDown") nextIndex = (currentIndex + 1) % options.length;
-    if (event.key === "ArrowUp") nextIndex = (currentIndex - 1 + options.length) % options.length;
-    if (event.key === "Home") nextIndex = 0;
-    if (event.key === "End") nextIndex = options.length - 1;
-    if (nextIndex < 0) return;
-    event.preventDefault();
-    options.forEach((option, index) => option.setAttribute("tabindex", index === nextIndex ? "0" : "-1"));
-    options[nextIndex]?.focus();
+    if (requiresSecond) {
+      await terminateAndDeleteConversation(pendingDeleteConversationId);
+      return;
+    }
+    await deleteConversation(pendingDeleteConversationId);
+  });
+  document.querySelector("[data-conversation-retry]")?.addEventListener("click", () => {
+    if (currentConversationId) retryConversation(currentConversationId);
+  });
+  deleteDialog?.addEventListener("cancel", (event) => {
+    if (deleteDialog.dataset.busy === "true") {
+      event.preventDefault();
+      return;
+    }
+    pendingDeleteConversationId = null;
+    pendingDeleteExecution = null;
+  });
+  deleteDialog?.addEventListener("close", () => {
+    pendingDeleteConversationId = null;
+    pendingDeleteExecution = null;
+    setDeleteDialogStage(1);
+    deleteDialog.querySelector("[data-conversation-delete-error]").textContent = "";
   });
 
-  menu?.addEventListener("focusout", () => {
-    window.setTimeout(() => {
-      const picker = document.querySelector("[data-conversation-picker]");
-      if (!picker?.contains(document.activeElement)) closeConversationMenu();
-    }, 0);
+  collapseButton?.addEventListener("click", () => {
+    if (mobileQuery.matches) closeMobileDrawer(true);
+    else setHistoryCollapsed(true);
   });
-
+  openButton?.addEventListener("click", openSidebar);
   document.addEventListener("click", (event) => {
-    if (!event.target.closest("[data-conversation-picker]")) {
-      closeConversationMenu();
+    if (
+      mobileQuery.matches &&
+      document.body.classList.contains("ak-history-drawer-open") &&
+      !sidebar?.contains(event.target) &&
+      !openButton?.contains(event.target)
+    ) {
+      closeMobileDrawer();
     }
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !menu?.hidden) closeConversationMenu(true);
+    if (event.key === "Escape" && document.body.classList.contains("ak-history-drawer-open")) {
+      closeMobileDrawer(true);
+    }
+  });
+  mobileQuery.addEventListener?.("change", () => {
+    document.body.classList.remove("ak-history-drawer-open");
+    syncSidebarControls();
+  });
+}
+
+function bindTraceDrawer() {
+  const drawer = document.querySelector("[data-trace-drawer]");
+  const trigger = document.querySelector("[data-trace-trigger]");
+  const closeButton = drawer?.querySelector("[data-trace-close]");
+  if (!drawer || !trigger || !closeButton) return;
+
+  trigger.addEventListener("click", () => setTraceDrawerOpen(true, { focus: true }));
+  closeButton.addEventListener("click", () => setTraceDrawerOpen(false, { restoreFocus: true }));
+  document.addEventListener("click", (event) => {
+    if (
+      document.body.classList.contains("ak-trace-open") &&
+      !drawer.contains(event.target) &&
+      !trigger.contains(event.target)
+    ) {
+      setTraceDrawerOpen(false);
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && document.body.classList.contains("ak-trace-open")) {
+      setTraceDrawerOpen(false, { restoreFocus: true });
+    }
   });
 }
 
 async function approvePendingTask() {
   if (!pendingApproval) return;
+  const requestToken = chatSessionGuard.begin(currentConversationId);
   const originalRequest = pendingApproval.request;
   const agentName = agentFromRequestPayload(originalRequest);
   const agentLabel = getSelectedAgentLabel();
@@ -1316,15 +2067,19 @@ async function approvePendingTask() {
   let succeeded = false;
   try {
     const result = await streamSse("/api/chat/stream", approvedPayload, {
+      signal: requestToken.signal,
       onToken: (delta) => {
+        if (!chatSessionGuard.isCurrent(requestToken)) return;
         streamed += delta;
         if (bubble) bubble.p.textContent = streamed;
         scrollChatToBottom();
       },
       onError: (msg) => {
+        if (!chatSessionGuard.isCurrent(requestToken)) return;
         errored = msg;
       },
     });
+    if (!chatSessionGuard.isCurrent(requestToken)) return;
     if (errored && !result) throw new Error(errored);
     const status = runtimeView(result.response).output?.status;
     setExecutionState(status === "waiting_for_approval" ? "Waiting for approval" : "Completed", status === "waiting_for_approval" ? 2 : 5, status !== "waiting_for_approval");
@@ -1337,8 +2092,10 @@ async function approvePendingTask() {
     renderResult(result, originalRequest);
     succeeded = true;
   } catch (error) {
+    if (error.name === "AbortError" || !chatSessionGuard.isCurrent(requestToken)) return;
     setExecutionState("Failed");
     setAgentStatus(agentName, "failed");
+    updateTraceFromView({ status: "failed" });
     // Show the message (incl. the truncation fallback) in the chat bubble
     // rather than a jarring alert popup.
     if (bubble) finalizeAssistantBubble(bubble, error.message);
@@ -1354,6 +2111,7 @@ async function approvePendingTask() {
 
 async function rejectPendingTask() {
   if (!pendingApproval) return;
+  const requestToken = chatSessionGuard.begin(currentConversationId);
   const originalRequest = pendingApproval.request;
   const agentName = agentFromRequestPayload(originalRequest);
   const agentLabel = getSelectedAgentLabel();
@@ -1370,15 +2128,19 @@ async function rejectPendingTask() {
   let succeeded = false;
   try {
     const result = await streamSse("/api/chat/stream", rejectedPayload, {
+      signal: requestToken.signal,
       onToken: (delta) => {
+        if (!chatSessionGuard.isCurrent(requestToken)) return;
         streamed += delta;
         if (bubble) bubble.p.textContent = streamed;
         scrollChatToBottom();
       },
       onError: (msg) => {
+        if (!chatSessionGuard.isCurrent(requestToken)) return;
         errored = msg;
       },
     });
+    if (!chatSessionGuard.isCurrent(requestToken)) return;
     if (errored && !result) throw new Error(errored);
     setExecutionState("Rejected", 2);
     resolveApprovalActions("Rejected");
@@ -1390,7 +2152,9 @@ async function rejectPendingTask() {
     renderResult(result, originalRequest);
     succeeded = true;
   } catch (error) {
+    if (error.name === "AbortError" || !chatSessionGuard.isCurrent(requestToken)) return;
     setExecutionState("Failed");
+    updateTraceFromView({ status: "failed" });
     if (bubble) finalizeAssistantBubble(bubble, error.message);
     else alert(error.message);
   } finally {
@@ -1420,10 +2184,15 @@ function bindApprovalActions() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  bindPrimaryNavigation();
   bindAgentSelector();
   bindRangeOutputs();
+  bindRunFilters();
+  bindGovernanceRegistry();
   bindChatForm();
-  bindConversationBar();
+  bindMentionAutocomplete();
+  bindConversationHistory();
+  bindTraceDrawer();
   bindApprovalActions();
   bindTabs();
 });

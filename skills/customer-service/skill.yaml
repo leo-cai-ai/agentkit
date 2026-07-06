@@ -47,7 +47,7 @@ capabilities:
     input_schema:
       type: object
       required: [order_id]
-      properties: {order_id: {type: string, minLength: 1}}
+      properties: {order_id: {type: string, minLength: 1, description: 要查询的订单编号}}
     output_schema: {type: object, properties: {order_id: {type: string}, status: {type: string}}}
     keywords: [订单, 查询, 状态]
   - id: logistics.diagnose
@@ -61,7 +61,7 @@ capabilities:
     input_schema:
       type: object
       required: [order_id]
-      properties: {order_id: {type: string, minLength: 1}}
+      properties: {order_id: {type: string, minLength: 1, description: 要诊断物流的订单编号}}
     output_schema: {type: object, properties: {summary: {type: string}, evidence: {type: array}}}
     keywords: [物流, 快递, 没到, 延迟, 配送]
   - id: refund.apply
@@ -76,7 +76,7 @@ capabilities:
       type: object
       required: [order_id]
       properties:
-        order_id: {type: string, minLength: 1}
+        order_id: {type: string, minLength: 1, description: 要申请退款的订单编号}
         reason: {type: string, default: 用户申请退款}
     output_schema: {type: object, properties: {refund_id: {type: string}, status: {type: string}}}
     keywords: [退款, 退货, 取消订单]

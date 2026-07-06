@@ -79,6 +79,7 @@ _SQLITE_MIGRATIONS: dict[int, tuple[str, ...]] = {
         """,
     ),
     2: (),
+    3: (),
 }
 
 
@@ -158,6 +159,7 @@ _POSTGRES_MIGRATIONS: dict[int, tuple[str, ...]] = {
         """,
     ),
     2: (),
+    3: (),
 }
 
 
@@ -181,6 +183,8 @@ def run_sqlite_migrations(path: str | Path) -> list[int]:
                 conn.execute(statement)
             if version == 2:
                 _sqlite_add_workflow_artifact_run_fk(conn)
+            elif version == 3:
+                _sqlite_add_multi_agent_run_columns(conn)
             conn.execute(
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                 (version, round(time.time(), 3)),
@@ -212,6 +216,8 @@ def run_postgres_migrations(settings: Any) -> list[int]:
                 conn.execute(statement)
             if version == 2:
                 _postgres_add_workflow_artifact_run_fk(conn)
+            elif version == 3:
+                _postgres_add_multi_agent_run_columns(conn)
             conn.execute(
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (%s, %s)",
                 (version, round(time.time(), 3)),
@@ -221,9 +227,7 @@ def run_postgres_migrations(settings: Any) -> list[int]:
     return applied_now
 
 
-def run_storage_migrations(
-    settings: Any, *, sqlite_path: Path | None = None
-) -> list[int]:
+def run_storage_migrations(settings: Any, *, sqlite_path: Path | None = None) -> list[int]:
     """Apply migrations for the storage backend selected by ``settings``."""
     backend = str(getattr(settings, "storage_backend", "sqlite")).lower()
     if backend in ("postgres", "pg"):
@@ -355,6 +359,40 @@ def _postgres_add_workflow_artifact_run_fk(conn: Any) -> None:
             FOREIGN KEY(run_id) REFERENCES task_runs(run_id)
             """
         )
+
+
+def _sqlite_add_multi_agent_run_columns(conn: sqlite3.Connection) -> None:
+    """为已有运行表增加多 Agent 追踪字段。"""
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(task_runs)")}
+    additions = {
+        "agent_id": "TEXT",
+        "parent_run_id": "TEXT",
+        "conversation_id": "TEXT",
+    }
+    for name, column_type in additions.items():
+        if name not in columns:
+            conn.execute(f"ALTER TABLE task_runs ADD COLUMN {name} {column_type}")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_task_runs_parent ON task_runs(parent_run_id, started_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_task_runs_conversation "
+        "ON task_runs(tenant_id, conversation_id, started_at DESC)"
+    )
+
+
+def _postgres_add_multi_agent_run_columns(conn: Any) -> None:
+    """为 PostgreSQL 运行表增加多 Agent 追踪字段。"""
+    conn.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS agent_id TEXT")
+    conn.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS parent_run_id TEXT")
+    conn.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS conversation_id TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_task_runs_parent ON task_runs(parent_run_id, started_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_task_runs_conversation "
+        "ON task_runs(tenant_id, conversation_id, started_at DESC)"
+    )
 
 
 def _log_schema_migrations(backend: str, versions: list[int]) -> None:

@@ -20,6 +20,7 @@ ALLOWED_TARGET_KINDS = {"business_skill", "platform_handler", "none"}
 ALLOWED_CONFIDENCE = {"high", "medium", "low"}
 PLATFORM_HANDLERS = {"time", "identity", "capability", "default"}
 
+
 class IntentDecomposer:
     """使用确定性实体提取辅助一次结构化 LLM 判断。"""
 
@@ -80,7 +81,15 @@ class IntentDecomposer:
             target = {"kind": "platform_handler", "name": "default"}
         entities = dict(baseline.entities)
         if isinstance(data.get("entities"), dict):
-            entities.update({str(key): value for key, value in data["entities"].items()})
+            entities.update(
+                {
+                    str(key): value
+                    for key, value in data["entities"].items()
+                    if value is not None
+                    and not (isinstance(value, str) and not value.strip())
+                    and not (isinstance(value, list | tuple | dict) and not value)
+                }
+            )
         signals = list(baseline.signals)
         signals.append("llm_required:intent")
         if isinstance(data.get("signals"), list):
@@ -206,6 +215,32 @@ def detect_language(text: str) -> str:
     return "zh-CN" if re.search(r"[\u4e00-\u9fff]", text) else "en"
 
 
+def extract_topic_from_text(text: str) -> str:
+    """从常见自然语言表达中提取主题，兼容方向误用的中文引号。"""
+
+    quote_chars = '“”"「」『』'
+    quoted_patterns = (
+        rf"(?:围绕|关于|以)?\s*[{quote_chars}]([^{quote_chars}\r\n]{{1,100}})[{quote_chars}]\s*(?:为)?主题",
+        rf"(?:围绕|关于)\s*[{quote_chars}]([^{quote_chars}\r\n]{{1,100}})[{quote_chars}]",
+    )
+    for pattern in quoted_patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+
+    plain_patterns = (
+        r"以\s*([^，,。；;\r\n]{1,100}?)\s*为主题",
+        r"(?:主题(?:是|为)?|选题)\s*[:：]\s*([^，,。；;\r\n]{1,100})",
+        r"(?:围绕|关于)\s*([^，,。；;\r\n]{1,100}?)(?=\s*(?:，|,|。|；|;|研究|搜索|整理|分析|$))",
+        r"(?:about|topic:)\s*([^.，,;；\r\n]{1,100})",
+    )
+    for pattern in plain_patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).strip().strip(quote_chars)
+    return ""
+
+
 def extract_entities(request: TaskRequest) -> dict[str, Any]:
     entities: dict[str, Any] = {}
     job_id = request.context.get("job_id")
@@ -219,8 +254,17 @@ def extract_entities(request: TaskRequest) -> dict[str, Any]:
     )
     if candidate_ids:
         entities["candidate_ids"] = [str(item).upper() for item in candidate_ids]
-    if request.context.get("top_n"):
-        entities["top_n"] = request.context["top_n"]
+    topic = request.context.get("topic")
+    if not topic:
+        topic = extract_topic_from_text(request.text)
+    if topic:
+        entities["topic"] = str(topic)
+    top_n = request.context.get("top_n")
+    if not top_n:
+        top_n_match = re.search(r"(?:top|前)\s*(\d{1,2})", request.text, flags=re.IGNORECASE)
+        top_n = int(top_n_match.group(1)) if top_n_match else None
+    if top_n:
+        entities["top_n"] = top_n
     return entities
 
 
@@ -260,8 +304,20 @@ def is_capability_question(text: str) -> bool:
 
 def looks_like_business_task(*, text: str, entities: dict[str, Any]) -> bool:
     terms = (
-        "rank", "shortlist", "screen", "evaluate", "compare", "recommend",
-        "排名", "筛选", "推荐", "评估", "订单", "物流", "退款", "小红书",
+        "rank",
+        "shortlist",
+        "screen",
+        "evaluate",
+        "compare",
+        "recommend",
+        "排名",
+        "筛选",
+        "推荐",
+        "评估",
+        "订单",
+        "物流",
+        "退款",
+        "小红书",
     )
     return bool(entities) or any(term in text for term in terms)
 

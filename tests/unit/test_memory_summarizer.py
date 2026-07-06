@@ -6,12 +6,15 @@ def test_fold_empty_turns_returns_existing_without_calling_llm() -> None:
     spy = SpyContextInvoker()
     summarizer = Summarizer(context_invoker=spy, tenant_selector="company_alpha")
 
-    assert summarizer.fold(
-        tenant_id="t1",
-        run_id="r1",
-        existing_summary="prev",
-        turns=[],
-    ) == "prev"
+    assert (
+        summarizer.fold(
+            tenant_id="t1",
+            run_id="r1",
+            existing_summary="prev",
+            turns=[],
+        )
+        == "prev"
+    )
     assert spy.requests == []
 
 

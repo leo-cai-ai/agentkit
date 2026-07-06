@@ -219,7 +219,17 @@ class Settings(BaseSettings):
     rag_top_k: int = Field(default=5, ge=0)
     rag_context_cap_tokens: int = Field(default=1000, ge=0)
     rag_ocr_enabled: bool = False
-    rag_ocr_languages: str = "eng+chi_sim"
+
+    # XHS 与 RAG 共用同一 OCR 基础设施；none 是零网络调用的全局硬关闭。
+    ocr_provider: str = "none"
+    ocr_url: str = "http://localhost:11434/api/generate"
+    ocr_model: str = "glm-ocr:latest"
+    ocr_timeout_seconds: float = Field(default=120.0, gt=0.0, le=600.0)
+    ocr_max_image_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        gt=0,
+        le=50 * 1024 * 1024,
+    )
 
     # Browser-backed public-web research. Browser lifecycle is shared across
     # site adapters; each site gets an isolated persistent profile directory so
@@ -238,6 +248,10 @@ class Settings(BaseSettings):
     xhs_detail_limit: int = Field(default=5, ge=0, le=20)
     xhs_detail_timeout_seconds: float = Field(default=6.0, gt=0.0)
     xhs_detail_pause_seconds: float = Field(default=0.5, ge=0.0)
+    # 媒体理解能力通过开放注册表校验，便于后续接入 OCR、多模态或 MCP Provider。
+    media_understanding_provider: str = "none"
+    media_understanding_max_images: int = Field(default=3, ge=0, le=20)
+    media_understanding_min_confidence: float = Field(default=0.75, ge=0.0, le=1.0)
     web_search_browser: Literal["chromium", "firefox", "webkit"] = "chromium"
     web_search_headless: bool = True
     web_search_timeout_seconds: float = Field(default=30.0, gt=0.0)

@@ -67,9 +67,7 @@ def test_rag_injection_stays_in_user_message() -> None:
 
 
 def test_xhs_context_ignores_undeclared_customer_memory() -> None:
-    request = _xhs_article_render_request(
-        extra_values={"memory.facts": ["订单 SECRET-1"]}
-    )
+    request = _xhs_article_render_request(extra_values={"memory.facts": ["订单 SECRET-1"]})
 
     rendered = ContextAssembler(_registry()).render(request)
 

@@ -8,19 +8,20 @@ from collections.abc import Callable
 from dataclasses import replace
 from typing import Any, Protocol, TypedDict, cast
 
-from langgraph.errors import NodeInterrupt
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, interrupt
 
 from agentkit.runtime.conversation_context import (
     AgentConversationContext,
     ConversationContextService,
 )
 from agentkit.runtime.conversation_persistence import ConversationPersistenceService
+from agentkit.runtime.conversation_runs import conversation_outcome
 
 from .artifacts import ArtifactStore, InMemoryArtifactStore
 from .audit import InMemoryAuditLog, PostgresAuditLog, SQLiteAuditLog
 from .context.errors import ContextHashMismatchError
-from .contracts import AgentProfile, IntentFrame, TaskRequest, TaskResponse
+from .contracts import AgentProfile, IntentFrame, SkillDefinition, TaskRequest, TaskResponse
 from .execution.models import (
     CapabilityResolution,
     StrategyRequest,
@@ -33,8 +34,10 @@ from .execution.protocol import ExecutionContext
 from .execution.registry import StrategyRegistry
 from .execution.selector import StrategySelection, StrategySelector
 from .idempotency import IdempotencyStore
+from .langgraph_runtime import invoke_graph_v2
 from .registry import AgentRegistry, SkillRegistry, ToolRegistry
 from .router import CapabilityResolutionError, IntentRouter
+from .schema_input_resolver import InputResolution
 from .tool_backends import PythonToolBackend, ToolBackendRegistry
 from .tool_executor import ToolExecutor
 
@@ -49,6 +52,18 @@ class IntentResolver(Protocol):
         agent: AgentProfile,
         run_id: str,
     ) -> IntentFrame: ...
+
+
+class InputResolver(Protocol):
+    def resolve(
+        self,
+        request: TaskRequest,
+        *,
+        agent: AgentProfile,
+        skill: SkillDefinition,
+        arguments: dict[str, Any],
+        run_id: str,
+    ) -> InputResolution: ...
 
 
 class UnifiedAgentState(TypedDict, total=False):
@@ -67,7 +82,16 @@ class UnifiedAgentState(TypedDict, total=False):
 
 
 class _Audit(Protocol):
-    def start_run(self, *, tenant_id: str, user_id: str, text: str) -> str: ...
+    def start_run(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        text: str,
+        agent_id: str | None = None,
+        parent_run_id: str | None = None,
+        conversation_id: str | None = None,
+    ) -> str: ...
 
     def record(self, run_id: str, event_type: str, payload: dict[str, Any]) -> None: ...
 
@@ -92,6 +116,7 @@ class UnifiedAgentGraph:
         selector: StrategySelector,
         strategies: StrategyRegistry,
         intent_resolver: IntentResolver,
+        input_resolver: InputResolver,
         checkpointer: Any,
         conversation_context: ConversationContextService | None = None,
         conversation_persistence: ConversationPersistenceService | None = None,
@@ -111,6 +136,7 @@ class UnifiedAgentGraph:
         self._selector = selector
         self._strategies = strategies
         self._intent_resolver = intent_resolver
+        self._input_resolver = input_resolver
         self._checkpointer = checkpointer
         self._conversation_context = conversation_context
         self._conversation_persistence = conversation_persistence
@@ -130,7 +156,14 @@ class UnifiedAgentGraph:
     def run(self, request: TaskRequest, *, thread_id: str | None = None) -> TaskResponse:
         thread = thread_id or str(uuid.uuid4())
         config = {"configurable": {"thread_id": thread}}
-        self._graph.invoke({"request": request, "thread_id": thread}, config)
+        try:
+            invoke_graph_v2(
+                self._graph,
+                {"request": request, "thread_id": thread},
+                config=config,
+            )
+        except Exception as exc:  # noqa: BLE001 - 未处理异常必须收口为可审计终态
+            return self._failure_response(thread, config, exc)
         return self._response_from_state(thread, config)
 
     def resume(
@@ -158,9 +191,7 @@ class UnifiedAgentGraph:
                     "actual": self._context_invoker.manifest_hash,
                 },
             )
-            raise ContextHashMismatchError(
-                "审批恢复时 Context Manifest 已改变，请重新发起任务"
-            )
+            raise ContextHashMismatchError("审批恢复时 Context Manifest 已改变，请重新发起任务")
         approved = {str(item) for item in approved_skills}
         rejected = {str(item) for item in rejected_skills}
         if not approved and not rejected:
@@ -189,8 +220,51 @@ class UnifiedAgentGraph:
             },
         )
         self._graph.update_state(config, {"request": resumed_request})
-        self._graph.invoke(None, config)
+        try:
+            invoke_graph_v2(self._graph, Command(resume=True), config=config)
+        except Exception as exc:  # noqa: BLE001 - 恢复执行也必须形成终态
+            return self._failure_response(thread_id, config, exc)
         return self._response_from_state(thread_id, config)
+
+    def _failure_response(
+        self,
+        thread_id: str,
+        config: dict[str, Any],
+        error: Exception,
+    ) -> TaskResponse:
+        snapshot = self._graph.get_state(config)
+        values = cast(dict[str, Any], snapshot.values)
+        run_id = str(values.get("run_id") or "")
+        if not run_id:
+            raise error
+        error_code = str(getattr(error, "code", "runtime_error"))
+        self._audit.record(
+            run_id,
+            "run_failed",
+            {
+                "error_code": error_code,
+                "error_type": type(error).__name__,
+                "reason": str(error),
+            },
+        )
+        self._audit.record(run_id, "run_finished", {"status": "failed"})
+        request = cast(TaskRequest, values["request"])
+        agent = cast(AgentProfile | None, values.get("agent"))
+        selection = cast(StrategySelection | None, values.get("selection"))
+        return TaskResponse(
+            status="failed",
+            output={
+                "message": "任务执行失败，请在运行追踪中查看详细原因。",
+                "error_code": error_code,
+            },
+            run_id=run_id,
+            thread_id=thread_id,
+            agent=agent.name if agent else str(request.context.get("agent") or ""),
+            strategy=selection.strategy.value if selection else "",
+            conversation_id=str(request.context.get("conversation_id") or ""),
+            governance={"error_code": error_code},
+            audit_events=self._audit.events_for(run_id),
+        )
 
     def _build_graph(self):
         graph = StateGraph(UnifiedAgentState)
@@ -233,6 +307,16 @@ class UnifiedAgentGraph:
             tenant_id=self._tenant_id,
             user_id=request.user_id,
             text=request.text,
+            agent_id=str(request.context.get("agent") or "") or None,
+            parent_run_id=str(request.context.get("parent_run_id") or "") or None,
+            conversation_id=(
+                str(
+                    request.context.get("trace_conversation_id")
+                    or request.context.get("conversation_id")
+                    or ""
+                )
+                or None
+            ),
         )
         return {
             "run_id": run_id,
@@ -310,9 +394,7 @@ class UnifiedAgentGraph:
             )
         except CapabilityResolutionError as exc:
             return {
-                "result": StrategyResult(
-                    status="capability_denied", output={"reason": str(exc)}
-                )
+                "result": StrategyResult(status="capability_denied", output={"reason": str(exc)})
             }
         self._audit.record(
             state["run_id"],
@@ -329,30 +411,53 @@ class UnifiedAgentGraph:
             return {"arguments": dict(state["request"].context.get("plan_args", {}))}
         skill = self._skills.get(resolution.primary_skill)
         request_context = state["request"].context
+        intent_entities = state["intent"].entities
         explicit = request_context.get("skill_args")
         arguments = dict(explicit) if isinstance(explicit, dict) else {}
         properties = skill.input_schema.get("properties", {})
         if isinstance(properties, dict):
             for name in properties:
-                if name not in arguments and name in request_context:
+                if name in arguments:
+                    continue
+                if name in request_context:
                     arguments[name] = request_context[name]
-        required = skill.input_schema.get("required", [])
-        missing = [name for name in required if name not in arguments]
-        if missing:
+                elif name in intent_entities:
+                    arguments[name] = intent_entities[name]
+        initial_fields = set(arguments)
+        input_resolution = self._input_resolver.resolve(
+            state["request"],
+            agent=state["agent"],
+            skill=skill,
+            arguments=arguments,
+            run_id=state["run_id"],
+        )
+        self._audit.record(
+            state["run_id"],
+            "inputs_resolved",
+            {
+                "skill": skill.name,
+                "missing_fields": list(input_resolution.missing),
+                "resolved_fields": sorted(set(input_resolution.arguments) - initial_fields),
+                "confidence": input_resolution.confidence,
+                "llm_used": input_resolution.llm_used,
+            },
+        )
+        if input_resolution.missing:
             return {
                 "result": StrategyResult(
                     status="needs_clarification",
-                    output={"missing_required": missing},
+                    output={
+                        "missing_required": list(input_resolution.missing),
+                        "clarification": input_resolution.clarification,
+                    },
                 )
             }
-        return {"arguments": arguments}
+        return {"arguments": input_resolution.arguments}
 
     def _select_strategy(self, state: UnifiedAgentState) -> dict[str, Any]:
         if "result" in state:
             return {}
-        selection = self._selector.select(
-            agent=state["agent"], resolution=state["resolution"]
-        )
+        selection = self._selector.select(agent=state["agent"], resolution=state["resolution"])
         self._audit.record(
             state["run_id"],
             "strategy_selected",
@@ -386,7 +491,13 @@ class UnifiedAgentGraph:
         approved = set(request.context.get("approved_skills", []))
         if set(state["approval_required"]) <= approved:
             return {}
-        raise NodeInterrupt("等待人工审批")
+        interrupt(
+            {
+                "type": "approval_required",
+                "skills": list(state["approval_required"]),
+            }
+        )
+        return {}
 
     def _execute_strategy(self, state: UnifiedAgentState) -> dict[str, Any]:
         if "result" in state:
@@ -397,9 +508,7 @@ class UnifiedAgentGraph:
         artifacts = self._artifact_store_factory(run_id)
         granted = _granted_permissions(self._tenant_config, request.roles)
         candidate_skills = [self._skills.get(name) for name in state["resolution"].candidate_skills]
-        allowed_tools = {
-            tool_name for skill in candidate_skills for tool_name in skill.tools
-        }
+        allowed_tools = {tool_name for skill in candidate_skills for tool_name in skill.tools}
         approved_skills = set(request.context.get("approved_skills", []))
         approved_tools = {
             tool_name
@@ -477,7 +586,13 @@ class UnifiedAgentGraph:
         if skill_name in rejected:
             return {"result": StrategyResult(status="rejected", output={})}
         if skill_name not in approved:
-            raise NodeInterrupt("等待人工审批延迟副作用")
+            interrupt(
+                {
+                    "type": "approval_required",
+                    "skills": list(state["approval_required"]),
+                }
+            )
+            return {}
         invoker = ToolExecutor(
             tenant_id=self._tenant_id,
             audit=self._audit,
@@ -503,9 +618,7 @@ class UnifiedAgentGraph:
     def _review_output(self, state: UnifiedAgentState) -> dict[str, Any]:
         result = state.get("result")
         if result is not None:
-            self._audit.record(
-                state["run_id"], "output_reviewed", {"status": result.status}
-            )
+            self._audit.record(state["run_id"], "output_reviewed", {"status": result.status})
         return {}
 
     def _persist_turn(self, state: UnifiedAgentState) -> dict[str, Any]:
@@ -529,6 +642,8 @@ class UnifiedAgentGraph:
             assistant_message=json.dumps(result.output, ensure_ascii=False, default=str),
             run_id=state["run_id"],
             window_turns=state["agent"].context_policy.memory.window_turns,
+            retry_of_run_id=str(state["request"].context.get("retry_of_run_id") or ""),
+            outcome=conversation_outcome(result.status),
         )
         return {}
 
@@ -547,14 +662,11 @@ class UnifiedAgentGraph:
         selection = cast(StrategySelection | None, values.get("selection"))
         conversation_id = str(values["request"].context.get("conversation_id") or "")
         if snapshot.next:
-            if not any(
-                item["type"] == "run_paused" for item in self._audit.events_for(run_id)
-            ):
-                self._audit.record(
-                    run_id,
-                    "run_paused",
-                    {"status": "waiting_for_approval", "thread_id": thread_id},
-                )
+            self._audit.record(
+                run_id,
+                "run_paused",
+                {"status": "waiting_for_approval", "thread_id": thread_id},
+            )
             pending_result = cast(StrategyResult | None, values.get("result"))
             approval = {"skills": values.get("approval_required", [])}
             if pending_result is not None and pending_result.status == "deferred_action":
@@ -571,9 +683,11 @@ class UnifiedAgentGraph:
             )
         else:
             result = cast(StrategyResult, values.get("result"))
-        approval_governance = result.output.get("approval", {}) if snapshot.next else {
-            "skills": values.get("approval_required", [])
-        }
+        approval_governance = (
+            result.output.get("approval", {})
+            if snapshot.next
+            else {"skills": values.get("approval_required", [])}
+        )
         governance = {
             "strategy": selection.strategy.value if selection else "",
             "allowed_skills": list(agent.allowed_skills) if agent else [],

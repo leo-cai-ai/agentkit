@@ -52,3 +52,21 @@
     {{ status_labels.get(status_key, status_key | replace('_', ' ') | title) }}
   </span>
 {%- endmacro %}
+
+{% macro registry_row(name, domain, detail, status='已注册') -%}
+  <button
+    class="ak-registry-row"
+    type="button"
+    data-governance-row
+    data-search-text="{{ name }} {{ domain }} {{ detail.values() | join(' ') }}"
+    data-object-name="{{ name }}"
+    data-object-domain="{{ domain or '未声明 Domain' }}"
+    data-object-status="{{ status }}"
+    data-detail='{{ detail | tojson }}'
+    aria-controls="governance-detail"
+  >
+    <strong>{{ name }}</strong>
+    <span>{{ domain or '未声明 Domain' }}</span>
+    <span>{{ status }}</span>
+  </button>
+{%- endmacro %}

@@ -45,6 +45,32 @@ def test_invoke_json_validates_schema_and_records_metadata(tmp_path: Path) -> No
     assert "user" not in event["payload"]
 
 
+def test_invoke_json_injects_declared_schema_into_trusted_system_context(
+    tmp_path: Path,
+) -> None:
+    write_context_pack(tmp_path)
+    calls: list[tuple[str, str]] = []
+
+    def call_text(system: str, user: str) -> str:
+        calls.append((system, user))
+        return '{"goal":"ok"}'
+
+    assembler = _assembler(tmp_path)
+    request = render_request()
+    base = assembler.render(request)
+    service = ContextInvocationService(assembler=assembler, call_text=call_text)
+
+    result = service.invoke_json(request)
+
+    system, user = calls[0]
+    assert "Runtime 强制输出契约" in system
+    assert '"required":["goal"]' in system
+    assert "JSON Schema" in system
+    assert "JSON Schema" not in user
+    assert result.rendered.system == system
+    assert result.rendered.estimated_input_tokens > base.estimated_input_tokens
+
+
 def test_invoke_json_rejects_schema_mismatch_and_audits_failure(tmp_path: Path) -> None:
     write_context_pack(tmp_path)
     audit = RecordingAudit()

@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agentkit.core.artifacts import canonical_json
 from agentkit.core.contracts import SkillDefinition
+from agentkit.core.langgraph_runtime import invoke_graph_v2
 
 from .models import AutonomyBudget, StrategyRequest, StrategyResult, ToolRisk
 from .protocol import ExecutionContext
@@ -259,7 +260,8 @@ class ReactStrategy:
         graph.add_edge("finish", END)
         final = cast(
             ReactState,
-            graph.compile(checkpointer=self._checkpointer).invoke(
+            invoke_graph_v2(
+                graph.compile(checkpointer=self._checkpointer),
                 ReactState(
                     observations=[],
                     artifacts=[],
@@ -272,9 +274,7 @@ class ReactStrategy:
                     deadline_at=deadline,
                     seen_actions=[],
                 ),
-                config={
-                    "configurable": {"thread_id": f"{context.run_id}:react:{skill_name}"}
-                },
+                config={"configurable": {"thread_id": f"{context.run_id}:react:{skill_name}"}},
             ),
         )
         result = final.get("result")

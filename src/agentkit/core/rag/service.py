@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from agentkit.core.memory.embeddings import EmbeddingProvider, build_embedding_provider
+from agentkit.core.ocr import OcrProvider
 
 from .base import (
     KnowledgeDocument,
@@ -41,6 +42,7 @@ class KnowledgeService:
         embeddings: EmbeddingProvider,
         retriever: Retriever,
         chunker: AdaptiveTextChunker,
+        ocr_provider: OcrProvider,
     ) -> None:
         self._tenant_id = tenant_id
         self._tenant_selector = tenant_selector
@@ -48,6 +50,7 @@ class KnowledgeService:
         self._embeddings = embeddings
         self._retriever = retriever
         self._chunker = chunker
+        self._ocr_provider = ocr_provider
 
     @property
     def store(self) -> KnowledgeStore:
@@ -73,13 +76,11 @@ class KnowledgeService:
         acl_roles: Sequence[str] = (),
         metadata: dict[str, Any] | None = None,
         ocr_enabled: bool = False,
-        ocr_languages: str = "eng+chi_sim",
     ) -> dict[str, Any]:
+        effective_ocr = bool(ocr_enabled and self._ocr_provider.enabled)
         loader = DocumentFolderLoader(
-            options=DocumentLoadOptions(
-                ocr_enabled=ocr_enabled,
-                ocr_languages=ocr_languages,
-            )
+            options=DocumentLoadOptions(ocr_enabled=effective_ocr),
+            ocr_provider=self._ocr_provider if effective_ocr else None,
         )
         report = loader.load_path_with_report(
             path,
@@ -152,6 +153,7 @@ def build_knowledge_service(
     tenant_id: str,
     tenant_selector: str,
     context_invoker: Any,
+    ocr_provider: OcrProvider,
     store: KnowledgeStore | None = None,
     embeddings: EmbeddingProvider | None = None,
 ) -> KnowledgeService:
@@ -179,6 +181,7 @@ def build_knowledge_service(
         embeddings=embeddings,
         retriever=retriever,
         chunker=chunker,
+        ocr_provider=ocr_provider,
     )
 
 
