@@ -1,5 +1,6 @@
+import pytest
+
 from agentkit.core.memory.embeddings import OpenAICompatibleEmbeddingProvider
-from agentkit.llm.customer_band import CustomerBandProvider, SignatureAwareAzureChatOpenAI
 from agentkit.llm.openai_compatible import OpenAICompatibleProvider
 
 
@@ -14,6 +15,11 @@ def test_openai_chat_provider_constructs_with_langchain_1x() -> None:
 
 
 def test_customer_band_provider_constructs_with_langchain_1x() -> None:
+    provider_module = pytest.importorskip(
+        "agentkit.llm.customer_band",
+        reason="customer_band 是仅在私有部署中提供的可选 LLM provider",
+    )
+    CustomerBandProvider = provider_module.CustomerBandProvider
     provider = CustomerBandProvider(
         client_id="test-client",
         client_secret="test-secret",
@@ -34,6 +40,11 @@ def test_openai_embedding_provider_constructs_with_langchain_1x() -> None:
 
 
 def test_customer_band_preserves_tool_call_extra_content() -> None:
+    provider_module = pytest.importorskip(
+        "agentkit.llm.customer_band",
+        reason="customer_band 是仅在私有部署中提供的可选 LLM provider",
+    )
+    SignatureAwareAzureChatOpenAI = provider_module.SignatureAwareAzureChatOpenAI
     model = SignatureAwareAzureChatOpenAI(
         azure_endpoint="https://example.invalid",
         api_version="2025-04-01-preview",
