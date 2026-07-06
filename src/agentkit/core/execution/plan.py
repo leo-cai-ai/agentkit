@@ -136,11 +136,7 @@ class PlanExecuteStrategy:
                     remaining_budget=self._remaining_budget(state, budget),
                 )
             except Exception as exc:  # noqa: BLE001 - 模型异常必须形成终态
-                return {
-                    "result": self._result(
-                        state, "model_failed", {"reason": str(exc)}
-                    )
-                }
+                return {"result": self._result(state, "model_failed", {"reason": str(exc)})}
             return {
                 "plan": decision.plan,
                 "model_calls": state["model_calls"] + 1,
@@ -205,9 +201,7 @@ class PlanExecuteStrategy:
             plan = state["plan"]
             assert plan is not None
             if all(step.id in state["completed"] for step in plan.steps):
-                outputs = {
-                    step.id: state["completed"][step.id]["output"] for step in plan.steps
-                }
+                outputs = {step.id: state["completed"][step.id]["output"] for step in plan.steps}
                 return {
                     "result": self._result(
                         state,
@@ -224,9 +218,7 @@ class PlanExecuteStrategy:
             ]
             if not ready:
                 return {
-                    "result": self._result(
-                        state, "plan_invalid", {"reason": "Plan 没有可调度步骤"}
-                    )
+                    "result": self._result(state, "plan_invalid", {"reason": "Plan 没有可调度步骤"})
                 }
             return {"current_step": ready[0].id}
 
@@ -314,20 +306,15 @@ class PlanExecuteStrategy:
                 "spec": step.model_dump(mode="json"),
             }
             frozen = list(state["frozen_steps"])
-            if (
-                skill.execution.tool_policy is ToolPolicy.SIDE_EFFECT
-                and step.id not in frozen
-            ):
+            if skill.execution.tool_policy is ToolPolicy.SIDE_EFFECT and step.id not in frozen:
                 frozen.append(step.id)
             return {
                 "completed": completed,
                 "artifacts": [*state["artifacts"], *child.artifacts, artifact],
                 "frozen_steps": frozen,
-                "model_calls": state["model_calls"]
-                + int(child.metrics.get("model_calls", 0)),
+                "model_calls": state["model_calls"] + int(child.metrics.get("model_calls", 0)),
                 "tool_calls": state["tool_calls"] + int(child.metrics.get("tool_calls", 0)),
-                "token_count": state["token_count"]
-                + int(child.metrics.get("token_count", 0)),
+                "token_count": state["token_count"] + int(child.metrics.get("token_count", 0)),
                 "failure": None,
                 "current_step": None,
             }
@@ -370,15 +357,9 @@ class PlanExecuteStrategy:
         graph.add_node("prepare_replan", prepare_replan)
         graph.add_node("fail", fail)
         graph.add_edge(START, "generate")
-        graph.add_conditional_edges(
-            "generate", route_result, {"continue": "validate", "stop": END}
-        )
-        graph.add_conditional_edges(
-            "validate", route_result, {"continue": "approval", "stop": END}
-        )
-        graph.add_conditional_edges(
-            "approval", route_result, {"continue": "schedule", "stop": END}
-        )
+        graph.add_conditional_edges("generate", route_result, {"continue": "validate", "stop": END})
+        graph.add_conditional_edges("validate", route_result, {"continue": "approval", "stop": END})
+        graph.add_conditional_edges("approval", route_result, {"continue": "schedule", "stop": END})
         graph.add_conditional_edges(
             "schedule", route_result, {"continue": "execute_step", "stop": END}
         )
@@ -413,9 +394,7 @@ class PlanExecuteStrategy:
                     deadline_at=deadline,
                 ),
                 config={
-                    "configurable": {
-                        "thread_id": f"{context.run_id}:plan:{context.agent.name}"
-                    }
+                    "configurable": {"thread_id": f"{context.run_id}:plan:{context.agent.name}"}
                 },
             ),
         )
@@ -435,8 +414,7 @@ class PlanExecuteStrategy:
         actual_steps = len(plan.steps)
         if actual_steps > budget.max_plan_steps:
             raise PlanValidationError(
-                "Plan 步骤数超过预算："
-                f"生成 {actual_steps}，最多允许 {budget.max_plan_steps}",
+                "Plan 步骤数超过预算：" f"生成 {actual_steps}，最多允许 {budget.max_plan_steps}",
                 details={
                     "actual_steps": actual_steps,
                     "max_plan_steps": budget.max_plan_steps,
@@ -455,9 +433,7 @@ class PlanExecuteStrategy:
             context.skill(step.skill)
             missing = set(step.depends_on) - id_set
             if missing:
-                raise PlanValidationError(
-                    f"Plan 依赖不存在: {', '.join(sorted(missing))}"
-                )
+                raise PlanValidationError(f"Plan 依赖不存在: {', '.join(sorted(missing))}")
             for reference in step.args_from.values():
                 source = reference.split(".", 1)[0]
                 if source not in step.depends_on:

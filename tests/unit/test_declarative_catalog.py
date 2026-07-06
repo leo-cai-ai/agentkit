@@ -112,9 +112,7 @@ def test_catalog_compiles_workflow_composition(tmp_path: Path) -> None:
         tools=tools,
     )
 
-    assert catalog.capabilities["research.explore"].composes == (
-        "research.summarize",
-    )
+    assert catalog.capabilities["research.explore"].composes == ("research.summarize",)
     assert skills.get("research.explore").composes == ("research.summarize",)
 
 
@@ -161,9 +159,7 @@ def test_enabled_agents_are_explicit_and_validated(tmp_path: Path) -> None:
     _write_catalog(tmp_path)
     catalog = load_catalog(tmp_path)
 
-    assert resolve_enabled_agent_ids(catalog, {"enabled_agents": ["research"]}) == {
-        "research"
-    }
+    assert resolve_enabled_agent_ids(catalog, {"enabled_agents": ["research"]}) == {"research"}
 
 
 def test_repository_catalog_contains_general_agent_without_business_skills() -> None:

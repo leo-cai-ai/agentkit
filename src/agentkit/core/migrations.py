@@ -227,9 +227,7 @@ def run_postgres_migrations(settings: Any) -> list[int]:
     return applied_now
 
 
-def run_storage_migrations(
-    settings: Any, *, sqlite_path: Path | None = None
-) -> list[int]:
+def run_storage_migrations(settings: Any, *, sqlite_path: Path | None = None) -> list[int]:
     """Apply migrations for the storage backend selected by ``settings``."""
     backend = str(getattr(settings, "storage_backend", "sqlite")).lower()
     if backend in ("postgres", "pg"):

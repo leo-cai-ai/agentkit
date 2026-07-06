@@ -156,9 +156,7 @@ class AgentMentionParser:
         ]
         if unknown:
             raise UnknownAgentMentionError(f"未知 Agent: @{unknown[0]}")
-        agent_ids = {
-            self._directory.resolve(match.group("name")) for match in matches
-        }
+        agent_ids = {self._directory.resolve(match.group("name")) for match in matches}
         agent_ids.discard(None)
         if len(agent_ids) > 1:
             raise MultipleAgentMentionsError("一条消息只能显式指定一个 Agent")
@@ -246,7 +244,6 @@ class MultiAgentCoordinator:
         conversation_id: str,
         parent_run_id: str,
     ) -> TaskResponse:
-
         from .safety import REFUSAL_MESSAGE, build_safety_guard
 
         safety = build_safety_guard().inspect_input(request.text)
@@ -338,9 +335,7 @@ class MultiAgentCoordinator:
                     route=route,
                 )
             route_type = (
-                "general_delegate"
-                if decision["action"] == "delegate"
-                else "general_answer"
+                "general_delegate" if decision["action"] == "delegate" else "general_answer"
             )
 
         route = {
@@ -437,7 +432,6 @@ class MultiAgentCoordinator:
         conversation_id: str,
         target_agent: str,
     ) -> TaskResponse:
-
         child = self._gateway.resume(
             thread_id,
             approved_skills=approved_skills,
@@ -584,9 +578,7 @@ class MultiAgentCoordinator:
             text=task_text,
             context={
                 **{
-                    key: value
-                    for key, value in request.context.items()
-                    if key != "conversation_id"
+                    key: value for key, value in request.context.items() if key != "conversation_id"
                 },
                 "agent": target_agent,
                 "parent_run_id": parent_run_id,
@@ -624,9 +616,7 @@ class MultiAgentCoordinator:
                 status=child.status,
                 output=child.output,
             )
-            self._audit.record(
-                parent_run_id, "run_finished", {"status": child.status}
-            )
+            self._audit.record(parent_run_id, "run_finished", {"status": child.status})
         return TaskResponse(
             status=child.status,
             output=child.output,

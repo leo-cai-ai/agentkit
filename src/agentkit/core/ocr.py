@@ -101,15 +101,12 @@ class OcrProviderRegistry:
         factory = self._factories.get(provider_id)
         if factory is None:
             available = ", ".join(sorted(self._factories)) or "无"
-            raise ValueError(
-                f"未注册的 OCR Provider: {provider_id}; 可用 Provider: {available}"
-            )
+            raise ValueError(f"未注册的 OCR Provider: {provider_id}; 可用 Provider: {available}")
         provider = factory(dict(config or {}))
         actual_id = self._normalize(provider.name)
         if actual_id != provider_id:
             raise ValueError(
-                "OCR Provider 工厂返回的 ID 不匹配: "
-                f"expected={provider_id}, actual={actual_id}"
+                "OCR Provider 工厂返回的 ID 不匹配: " f"expected={provider_id}, actual={actual_id}"
             )
         return provider
 

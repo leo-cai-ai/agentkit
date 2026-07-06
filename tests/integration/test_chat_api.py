@@ -71,9 +71,7 @@ def _sse_final(response) -> dict:
     for frame in frames:
         if not frame.startswith("event: final\n"):
             continue
-        data = next(
-            line[6:] for line in frame.splitlines() if line.startswith("data: ")
-        )
+        data = next(line[6:] for line in frame.splitlines() if line.startswith("data: "))
         return json.loads(data)
     raise AssertionError("SSE response did not contain a final event")
 

@@ -267,8 +267,7 @@ class ConversationPersistenceService:
                 run_id=run_id,
                 existing_summary=str(current.get("summary_text", "")) if current else "",
                 turns=[
-                    {"role": str(item["role"]), "content": str(item["content"])}
-                    for item in turns
+                    {"role": str(item["role"]), "content": str(item["content"])} for item in turns
                 ],
             )
             self._store.upsert_summary(
@@ -284,4 +283,6 @@ class ConversationPersistenceService:
                     "memory_summary_failed",
                     {"conversation_id": conversation_id, "reason": str(exc)},
                 )
+
+
 __all__ = ["ConversationPersistenceService", "ExtractingMemoryWriter"]

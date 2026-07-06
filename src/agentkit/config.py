@@ -275,6 +275,7 @@ class Settings(BaseSettings):
     pg_password: SecretStr | None = None
     pg_sslmode: str = "prefer"
 
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()

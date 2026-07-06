@@ -67,9 +67,7 @@ def test_context_builder_enables_rag_per_agent(tmp_path) -> None:
         memory_reader=FakeMemoryReader(),
         knowledge_service=knowledge,
     )
-    customer_id = store.create_conversation(
-        tenant_id="t1", agent="customer_service", user_id="u1"
-    )
+    customer_id = store.create_conversation(tenant_id="t1", agent="customer_service", user_id="u1")
     xhs_id = store.create_conversation(tenant_id="t1", agent="xhs_growth", user_id="u1")
 
     customer = service.build(
@@ -103,9 +101,7 @@ def test_context_is_scoped_by_tenant_agent_user(tmp_path) -> None:
     memory = FakeMemoryReader()
     memory.values[("t1", "customer_service", "u1")] = ["订单 O-1"]
     service = ConversationContextService(store=store, memory_reader=memory)
-    customer_id = store.create_conversation(
-        tenant_id="t1", agent="customer_service", user_id="u1"
-    )
+    customer_id = store.create_conversation(tenant_id="t1", agent="customer_service", user_id="u1")
     store.add_message(conversation_id=customer_id, role="user", content="查询 O-1")
     xhs_id = store.create_conversation(tenant_id="t1", agent="xhs_growth", user_id="u1")
 
@@ -197,7 +193,5 @@ def test_context_normalizes_legacy_structured_assistant_message(tmp_path) -> Non
         message="继续",
     )
 
-    assert context.recent_messages[-1]["content"] == (
-        "内容审核未通过，未进入发布：证据不足"
-    )
+    assert context.recent_messages[-1]["content"] == ("内容审核未通过，未进入发布：证据不足")
     assert "workflow_trace" not in context.recent_messages[-1]["content"]

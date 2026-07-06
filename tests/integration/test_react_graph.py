@@ -13,9 +13,7 @@ from tests.unit.test_react_strategy import (
 def test_react_subgraph_writes_checkpoints_and_artifact_references() -> None:
     checkpointer = MemorySaver()
     strategy = ReactStrategy(
-        model=FakeActionModel(
-            [_tool_action("web.search", {"query": "agent"}), _final("完成")]
-        ),
+        model=FakeActionModel([_tool_action("web.search", {"query": "agent"}), _final("完成")]),
         checkpointer=checkpointer,
     )
 

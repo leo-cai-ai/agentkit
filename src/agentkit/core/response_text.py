@@ -19,9 +19,7 @@ def format_task_output_text(*, status: str, output: Mapping[str, Any]) -> str:
     publish = _mapping(data.get("publish"))
     if status == "blocked" and publish:
         review = _mapping(publish.get("review"))
-        reason = str(
-            review.get("reason") or publish.get("reason") or "未通过质量门禁"
-        )
+        reason = str(review.get("reason") or publish.get("reason") or "未通过质量门禁")
         if _contains_chinese(reason):
             return f"内容审核未通过，未进入发布：{reason}"
         return f"Content review failed; publication was not started: {reason}"
@@ -91,9 +89,7 @@ def _format_xhs_output(*, status: str, output: Mapping[str, Any]) -> str:
     topic_zh = f"“{topic}”" if topic else "当前"
     topic_en = f'"{topic}"' if topic else "the current"
     if publish_status == "blocked" or workflow_status == "blocked" or status == "blocked":
-        reason = str(
-            review.get("reason") or publish.get("reason") or "未通过质量门禁"
-        )
+        reason = str(review.get("reason") or publish.get("reason") or "未通过质量门禁")
         if is_zh or _contains_chinese(reason):
             return f"内容审核未通过，未进入发布：{reason}"
         return f"Content review failed; publication was not started: {reason}"

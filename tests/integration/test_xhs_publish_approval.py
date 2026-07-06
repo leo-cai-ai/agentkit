@@ -34,9 +34,7 @@ def _responder(calls: list[str]):
             )
         if "小红书内容发布前的最终审核节点" in system:
             calls.append("content_review")
-            return json.dumps(
-                {"status": "approved", "reason": "grounded", "findings": []}
-            )
+            return json.dumps({"status": "approved", "reason": "grounded", "findings": []})
         raise AssertionError(f"unexpected LLM prompt: {system[:120]}")
 
     return respond

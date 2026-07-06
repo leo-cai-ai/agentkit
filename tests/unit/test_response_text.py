@@ -110,9 +110,7 @@ def test_legacy_xhs_json_message_is_normalized() -> None:
         ensure_ascii=False,
     )
 
-    assert normalize_persisted_assistant_text(legacy) == (
-        "内容审核未通过，未进入发布：证据不足"
-    )
+    assert normalize_persisted_assistant_text(legacy) == ("内容审核未通过，未进入发布：证据不足")
 
 
 def test_normal_markdown_and_unrecognized_json_are_not_rewritten() -> None:

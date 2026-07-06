@@ -129,9 +129,7 @@ def test_canonical_args_hash_excludes_key_and_key_digest_hides_raw_input() -> No
     assert canonical_args_hash(args) == canonical_args_hash(
         {"name": "Ada", "_idempotency_key": "another key"}
     )
-    assert canonical_args_hash(args) == hashlib.sha256(
-        canonical_json({"name": "Ada"})
-    ).hexdigest()
+    assert canonical_args_hash(args) == hashlib.sha256(canonical_json({"name": "Ada"})).hexdigest()
 
     digest = key_digest("raw idempotency secret")
     assert digest == hashlib.sha256(b"raw idempotency secret").hexdigest()[:16]

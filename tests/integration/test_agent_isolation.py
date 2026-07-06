@@ -41,9 +41,7 @@ def test_xhs_context_cannot_observe_customer_conversation_or_memory(tmp_path) ->
             return []
 
     store = ConversationStore(tmp_path / "isolation.sqlite")
-    customer_id = store.create_conversation(
-        tenant_id="t1", agent="customer_service", user_id="u1"
-    )
+    customer_id = store.create_conversation(tenant_id="t1", agent="customer_service", user_id="u1")
     store.add_message(
         conversation_id=customer_id,
         role="user",

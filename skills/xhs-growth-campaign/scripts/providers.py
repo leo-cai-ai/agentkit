@@ -254,9 +254,7 @@ def _build_media_provider(
         "ocr",
         lambda _provider_config: OcrMediaUnderstandingProvider(
             ocr_provider=ocr_provider,
-            asset_loader=HttpMediaAssetLoader(
-                max_image_bytes=int(settings.ocr_max_image_bytes)
-            ),
+            asset_loader=HttpMediaAssetLoader(max_image_bytes=int(settings.ocr_max_image_bytes)),
         ),
     )
     provider = registry.build(provider_name)

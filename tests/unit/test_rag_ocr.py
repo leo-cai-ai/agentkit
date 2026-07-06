@@ -112,6 +112,4 @@ def test_docx_ocr_continues_after_one_embedded_image_fails(tmp_path) -> None:
     assert len(provider.calls) == 2
     assert len(blocks) == 1
     assert blocks[0]["text"] == "识别文本"
-    assert warnings == [
-        "OCR failed on embedded image word/media/one.png: first image failed"
-    ]
+    assert warnings == ["OCR failed on embedded image word/media/one.png: first image failed"]

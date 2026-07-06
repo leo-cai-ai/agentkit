@@ -96,14 +96,10 @@ def test_sqlite_vectors_delete_only_matching_source(vectors):
         source_conversation_id="c2",
     )
 
-    deleted = vectors.delete_by_source(
-        tenant_id="t1", user_id="u1", source_conversation_id="c1"
-    )
+    deleted = vectors.delete_by_source(tenant_id="t1", user_id="u1", source_conversation_id="c1")
 
     assert deleted == 1
-    assert [
-        hit.text for hit in vectors.query(scope=scope, embedding=[0.0], k=10)
-    ] == ["保留"]
+    assert [hit.text for hit in vectors.query(scope=scope, embedding=[0.0], k=10)] == ["保留"]
 
 
 def test_cosine_edges():

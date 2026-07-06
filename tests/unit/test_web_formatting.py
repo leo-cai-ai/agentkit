@@ -62,6 +62,4 @@ def test_unified_response_formatter_uses_published_xhs_outcome() -> None:
         audit_events=[],
     )
 
-    assert format_response_text(response) == (
-        "已完成“AI时代的副业”主题研究、文案审核与发布。"
-    )
+    assert format_response_text(response) == ("已完成“AI时代的副业”主题研究、文案审核与发布。")

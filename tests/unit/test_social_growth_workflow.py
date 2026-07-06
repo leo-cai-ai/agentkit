@@ -160,9 +160,7 @@ def test_xhs_provider_bundle_rejects_unknown_media_provider(monkeypatch):
     monkeypatch.setattr(_PROVIDERS, "get_settings", lambda: settings)
 
     with pytest.raises(ValueError, match="未注册的媒体理解 Provider: missing"):
-        default_provider_bundle(
-            provider_config={"media_understanding_provider": "missing"}
-        )
+        default_provider_bundle(provider_config={"media_understanding_provider": "missing"})
 
 
 def test_xhs_ocr_adapter_skips_when_global_ocr_provider_is_none(monkeypatch, tmp_path):

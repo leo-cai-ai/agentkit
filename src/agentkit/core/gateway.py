@@ -121,9 +121,7 @@ class AgentGateway:
         """执行受 General Agent 委派的任务，不创建或写入业务 Agent 会话。"""
         return self._handle(request, create_conversation=False)
 
-    def _handle(
-        self, request: TaskRequest, *, create_conversation: bool
-    ) -> TaskResponse:
+    def _handle(self, request: TaskRequest, *, create_conversation: bool) -> TaskResponse:
         from .safety import REFUSAL_MESSAGE, build_safety_guard
 
         decision = build_safety_guard().inspect_input(request.text)

@@ -696,9 +696,7 @@ def test_xhs_detail_enrichment_keeps_only_safe_deduplicated_media_urls():
     assert enriched.metadata["detail_enriched"] is True
     assert enriched.metadata["detail_error"] == ""
     assert enriched.metadata["detail_skipped_reason"] == ""
-    assert enriched.metadata["detail_media_urls"] == [
-        "https://sns-webpic-qc.xhscdn.com/one.jpg"
-    ]
+    assert enriched.metadata["detail_media_urls"] == ["https://sns-webpic-qc.xhscdn.com/one.jpg"]
 
 
 def test_xhs_detail_challenge_keeps_search_cards_for_quality_review(monkeypatch):

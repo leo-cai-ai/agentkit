@@ -26,21 +26,25 @@ def test_get_missing_conversation_returns_none(store):
 
 
 def test_transition_conversation_status_is_conditional(store) -> None:
-    cid = store.create_conversation(
-        tenant_id="t1", agent="general_agent", user_id="u1"
-    )
+    cid = store.create_conversation(tenant_id="t1", agent="general_agent", user_id="u1")
 
-    assert store.transition_conversation_status(
-        cid,
-        expected=("active",),
-        status="deletion_pending",
-    ) is True
+    assert (
+        store.transition_conversation_status(
+            cid,
+            expected=("active",),
+            status="deletion_pending",
+        )
+        is True
+    )
     assert store.get_conversation(cid)["status"] == "deletion_pending"
-    assert store.transition_conversation_status(
-        cid,
-        expected=("active",),
-        status="deletion_pending",
-    ) is False
+    assert (
+        store.transition_conversation_status(
+            cid,
+            expected=("active",),
+            status="deletion_pending",
+        )
+        is False
+    )
 
 
 def test_add_message_updates_conversation_updated_at(store):
@@ -54,9 +58,7 @@ def test_add_message_updates_conversation_updated_at(store):
 
 
 def test_message_preserves_the_actual_assistant_agent(store):
-    cid = store.create_conversation(
-        tenant_id="t1", agent="general_agent", user_id="u1"
-    )
+    cid = store.create_conversation(tenant_id="t1", agent="general_agent", user_id="u1")
     store.add_message(
         conversation_id=cid,
         role="assistant",
@@ -182,10 +184,7 @@ def test_delete_conversation_removes_chat_data_and_source_memories(store) -> Non
     assert store.get_summary(cid) is None
     assert store.get_conversation(other) is not None
     assert [
-        row["text"]
-        for row in store.iter_memories(
-            tenant_id="t1", agent="xhs_growth", user_id="u1"
-        )
+        row["text"] for row in store.iter_memories(tenant_id="t1", agent="xhs_growth", user_id="u1")
     ] == ["保留记忆"]
 
 

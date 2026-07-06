@@ -34,11 +34,7 @@ def test_create_agent_writes_single_manifest(tmp_path) -> None:
 
 def test_create_skill_writes_portable_package(tmp_path) -> None:
     package = scaffold.create_skill("invoice-query", root=tmp_path / "skills")
-    files = {
-        path.relative_to(package).as_posix()
-        for path in package.rglob("*")
-        if path.is_file()
-    }
+    files = {path.relative_to(package).as_posix() for path in package.rglob("*") if path.is_file()}
     assert files == {
         "SKILL.md",
         "scripts/__init__.py",

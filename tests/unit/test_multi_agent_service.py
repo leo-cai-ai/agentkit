@@ -110,9 +110,7 @@ class FakeGateway:
         )
 
     def resume(self, thread_id: str, **kwargs) -> TaskResponse:
-        child = self.audit.run_for_thread(
-            thread_id, tenant_id="tenant-a", user_id="u1"
-        )
+        child = self.audit.run_for_thread(thread_id, tenant_id="tenant-a", user_id="u1")
         self.audit.record(child["run_id"], "run_resumed", {"thread_id": thread_id})
         self.audit.record(child["run_id"], "run_finished", {"status": "completed"})
         return TaskResponse(
@@ -229,9 +227,7 @@ def test_explicit_mention_skips_router_and_creates_child_run() -> None:
 
 
 def test_general_agent_propagates_blocked_child_status() -> None:
-    service, gateway, audit, invoker, contexts, persistence = _service(
-        child_status="blocked"
-    )
+    service, gateway, audit, invoker, contexts, persistence = _service(child_status="blocked")
 
     response = service.handle(
         TaskRequest(
@@ -331,10 +327,7 @@ def test_invalid_router_output_stops_without_fake_execution() -> None:
     assert "未调用任何 Agent、Skill 或 Tool" in response.output["message"]
     assert gateway.requests == []
     assert invoker.streaming_calls == []
-    assert any(
-        event["type"] == "agent_route_failed"
-        for event in audit.events_for(response.run_id)
-    )
+    assert any(event["type"] == "agent_route_failed" for event in audit.events_for(response.run_id))
 
 
 def test_approval_resume_returns_to_the_original_general_conversation() -> None:

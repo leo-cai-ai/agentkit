@@ -188,6 +188,7 @@ _CLICK_TEXT_IMAGE_NEXT = r"""
 }
 """
 
+
 class XhsPublishOutcomeUnknown(WebSearchError):
     """The publish click occurred but the final platform outcome is unknown."""
 
@@ -406,9 +407,7 @@ class XhsPublishAdapter:
             not media_paths or not all(Path(path).is_file() for path in media_paths)
         ):
             raise ValueError("XHS upload publication requires existing local media files")
-        if strategy == "xhs_text_image" and (
-            not content["card_text"] or not content["card_style"]
-        ):
+        if strategy == "xhs_text_image" and (not content["card_text"] or not content["card_style"]):
             raise ValueError("XHS text-image publication requires reviewed card text and style")
 
         publish_url = self._image_publish_url()
@@ -767,9 +766,7 @@ class XhsPublishAdapter:
             position=position,
             target_backend_node_id=target_backend_node_id,
         ):
-            raise BrowserPageChanged(
-                "Xiaohongshu publish button is covered by a transient overlay"
-            )
+            raise BrowserPageChanged("Xiaohongshu publish button is covered by a transient overlay")
         _log.info(
             "Xiaohongshu publish click target: method=cdp host=%s absolute_position=%s",
             host_box,

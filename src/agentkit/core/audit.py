@@ -139,9 +139,7 @@ class InMemoryAuditLog:
 
     def child_runs(self, parent_run_id: str) -> list[dict[str, Any]]:
         return [
-            dict(run)
-            for run in self._runs.values()
-            if run.get("parent_run_id") == parent_run_id
+            dict(run) for run in self._runs.values() if run.get("parent_run_id") == parent_run_id
         ]
 
     def run_for_thread(
@@ -306,9 +304,7 @@ class SQLiteAuditLog:
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM task_runs WHERE run_id = ?", (run_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM task_runs WHERE run_id = ?", (run_id,)).fetchone()
         return dict(row) if row is not None else None
 
     def has_blocking_run(

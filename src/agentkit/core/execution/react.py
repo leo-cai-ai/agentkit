@@ -274,9 +274,7 @@ class ReactStrategy:
                     deadline_at=deadline,
                     seen_actions=[],
                 ),
-                config={
-                    "configurable": {"thread_id": f"{context.run_id}:react:{skill_name}"}
-                },
+                config={"configurable": {"thread_id": f"{context.run_id}:react:{skill_name}"}},
             ),
         )
         result = final.get("result")

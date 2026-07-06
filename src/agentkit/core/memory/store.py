@@ -448,9 +448,7 @@ class ConversationStore:
                 ON messages(conversation_id, id)
                 """
             )
-            columns = {
-                str(row[1]) for row in conn.execute("PRAGMA table_info(messages)")
-            }
+            columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(messages)")}
             if "agent_id" not in columns:
                 conn.execute("ALTER TABLE messages ADD COLUMN agent_id TEXT")
             conn.execute(

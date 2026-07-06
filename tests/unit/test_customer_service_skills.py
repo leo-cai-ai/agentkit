@@ -37,13 +37,9 @@ def test_customer_service_declares_four_governed_capabilities() -> None:
         "refund.apply",
     )
     assert catalog.capabilities["customer.answer"].execution.reasoning is ReasoningStrategy.DIRECT
+    assert catalog.capabilities["logistics.diagnose"].execution.reasoning is ReasoningStrategy.REACT
     assert (
-        catalog.capabilities["logistics.diagnose"].execution.reasoning
-        is ReasoningStrategy.REACT
-    )
-    assert (
-        catalog.capabilities["refund.apply"].execution.orchestration
-        is OrchestrationMode.WORKFLOW
+        catalog.capabilities["refund.apply"].execution.orchestration is OrchestrationMode.WORKFLOW
     )
     assert catalog.tools["commerce.order.get"].provider is ToolProvider.PYTHON
     assert catalog.tools["refund.submit"].risk is ToolRisk.SIDE_EFFECT
@@ -70,10 +66,7 @@ def test_customer_order_tool_and_refund_handler_compile() -> None:
 def test_hr_and_xhs_use_new_execution_and_context_policies() -> None:
     catalog = load_catalog(REPO_ROOT)
 
-    assert (
-        catalog.capabilities["candidate.rank"].execution.orchestration
-        is OrchestrationMode.BATCH
-    )
+    assert catalog.capabilities["candidate.rank"].execution.orchestration is OrchestrationMode.BATCH
     assert catalog.agents["xhs_growth"].context.rag.enabled is False
     assert (
         catalog.capabilities["xhs.growth.campaign"].execution.orchestration

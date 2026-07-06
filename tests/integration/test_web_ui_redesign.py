@@ -117,15 +117,10 @@ def test_chat_welcome_message_uses_shared_chinese_configuration(client) -> None:
     assert f"<p>{general_welcome}</p>" in html
     assert "function getChatWelcomeMessage" in js
     assert 'agentWelcomeTemplate.replace("{agent}", agentLabel(agentName))' in js
-    assert (
-        "function resetChatThread(greeting, labelOverride = getSelectedAgentLabel())"
-        in js
-    )
+    assert "function resetChatThread(greeting, labelOverride = getSelectedAgentLabel())" in js
     assert 'addChatMessage("assistant", greeting, labelOverride)' in js
     assert "resetChatThread(getChatWelcomeMessage())" in js
-    assert (
-        "resetChatThread(getChatWelcomeMessage(selected), agentLabel(selected))" in js
-    )
+    assert "resetChatThread(getChatWelcomeMessage(selected), agentLabel(selected))" in js
     assert "New conversation started. How can I help?" not in js
     assert "How can I help?" not in js
 
@@ -210,7 +205,7 @@ def test_chat_has_conversation_recovery_and_two_stage_delete_controls(client) ->
     assert "正在重新运行上一次请求，请稍候。" in js
     assert "重新运行完成" not in js
     assert "重新运行未完成" not in js
-    assert 'card.dataset.outcome = outcome' in js
+    assert "card.dataset.outcome = outcome" in js
     assert 'const retryableFailure = outcome === "not_completed" &&' in js
     assert "Boolean(execution?.retryable)" in js
     assert 'const visible = outcome === "processing" || retryableFailure' in js
@@ -219,10 +214,7 @@ def test_chat_has_conversation_recovery_and_two_stage_delete_controls(client) ->
     assert 'querySelector("[data-conversation-state-delete]")' not in js
     assert 'showConversationNotice("正在重新执行原始请求…"' not in js
     assert "任务状态已更新" not in js
-    assert (
-        'setChatBusy(conversationOutcome(currentConversationExecution) === "processing")'
-        in js
-    )
+    assert 'setChatBusy(conversationOutcome(currentConversationExecution) === "processing")' in js
     assert "/terminate-and-delete" in js
     assert "requires_second_delete_confirmation" in js
     assert "任务正在运行，请等待完成后再删除" in js
@@ -242,7 +234,7 @@ def test_chat_has_conversation_recovery_and_two_stage_delete_controls(client) ->
 def test_history_preference_never_stores_conversation_content(client) -> None:
     js = client.get("/static/js/app.js").get_data(as_text=True)
 
-    assert 'agentkit:chat-history-collapsed' in js
+    assert "agentkit:chat-history-collapsed" in js
     assert "localStorage.setItem(HISTORY_COLLAPSED_KEY" in js
     assert 'localStorage.setItem("conversation' not in js
     assert 'localStorage.setItem("messages' not in js
@@ -270,7 +262,7 @@ def test_chat_composer_starts_multiline_and_keeps_shift_enter_newlines(client) -
     css = client.get("/static/css/pages.css").get_data(as_text=True)
     js = client.get("/static/js/app.js").get_data(as_text=True)
 
-    assert 'data-chat-input' in html
+    assert "data-chat-input" in html
     assert 'rows="3"' in html
     assert "min-block-size: 6rem;" in css
     assert 'if (event.key !== "Enter" || event.shiftKey) return;' in js

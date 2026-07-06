@@ -148,10 +148,7 @@ class ContextInvocationService:
             rendered = self._assembler.render(request)
             if parse_json and rendered.output_schema is not None:
                 rendered = self._inject_json_schema(request, rendered)
-            if (
-                self._debug_sampler is not None
-                and definition.model.audit.record_rendered_content
-            ):
+            if self._debug_sampler is not None and definition.model.audit.record_rendered_content:
                 self._debug_sampler.add(
                     context_id=request.context_id,
                     system=rendered.system,
@@ -203,8 +200,7 @@ class ContextInvocationService:
         definition = self._assembler.registry.get(request.context_id)
         effective_limit = min(
             definition.model.limits.max_input_tokens,
-            request.global_token_limit
-            - definition.model.limits.response_reserve_tokens,
+            request.global_token_limit - definition.model.limits.response_reserve_tokens,
         )
         if estimated_input_tokens > effective_limit:
             raise ContextTooLargeError(

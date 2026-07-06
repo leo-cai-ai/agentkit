@@ -15,12 +15,8 @@ CASES = {
     "runtime.agent-route": {
         "request.message": "FAKE-REQUEST",
         "conversation.summary": "FAKE-SUMMARY",
-        "conversation.recent_messages": [
-            {"role": "user", "content": "FAKE-HISTORY"}
-        ],
-        "routing.candidate_agents": [
-            {"id": "FAKE-AGENT", "description": "FAKE-CAPABILITY"}
-        ],
+        "conversation.recent_messages": [{"role": "user", "content": "FAKE-HISTORY"}],
+        "routing.candidate_agents": [{"id": "FAKE-AGENT", "description": "FAKE-CAPABILITY"}],
     },
     "runtime.intent": {
         "request.message": "FAKE-REQUEST",
@@ -46,12 +42,8 @@ CASES = {
     "runtime.general-answer": {
         "request.message": "FAKE-REQUEST",
         "conversation.summary": "FAKE-SUMMARY",
-        "conversation.recent_messages": [
-            {"role": "user", "content": "FAKE-HISTORY"}
-        ],
-        "routing.candidate_agents": [
-            {"id": "FAKE-AGENT", "description": "FAKE-CAPABILITY"}
-        ],
+        "conversation.recent_messages": [{"role": "user", "content": "FAKE-HISTORY"}],
+        "routing.candidate_agents": [{"id": "FAKE-AGENT", "description": "FAKE-CAPABILITY"}],
         "routing.decision": {"action": "answer", "reason": "FAKE-REASON"},
     },
     "runtime.react-action": {
@@ -141,8 +133,6 @@ def test_agent_route_prompt_exposes_contract_and_confirmation_semantics() -> Non
 
 @pytest.mark.parametrize("context_id", sorted(CASES))
 def test_context_render_matches_reviewed_golden(context_id: str) -> None:
-    expected = json.loads(
-        (GOLDEN_ROOT / f"{context_id}.json").read_text(encoding="utf-8")
-    )
+    expected = json.loads((GOLDEN_ROOT / f"{context_id}.json").read_text(encoding="utf-8"))
 
     assert render_golden(context_id) == expected

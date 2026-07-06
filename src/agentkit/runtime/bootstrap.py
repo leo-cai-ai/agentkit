@@ -176,8 +176,7 @@ def build_runtime(
     )
     debug_sampler = (
         ContextDebugSampler()
-        if settings.runtime_environment == "development"
-        and settings.context_debug_rendered_enabled
+        if settings.runtime_environment == "development" and settings.context_debug_rendered_enabled
         else None
     )
     context_invoker = ContextInvocationService(

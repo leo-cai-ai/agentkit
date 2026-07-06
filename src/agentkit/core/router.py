@@ -163,10 +163,7 @@ class IntentRouter:
                 intent=intent,
                 candidates=(covering_workflow,),
                 primary=covering_workflow,
-                reason=(
-                    "组合 Workflow 收敛: "
-                    f"{', '.join(selected)} -> {covering_workflow}"
-                ),
+                reason=("组合 Workflow 收敛: " f"{', '.join(selected)} -> {covering_workflow}"),
                 confidence=_confidence(data.get("confidence")),
             )
         return self._resolution(
@@ -306,6 +303,7 @@ class IntentRouter:
             confidence=intent.confidence,
             complexity=ComplexityAssessment(confidence=intent.confidence),
         )
+
 
 def _confidence(value: Any) -> Literal["high", "medium", "low"]:
     normalized = str(value or "medium")

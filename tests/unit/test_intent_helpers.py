@@ -47,7 +47,7 @@ def test_extract_entities_accepts_reversed_curly_quotes_around_topic() -> None:
     request = TaskRequest(
         user_id="u",
         roles=[],
-        text='以”AI 改变生活“为主题，研究小红书 top 5 的文案，比较写一篇文案并发布。',
+        text="以”AI 改变生活“为主题，研究小红书 top 5 的文案，比较写一篇文案并发布。",
     )
 
     entities = extract_entities(request)
@@ -128,7 +128,7 @@ def test_intent_llm_empty_entity_does_not_erase_rule_extraction() -> None:
     request = TaskRequest(
         user_id="u1",
         roles=[],
-        text='以”AI 改变生活“为主题，研究小红书 top 5 并发布。',
+        text="以”AI 改变生活“为主题，研究小红书 top 5 并发布。",
     )
 
     result = decomposer.decompose(request, agent=_agent(), run_id="r1")

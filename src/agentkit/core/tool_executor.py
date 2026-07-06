@@ -139,9 +139,7 @@ class ToolExecutor:
         self._retry_base_delay = float(retry_base_delay)
         self._idempotency_store = idempotency_store
         self._idempotency_cache: dict[tuple[str, str], dict[str, Any]] = {}
-        self._backends = backends or ToolBackendRegistry(
-            {ToolProvider.PYTHON: PythonToolBackend()}
-        )
+        self._backends = backends or ToolBackendRegistry({ToolProvider.PYTHON: PythonToolBackend()})
         self._permissions = set(permissions or ())
         self._allowed_tools = None if allowed_tools is None else set(allowed_tools)
         self._tool_policy = tool_policy
@@ -154,9 +152,7 @@ class ToolExecutor:
         if idempotency_store is not None and idempotency_store.tenant_id != self._tenant_id:
             raise IdempotencyError("Idempotency store tenant does not match executor tenant")
         idem_key = args.get("_idempotency_key")
-        cache_key = (
-            (tool.name, str(idem_key)) if idempotency_store is None and idem_key else None
-        )
+        cache_key = (tool.name, str(idem_key)) if idempotency_store is None and idem_key else None
 
         if cache_key is not None and cache_key in self._idempotency_cache:
             self._record(run_id, "tool_call_finished", {"tool": tool.name, "cached": True})
@@ -197,9 +193,7 @@ class ToolExecutor:
                 return claim.result
             self._record(run_id, "idempotency_claimed", event_payload)
 
-        retryable = bool(tool.idempotent) or (
-            idempotency_store is None and idem_key is not None
-        )
+        retryable = bool(tool.idempotent) or (idempotency_store is None and idem_key is not None)
         attempts_allowed = (self._max_retries + 1) if retryable else 1
         timeout = tool.timeout_seconds if tool.timeout_seconds is not None else self._timeout
 
@@ -345,10 +339,7 @@ class ToolExecutor:
             raise ToolRiskError(f"只读策略不能调用 {tool.risk.value} Tool: {tool.name}")
         if self._tool_policy is ToolPolicy.GOVERNED and tool.risk is ToolRisk.SIDE_EFFECT:
             raise ToolRiskError(f"governed 策略不能直接执行副作用 Tool: {tool.name}")
-        if (
-            tool.risk is ToolRisk.SIDE_EFFECT
-            and tool.name not in self._approved_side_effects
-        ):
+        if tool.risk is ToolRisk.SIDE_EFFECT and tool.name not in self._approved_side_effects:
             raise ToolRiskError(f"副作用 Tool 尚未获得审批: {tool.name}")
         public_args = {key: value for key, value in args.items() if not key.startswith("_")}
         try:

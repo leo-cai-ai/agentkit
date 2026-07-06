@@ -43,8 +43,7 @@ def test_legacy_runtime_is_removed() -> None:
         "routing_hints",
     ]
     sources = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in (repo_root / "src" / "agentkit").rglob("*.py")
+        path.read_text(encoding="utf-8") for path in (repo_root / "src" / "agentkit").rglob("*.py")
     )
     for symbol in forbidden:
         assert symbol not in sources, symbol

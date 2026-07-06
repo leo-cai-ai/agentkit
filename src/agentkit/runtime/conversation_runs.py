@@ -65,9 +65,7 @@ class ConversationExecution:
             "reason": self.reason,
             "retryable": self.retryable,
             "reconciled": self.reconciled,
-            "requires_second_delete_confirmation": (
-                self.requires_second_delete_confirmation
-            ),
+            "requires_second_delete_confirmation": (self.requires_second_delete_confirmation),
         }
 
 
@@ -102,9 +100,7 @@ class ConversationRunStateResolver:
             return ConversationExecution(status="idle")
         root = max(roots, key=lambda run: float(run.get("started_at") or 0.0))
         root_id = str(root["run_id"])
-        children = [
-            run for run in runs if str(run.get("parent_run_id") or "") == root_id
-        ]
+        children = [run for run in runs if str(run.get("parent_run_id") or "") == root_id]
         return self._resolve_latest(root, children)
 
     def _resolve_latest(
@@ -131,9 +127,7 @@ class ConversationRunStateResolver:
         if root_status in TERMINAL_RUN_STATUSES and active_children:
             child_statuses = {str(child.get("status") or "running") for child in active_children}
             status = (
-                "waiting_for_approval"
-                if "waiting_for_approval" in child_statuses
-                else "running"
+                "waiting_for_approval" if "waiting_for_approval" in child_statuses else "running"
             )
             return self._state(
                 root,
@@ -152,10 +146,7 @@ class ConversationRunStateResolver:
                     reconciled=reconciled,
                     non_terminal=non_terminal,
                 )
-            reason = (
-                "子任务已经结束，但父任务未完成结果保存，"
-                "系统已将任务结束为失败状态。"
-            )
+            reason = "子任务已经结束，但父任务未完成结果保存，" "系统已将任务结束为失败状态。"
             return self._reconcile(root, events, reason=reason)
 
         if root_status == "running":
@@ -203,9 +194,7 @@ class ConversationRunStateResolver:
         reason: str,
     ) -> ConversationExecution:
         root_id = str(root["run_id"])
-        already_reconciled = any(
-            event.get("type") == "run_reconciled" for event in events
-        )
+        already_reconciled = any(event.get("type") == "run_reconciled" for event in events)
         if not already_reconciled:
             self._audit.record(
                 root_id,

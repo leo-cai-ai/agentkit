@@ -50,9 +50,7 @@ def _contrast_ratio(foreground: str, background: str) -> float:
     def luminance(value: str) -> float:
         channels = [int(value[index : index + 2], 16) / 255 for index in (1, 3, 5)]
         linear = [
-            channel / 12.92
-            if channel <= 0.03928
-            else ((channel + 0.055) / 1.055) ** 2.4
+            channel / 12.92 if channel <= 0.03928 else ((channel + 0.055) / 1.055) ** 2.4
             for channel in channels
         ]
         return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
@@ -253,7 +251,7 @@ def test_authenticated_shell_preserves_structure_and_accessibility(client):
         'aria-controls="conversation-history"',
         'id="conversation-history"',
         'id="agent-directory"',
-        'data-agent-mention-menu',
+        "data-agent-mention-menu",
         'class="chat-thread ak-chat-thread"',
         'role="log"',
         'class="chat-input-row ak-chat-composer"',
@@ -310,7 +308,7 @@ def test_agent_network_uses_live_registry_topology(client):
         "function renderConversationHistory()",
         'event.key === "ArrowDown"',
         'event.key === "Home"',
-        'card.dataset.state = label',
+        "card.dataset.state = label",
         'chatForm.querySelector("[data-chat-input]")',
         "event.isComposing || isComposing",
         "event.shiftKey",
@@ -342,7 +340,7 @@ def test_governance_groups_metadata_into_progressive_tabs(client):
         assert f'href="#{panel_id}"' in html
         assert f'id="{panel_id}"' in html
     assert html.count("data-tab-panel") == 5
-    assert 'data-tab-panel hidden' not in html
+    assert "data-tab-panel hidden" not in html
     assert "data-governance-search" in html
     assert "data-governance-row" in html
     assert "Context Pack" in html

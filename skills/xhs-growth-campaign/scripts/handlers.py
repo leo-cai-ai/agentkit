@@ -141,6 +141,7 @@ def run_growth_campaign(ctx: SkillContext, args: dict) -> dict:
         allowed_tools=[],
         artifact_kind="xhs.copy.generate",
     )
+
     def review_candidate(article: dict, attempt: int) -> ReviewDecision:
         reviewed = runner.run_step(
             step_name=REVIEW_SKILL,
@@ -263,9 +264,7 @@ def run_growth_campaign(ctx: SkillContext, args: dict) -> dict:
         "strategy": strategy.output["strategy"],
         "article": article,
         "review": review,
-        "review_history": [
-            dict(decision.metadata["review"]) for decision in review_result.history
-        ],
+        "review_history": [dict(decision.metadata["review"]) for decision in review_result.history],
         "revision_count": review_result.revision_count,
         "publish": publish.output["publish"],
         "metrics": metrics_output,
@@ -657,9 +656,7 @@ def review_copy(ctx: SkillContext, args: dict) -> dict:
         reason = str(llm_review.get("reason") or "")
     if not reason and status == "failed":
         reason = "; ".join(
-            str(item.get("message") or "")
-            for item in findings
-            if item.get("severity") == "error"
+            str(item.get("message") or "") for item in findings if item.get("severity") == "error"
         )
     return {
         "summary": f"Copy review status: {status}.",
@@ -1094,9 +1091,9 @@ def _maybe_llm_article(
                         "model": str(item.get("model") or ""),
                         "confidence": item.get("confidence"),
                     }
-                    for item in _normalize_media_understanding(
-                        case.get("media_understanding")
-                    )["evidence"][:10]
+                    for item in _normalize_media_understanding(case.get("media_understanding"))[
+                        "evidence"
+                    ][:10]
                     if isinstance(item, dict) and str(item.get("text") or "").strip()
                 ],
                 "score": _case_engagement_score(case),
@@ -1124,9 +1121,7 @@ def _maybe_llm_article(
             global_token_limit=_context_token_limit(ctx),
         )
     ).value
-    title, body = _parse_generated_article(
-        str(generated), fallback_title=str(article["title"])
-    )
+    title, body = _parse_generated_article(str(generated), fallback_title=str(article["title"]))
 
     enriched = dict(article)
     enriched["title"] = title
@@ -1184,13 +1179,9 @@ def compact_cases(cases: list[dict]) -> list[dict]:
             "detail_attempted": bool(case.get("detail_attempted")),
             "detail_skipped_reason": case.get("detail_skipped_reason", ""),
             "media_assets": [
-                dict(item)
-                for item in case.get("media_assets", [])
-                if isinstance(item, dict)
+                dict(item) for item in case.get("media_assets", []) if isinstance(item, dict)
             ],
-            "media_understanding": _normalize_media_understanding(
-                case.get("media_understanding")
-            ),
+            "media_understanding": _normalize_media_understanding(case.get("media_understanding")),
         }
         for case in cases
     ]

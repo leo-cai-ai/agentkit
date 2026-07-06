@@ -37,8 +37,7 @@ def test_builtin_contexts_never_enable_rendered_content_audit() -> None:
     registry = ContextRegistry(root=Path("contexts"), tenant_selector="company_alpha")
 
     assert all(
-        not registry.get(context_id).model.audit.record_rendered_content
-        for context_id in EXPECTED
+        not registry.get(context_id).model.audit.record_rendered_content for context_id in EXPECTED
     )
 
 
@@ -46,10 +45,6 @@ def test_business_contexts_use_unambiguous_directory() -> None:
     assert Path("contexts/business").is_dir()
     assert not Path("contexts/skills").exists()
     registry = ContextRegistry(root=Path("contexts"), tenant_selector="company_alpha")
-    business = [
-        item for item in registry.manifest() if str(item["id"]).startswith("skill.")
-    ]
+    business = [item for item in registry.manifest() if str(item["id"]).startswith("skill.")]
     assert len(business) == 4
-    assert all(
-        registry.get(str(item["id"])).model.owner_skill for item in business
-    )
+    assert all(registry.get(str(item["id"])).model.owner_skill for item in business)

@@ -15,9 +15,7 @@ def test_delegated_context_shares_general_history_but_uses_target_memory_and_rag
         memory_reader=memory,
         knowledge_service=knowledge,
     )
-    conversation_id = store.create_conversation(
-        tenant_id="t1", agent="general_agent", user_id="u1"
-    )
+    conversation_id = store.create_conversation(tenant_id="t1", agent="general_agent", user_id="u1")
     store.add_message(
         conversation_id=conversation_id,
         role="user",

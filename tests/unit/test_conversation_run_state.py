@@ -54,9 +54,7 @@ def _child(audit: InMemoryAuditLog, parent_id: str) -> str:
     )
 
 
-def _resolve(
-    audit: InMemoryAuditLog, *, clock=lambda: 1_000.0
-) -> ConversationRunStateResolver:
+def _resolve(audit: InMemoryAuditLog, *, clock=lambda: 1_000.0) -> ConversationRunStateResolver:
     return ConversationRunStateResolver(
         audit=audit,
         timeout_seconds=3_600,
@@ -113,10 +111,7 @@ def test_waiting_parent_with_failed_child_is_reconciled_once() -> None:
     assert first.requires_second_delete_confirmation is True
     assert first.non_terminal_run_ids == ()
     assert audit.get_run(parent_id)["status"] == "failed"
-    assert sum(
-        event["type"] == "run_reconciled"
-        for event in audit.events_for(parent_id)
-    ) == 1
+    assert sum(event["type"] == "run_reconciled" for event in audit.events_for(parent_id)) == 1
 
 
 def test_waiting_parent_with_active_child_stays_waiting() -> None:

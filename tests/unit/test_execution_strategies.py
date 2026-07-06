@@ -69,9 +69,7 @@ def _skill(
         input_schema={"type": "object"},
         output_schema={"type": "object"},
         permissions=[],
-        execution=SkillExecutionPolicy(
-            ReasoningStrategy.DIRECT, orchestration, tool_policy
-        ),
+        execution=SkillExecutionPolicy(ReasoningStrategy.DIRECT, orchestration, tool_policy),
         autonomy=AutonomyLimits(),
         tools=[],
         handler=handler,
@@ -223,9 +221,7 @@ def test_batch_shards_and_merges() -> None:
     )
     request = StrategyRequest("批处理", {"ids": [1, 2, 3]}, _resolution("demo.batch"))
 
-    result = BatchStrategy().execute(
-        context=_context(skill, batch_size=2), request=request
-    )
+    result = BatchStrategy().execute(context=_context(skill, batch_size=2), request=request)
 
     assert result.output == {"results": [{"ids": [1, 2]}, {"ids": [3]}]}
     assert result.metrics == {"shards": 2, "items": 3}
@@ -270,9 +266,7 @@ def test_parallel_executes_independent_read_only_skills() -> None:
         _resolution("demo.one", "demo.two"),
     )
 
-    result = ParallelStrategy().execute(
-        context=_context(first, second), request=request
-    )
+    result = ParallelStrategy().execute(context=_context(first, second), request=request)
 
     assert result.status == "completed"
     assert result.output == {"demo.one": {"one": 1}, "demo.two": {"two": 2}}

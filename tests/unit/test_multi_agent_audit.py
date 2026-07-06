@@ -54,9 +54,7 @@ def test_sqlite_audit_can_find_paused_run_by_thread(tmp_path) -> None:
     )
     audit.record(parent_id, "run_resumed", {"thread_id": "thread-a"})
 
-    found = audit.run_for_thread(
-        "thread-a", tenant_id="tenant-a", user_id="user-a"
-    )
+    found = audit.run_for_thread("thread-a", tenant_id="tenant-a", user_id="user-a")
     assert found is not None
     assert found["run_id"] == run_id
 
@@ -92,23 +90,32 @@ def test_sqlite_audit_reports_only_blocking_runs_for_conversation(tmp_path) -> N
         conversation_id="conversation-a",
     )
 
-    assert audit.has_blocking_run(
-        conversation_id="conversation-a",
-        tenant_id="tenant-a",
-        user_id="user-a",
-    ) is True
-    assert audit.has_blocking_run(
-        conversation_id="conversation-a",
-        tenant_id="tenant-a",
-        user_id="other",
-    ) is False
+    assert (
+        audit.has_blocking_run(
+            conversation_id="conversation-a",
+            tenant_id="tenant-a",
+            user_id="user-a",
+        )
+        is True
+    )
+    assert (
+        audit.has_blocking_run(
+            conversation_id="conversation-a",
+            tenant_id="tenant-a",
+            user_id="other",
+        )
+        is False
+    )
 
     audit.record(run_id, "run_finished", {"status": "completed"})
-    assert audit.has_blocking_run(
-        conversation_id="conversation-a",
-        tenant_id="tenant-a",
-        user_id="user-a",
-    ) is False
+    assert (
+        audit.has_blocking_run(
+            conversation_id="conversation-a",
+            tenant_id="tenant-a",
+            user_id="user-a",
+        )
+        is False
+    )
 
 
 def test_in_memory_audit_counts_waiting_child_run_as_blocking() -> None:
@@ -129,11 +136,14 @@ def test_in_memory_audit_counts_waiting_child_run_as_blocking() -> None:
     audit.record(parent_id, "run_finished", {"status": "completed"})
     audit.record(child_id, "run_paused", {"status": "waiting_for_approval"})
 
-    assert audit.has_blocking_run(
-        conversation_id="conversation-a",
-        tenant_id="tenant-a",
-        user_id="user-a",
-    ) is True
+    assert (
+        audit.has_blocking_run(
+            conversation_id="conversation-a",
+            tenant_id="tenant-a",
+            user_id="user-a",
+        )
+        is True
+    )
 
 
 def test_postgres_audit_scopes_blocking_run_query(monkeypatch) -> None:
@@ -154,11 +164,14 @@ def test_postgres_audit_scopes_blocking_run_query(monkeypatch) -> None:
     connection = _Connection()
     monkeypatch.setattr(audit, "_connect", lambda: nullcontext(connection))
 
-    assert audit.has_blocking_run(
-        conversation_id="conversation-a",
-        tenant_id="tenant-a",
-        user_id="user-a",
-    ) is True
+    assert (
+        audit.has_blocking_run(
+            conversation_id="conversation-a",
+            tenant_id="tenant-a",
+            user_id="user-a",
+        )
+        is True
+    )
     sql, params = calls[0]
     assert "conversation_id = %s" in sql
     assert "tenant_id = %s" in sql
@@ -180,9 +193,7 @@ def test_postgres_audit_scopes_blocking_run_query(monkeypatch) -> None:
         lambda tmp_path: SQLiteAuditLog(tmp_path / "audit.sqlite"),
     ],
 )
-def test_audit_lists_scoped_conversation_runs(
-    factory, tmp_path
-) -> None:
+def test_audit_lists_scoped_conversation_runs(factory, tmp_path) -> None:
     audit = factory(tmp_path)
     parent_id = audit.start_run(
         tenant_id="tenant-a",

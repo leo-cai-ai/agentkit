@@ -20,6 +20,7 @@ ALLOWED_TARGET_KINDS = {"business_skill", "platform_handler", "none"}
 ALLOWED_CONFIDENCE = {"high", "medium", "low"}
 PLATFORM_HANDLERS = {"time", "identity", "capability", "default"}
 
+
 class IntentDecomposer:
     """使用确定性实体提取辅助一次结构化 LLM 判断。"""
 
@@ -303,8 +304,20 @@ def is_capability_question(text: str) -> bool:
 
 def looks_like_business_task(*, text: str, entities: dict[str, Any]) -> bool:
     terms = (
-        "rank", "shortlist", "screen", "evaluate", "compare", "recommend",
-        "排名", "筛选", "推荐", "评估", "订单", "物流", "退款", "小红书",
+        "rank",
+        "shortlist",
+        "screen",
+        "evaluate",
+        "compare",
+        "recommend",
+        "排名",
+        "筛选",
+        "推荐",
+        "评估",
+        "订单",
+        "物流",
+        "退款",
+        "小红书",
     )
     return bool(entities) or any(term in text for term in terms)
 

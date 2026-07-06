@@ -38,9 +38,7 @@ def test_sqlite_migrations_bootstrap_and_record_version(tmp_path) -> None:
                 """
             )
         ]
-        versions = conn.execute(
-            "SELECT version FROM schema_migrations ORDER BY version"
-        ).fetchall()
+        versions = conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()
 
     assert table_names == [
         "audit_events",
@@ -51,9 +49,7 @@ def test_sqlite_migrations_bootstrap_and_record_version(tmp_path) -> None:
     ]
     assert versions == [(1,), (2,), (3,)]
     with sqlite3.connect(db_path) as conn:
-        run_columns = {
-            row[1] for row in conn.execute("PRAGMA table_info(task_runs)").fetchall()
-        }
+        run_columns = {row[1] for row in conn.execute("PRAGMA table_info(task_runs)").fetchall()}
     assert {"agent_id", "parent_run_id", "conversation_id"} <= run_columns
 
 
@@ -92,9 +88,7 @@ def test_sqlite_migrations_record_applied_timestamp(tmp_path) -> None:
     run_sqlite_migrations(db_path)
 
     with sqlite3.connect(db_path) as conn:
-        row = conn.execute(
-            "SELECT version, applied_at FROM schema_migrations"
-        ).fetchone()
+        row = conn.execute("SELECT version, applied_at FROM schema_migrations").fetchone()
         columns = conn.execute("PRAGMA table_info(schema_migrations)").fetchall()
 
     assert row is not None
@@ -114,8 +108,7 @@ def test_sqlite_migrations_create_workflow_artifact_schema(tmp_path) -> None:
     with sqlite3.connect(db_path) as conn:
         columns = conn.execute("PRAGMA table_info(workflow_artifacts)").fetchall()
         index_columns = [
-            row[2]
-            for row in conn.execute("PRAGMA index_info(idx_workflow_artifacts_scope)")
+            row[2] for row in conn.execute("PRAGMA index_info(idx_workflow_artifacts_scope)")
         ]
         foreign_keys = conn.execute("PRAGMA foreign_key_list(workflow_artifacts)").fetchall()
 
@@ -133,9 +126,7 @@ def test_sqlite_migrations_create_workflow_artifact_schema(tmp_path) -> None:
     ]
     assert [(row[1], row[5]) for row in columns if row[5]] == [("artifact_id", 1)]
     assert index_columns == ["tenant_id", "run_id", "created_at", "artifact_id"]
-    assert [(row[2], row[3], row[4]) for row in foreign_keys] == [
-        ("task_runs", "run_id", "run_id")
-    ]
+    assert [(row[2], row[3], row[4]) for row in foreign_keys] == [("task_runs", "run_id", "run_id")]
     assert all(
         row[3] == 1
         for row in columns
@@ -301,14 +292,11 @@ def test_sqlite_v2_adopts_legacy_artifacts_without_losing_valid_rows(tmp_path) -
         ).fetchall()
         foreign_keys = conn.execute("PRAGMA foreign_key_list(workflow_artifacts)").fetchall()
         index_columns = [
-            row[2]
-            for row in conn.execute("PRAGMA index_info(idx_workflow_artifacts_scope)")
+            row[2] for row in conn.execute("PRAGMA index_info(idx_workflow_artifacts_scope)")
         ]
 
     assert preserved == [("artifact-valid", "run-valid", '{"value":1}')]
-    assert [(row[2], row[3], row[4]) for row in foreign_keys] == [
-        ("task_runs", "run_id", "run_id")
-    ]
+    assert [(row[2], row[3], row[4]) for row in foreign_keys] == [("task_runs", "run_id", "run_id")]
     assert index_columns == ["tenant_id", "run_id", "created_at", "artifact_id"]
 
 
@@ -342,9 +330,9 @@ def test_sqlite_v2_rejects_orphan_legacy_artifacts_without_deleting_them(tmp_pat
         run_sqlite_migrations(db_path)
 
     with sqlite3.connect(db_path) as conn:
-        assert conn.execute(
-            "SELECT artifact_id, run_id FROM workflow_artifacts"
-        ).fetchall() == [("artifact-orphan", "run-missing")]
+        assert conn.execute("SELECT artifact_id, run_id FROM workflow_artifacts").fetchall() == [
+            ("artifact-orphan", "run-missing")
+        ]
         assert conn.execute("SELECT version FROM schema_migrations").fetchall() == [(1,)]
 
 

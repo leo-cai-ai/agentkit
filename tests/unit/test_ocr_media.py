@@ -75,9 +75,7 @@ def test_media_ocr_keeps_successful_evidence_when_one_asset_fails() -> None:
     assert [item.text for item in result.evidence] == ["text:good"]
     assert result.evidence[0].provider == "ollama"
     assert result.evidence[0].model == "glm-ocr:latest"
-    assert result.usage["failed_assets"] == [
-        {"asset_id": "bad", "reason": "fake_failure"}
-    ]
+    assert result.usage["failed_assets"] == [{"asset_id": "bad", "reason": "fake_failure"}]
 
 
 def test_media_ocr_fails_when_every_asset_fails() -> None:

@@ -37,6 +37,7 @@ class ConversationDeleteStore(Protocol):
 
     def delete_conversation(self, conversation_id: str) -> dict[str, int]: ...
 
+
 class RunDeletionAudit(Protocol):
     def record(self, run_id: str, event_type: str, payload: dict[str, Any]) -> None: ...
 

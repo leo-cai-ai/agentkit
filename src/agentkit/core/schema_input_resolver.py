@@ -105,9 +105,7 @@ class SchemaInputResolver:
         )
 
     @staticmethod
-    def _missing_required(
-        schema: dict[str, Any], arguments: dict[str, Any]
-    ) -> tuple[str, ...]:
+    def _missing_required(schema: dict[str, Any], arguments: dict[str, Any]) -> tuple[str, ...]:
         required = schema.get("required", [])
         if not isinstance(required, list):
             return ()
@@ -140,9 +138,7 @@ class SchemaInputResolver:
             raise SkillInputError(f"input for skill '{skill.name}' is invalid: {details}")
 
     @staticmethod
-    def _fallback_clarification(
-        schema: dict[str, Any], missing: tuple[str, ...]
-    ) -> str:
+    def _fallback_clarification(schema: dict[str, Any], missing: tuple[str, ...]) -> str:
         properties = schema.get("properties", {})
         labels: list[str] = []
         for name in missing:

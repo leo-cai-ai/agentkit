@@ -209,9 +209,7 @@ class XhsSearchAdapter:
         try:
             self._wait_for_results(page, timeout_ms=self._remaining_ms(deadline))
         except BrowserPageChanged:
-            _log.warning(
-                "小红书搜索结果首次加载超时，使用同一浏览器会话重新加载一次。"
-            )
+            _log.warning("小红书搜索结果首次加载超时，使用同一浏览器会话重新加载一次。")
             self._navigate(page, self.search_url(query), timeout_ms=timeout_ms)
             self._wait_for_results(page, timeout_ms=timeout_ms)
 
@@ -512,8 +510,7 @@ class PlaywrightXhsResearchProvider:
         for result in results:
             note = self._to_note(result, topic=topic)
             assets = tuple(
-                MediaAsset(**item)
-                for item in note["media_assets"][: self.max_media_assets]
+                MediaAsset(**item) for item in note["media_assets"][: self.max_media_assets]
             )
             try:
                 media_result = self.media_provider.analyze(
@@ -564,9 +561,7 @@ class PlaywrightXhsResearchProvider:
             "detail_enriched": bool(result.metadata.get("detail_enriched")),
             "detail_error": str(result.metadata.get("detail_error") or ""),
             "detail_attempted": bool(result.metadata.get("detail_attempted")),
-            "detail_skipped_reason": str(
-                result.metadata.get("detail_skipped_reason") or ""
-            ),
+            "detail_skipped_reason": str(result.metadata.get("detail_skipped_reason") or ""),
             "media_assets": media_assets,
             "topic": topic,
         }
@@ -603,12 +598,9 @@ def _media_assets_for_result(
     if limit <= 0:
         return []
     candidates: list[tuple[str, str]] = []
+    candidates.extend(("cover", url) for url in _safe_media_urls(result.metadata.get("cover_url")))
     candidates.extend(
-        ("cover", url) for url in _safe_media_urls(result.metadata.get("cover_url"))
-    )
-    candidates.extend(
-        ("detail", url)
-        for url in _safe_media_urls(result.metadata.get("detail_media_urls"))
+        ("detail", url) for url in _safe_media_urls(result.metadata.get("detail_media_urls"))
     )
     seen: set[str] = set()
     assets: list[dict[str, Any]] = []

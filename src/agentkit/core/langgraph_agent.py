@@ -191,9 +191,7 @@ class UnifiedAgentGraph:
                     "actual": self._context_invoker.manifest_hash,
                 },
             )
-            raise ContextHashMismatchError(
-                "审批恢复时 Context Manifest 已改变，请重新发起任务"
-            )
+            raise ContextHashMismatchError("审批恢复时 Context Manifest 已改变，请重新发起任务")
         approved = {str(item) for item in approved_skills}
         rejected = {str(item) for item in rejected_skills}
         if not approved and not rejected:
@@ -396,9 +394,7 @@ class UnifiedAgentGraph:
             )
         except CapabilityResolutionError as exc:
             return {
-                "result": StrategyResult(
-                    status="capability_denied", output={"reason": str(exc)}
-                )
+                "result": StrategyResult(status="capability_denied", output={"reason": str(exc)})
             }
         self._audit.record(
             state["run_id"],
@@ -461,9 +457,7 @@ class UnifiedAgentGraph:
     def _select_strategy(self, state: UnifiedAgentState) -> dict[str, Any]:
         if "result" in state:
             return {}
-        selection = self._selector.select(
-            agent=state["agent"], resolution=state["resolution"]
-        )
+        selection = self._selector.select(agent=state["agent"], resolution=state["resolution"])
         self._audit.record(
             state["run_id"],
             "strategy_selected",
@@ -514,9 +508,7 @@ class UnifiedAgentGraph:
         artifacts = self._artifact_store_factory(run_id)
         granted = _granted_permissions(self._tenant_config, request.roles)
         candidate_skills = [self._skills.get(name) for name in state["resolution"].candidate_skills]
-        allowed_tools = {
-            tool_name for skill in candidate_skills for tool_name in skill.tools
-        }
+        allowed_tools = {tool_name for skill in candidate_skills for tool_name in skill.tools}
         approved_skills = set(request.context.get("approved_skills", []))
         approved_tools = {
             tool_name
@@ -626,9 +618,7 @@ class UnifiedAgentGraph:
     def _review_output(self, state: UnifiedAgentState) -> dict[str, Any]:
         result = state.get("result")
         if result is not None:
-            self._audit.record(
-                state["run_id"], "output_reviewed", {"status": result.status}
-            )
+            self._audit.record(state["run_id"], "output_reviewed", {"status": result.status})
         return {}
 
     def _persist_turn(self, state: UnifiedAgentState) -> dict[str, Any]:
@@ -652,9 +642,7 @@ class UnifiedAgentGraph:
             assistant_message=json.dumps(result.output, ensure_ascii=False, default=str),
             run_id=state["run_id"],
             window_turns=state["agent"].context_policy.memory.window_turns,
-            retry_of_run_id=str(
-                state["request"].context.get("retry_of_run_id") or ""
-            ),
+            retry_of_run_id=str(state["request"].context.get("retry_of_run_id") or ""),
             outcome=conversation_outcome(result.status),
         )
         return {}
@@ -695,9 +683,11 @@ class UnifiedAgentGraph:
             )
         else:
             result = cast(StrategyResult, values.get("result"))
-        approval_governance = result.output.get("approval", {}) if snapshot.next else {
-            "skills": values.get("approval_required", [])
-        }
+        approval_governance = (
+            result.output.get("approval", {})
+            if snapshot.next
+            else {"skills": values.get("approval_required", [])}
+        )
         governance = {
             "strategy": selection.strategy.value if selection else "",
             "allowed_skills": list(agent.allowed_skills) if agent else [],

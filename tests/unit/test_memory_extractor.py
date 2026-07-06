@@ -32,9 +32,12 @@ def test_memory_extractor_failure_is_best_effort() -> None:
         tenant_selector="company_alpha",
     )
 
-    assert extractor.extract(
-        tenant_id="t1",
-        run_id="r1",
-        user_text="x",
-        assistant_text="y",
-    ) == []
+    assert (
+        extractor.extract(
+            tenant_id="t1",
+            run_id="r1",
+            user_text="x",
+            assistant_text="y",
+        )
+        == []
+    )

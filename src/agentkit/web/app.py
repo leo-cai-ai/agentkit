@@ -355,8 +355,10 @@ def _effective_user_id(
     principal: Principal | None = None,
 ) -> str:
     principal = principal if principal is not None else current_principal()
-    return principal.subject if principal.is_authenticated else str(
-        payload.get("user_id") or ui["default_user_id"]
+    return (
+        principal.subject
+        if principal.is_authenticated
+        else str(payload.get("user_id") or ui["default_user_id"])
     )
 
 
@@ -370,11 +372,7 @@ def _trusted_business_roles(
     principal = principal if principal is not None else current_principal()
     permission_map = tenant_config.get("role_permissions", {})
     known = set(permission_map) if isinstance(permission_map, dict) else set()
-    claimed = [
-        role
-        for role in _as_list(principal.claims.get("business_roles"))
-        if role in known
-    ]
+    claimed = [role for role in _as_list(principal.claims.get("business_roles")) if role in known]
     if claimed:
         return claimed, "principal.claims.business_roles"
     mapping = tenant_config.get("principal_business_roles", {})
@@ -698,18 +696,14 @@ def api_delete_conversation(conversation_id: str):
     except ConversationNotFoundError:
         return jsonify({"error": "会话不存在"}), 404
     except ConversationBusyError:
-        return jsonify(
-            {"error": "该会话仍有任务正在执行或等待审批，请先结束任务"}
-        ), 409
+        return jsonify({"error": "该会话仍有任务正在执行或等待审批，请先结束任务"}), 409
     except Exception:  # noqa: BLE001 - API 边界隐藏存储与向量后端内部细节
         app.logger.exception(
             "conversation deletion failed",
             extra={"conversation_id": conversation_id},
         )
         return jsonify({"error": "会话删除失败，请稍后重试"}), 503
-    return jsonify(
-        {"status": "deleted", "conversation_id": result.conversation_id}
-    )
+    return jsonify({"status": "deleted", "conversation_id": result.conversation_id})
 
 
 @app.post("/api/conversations/<conversation_id>/terminate-and-delete")
@@ -813,9 +807,7 @@ def _display_conversation_messages(
     for row in rows:
         item = dict(row)
         if item.get("role") == "assistant":
-            item["content"] = normalize_persisted_assistant_text(
-                str(item.get("content") or "")
-            )
+            item["content"] = normalize_persisted_assistant_text(str(item.get("content") or ""))
         displayed.append(item)
     return displayed
 
@@ -853,9 +845,7 @@ def api_registry():
                         (directory.get(agent.name) or {}).get("label")
                         or agent.name.replace("_", " ").title()
                     ),
-                    "aliases": list(
-                        (directory.get(agent.name) or {}).get("aliases") or []
-                    ),
+                    "aliases": list((directory.get(agent.name) or {}).get("aliases") or []),
                     "domain": agent.domain,
                     "description": agent.description,
                     "skills": agent.allowed_skills,
@@ -942,9 +932,7 @@ def get_agent_cards(runtime) -> list[dict[str, Any]]:
                     (directory.get(profile.name) or {}).get("label")
                     or profile.name.replace("_", " ").title()
                 ),
-                "aliases": list(
-                    (directory.get(profile.name) or {}).get("aliases") or []
-                ),
+                "aliases": list((directory.get(profile.name) or {}).get("aliases") or []),
                 "domain": profile.domain,
                 "mission": profile.description,
                 "status": "online",

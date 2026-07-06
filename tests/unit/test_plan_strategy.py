@@ -227,12 +227,7 @@ def test_plan_carries_child_consumption_into_next_step_budget() -> None:
 def test_plan_step_budget_error_reports_actual_and_limit() -> None:
     skills = [_skill(f"s{index}", lambda ctx, args: {}) for index in range(3)]
     model = FakePlanModel(
-        _plan(
-            *[
-                _step(f"step-{index}", skill.name)
-                for index, skill in enumerate(skills)
-            ]
-        )
+        _plan(*[_step(f"step-{index}", skill.name) for index, skill in enumerate(skills)])
     )
 
     result = _strategy(model).execute(

@@ -113,9 +113,7 @@ def test_react_selects_tools_until_final() -> None:
         ]
     )
 
-    result = ReactStrategy(model=model).execute(
-        context=_react_context(), request=_request()
-    )
+    result = ReactStrategy(model=model).execute(context=_react_context(), request=_request())
 
     assert result.status == "completed"
     assert result.output["answer"] == "结论"
@@ -187,9 +185,7 @@ def test_react_stops_when_deadline_expires() -> None:
     budget = AutonomyBudget(10, 10, 10, 1, 0, 100, 1)
     model = FakeActionModel([_tool_action("web.search", {"query": "one"}), _final("x")])
 
-    result = ReactStrategy(
-        model=model, clock=FakeClock([100.0, 100.0, 100.0, 101.1])
-    ).execute(
+    result = ReactStrategy(model=model, clock=FakeClock([100.0, 100.0, 100.0, 101.1])).execute(
         context=_react_context(budget=budget), request=_request()
     )
 
@@ -199,8 +195,6 @@ def test_react_stops_when_deadline_expires() -> None:
 def test_react_rejects_tool_outside_skill_whitelist() -> None:
     model = FakeActionModel([_tool_action("unknown.tool", {})])
 
-    result = ReactStrategy(model=model).execute(
-        context=_react_context(), request=_request()
-    )
+    result = ReactStrategy(model=model).execute(context=_react_context(), request=_request())
 
     assert result.status == "strategy_rejected"

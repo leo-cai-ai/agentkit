@@ -161,9 +161,7 @@ def test_ocr_check_reports_safe_provider_error(monkeypatch, tmp_path, capsys) ->
     assert "secret-image" not in stderr
 
 
-def test_init_db_runs_sqlite_migrations_for_selected_tenant(
-    monkeypatch, tmp_path, capsys
-) -> None:
+def test_init_db_runs_sqlite_migrations_for_selected_tenant(monkeypatch, tmp_path, capsys) -> None:
     data_dir = tmp_path / "data"
     settings = SimpleNamespace(storage_backend="sqlite", vector_store_backend="sqlite")
     migration_call: dict[str, object] = {}
@@ -210,9 +208,7 @@ def test_init_db_fails_when_runtime_migrations_raise(monkeypatch, tmp_path, caps
     assert "[FAIL] could not apply runtime migrations: migration failure" in capsys.readouterr().err
 
 
-def test_init_db_runs_postgres_migrations_before_schema_readiness(
-    monkeypatch, tmp_path
-) -> None:
+def test_init_db_runs_postgres_migrations_before_schema_readiness(monkeypatch, tmp_path) -> None:
     settings = SimpleNamespace(storage_backend="postgres", vector_store_backend="sqlite")
     events: list[str] = []
 
