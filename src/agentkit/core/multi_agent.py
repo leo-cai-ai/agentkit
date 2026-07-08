@@ -19,6 +19,7 @@ from agentkit.runtime.conversation_projection_models import (
 from .audit import TERMINAL_RUN_STATUSES
 from .context.models import ContextRenderRequest
 from .contracts import TaskRequest, TaskResponse
+from .memory.store import ConversationConflictError
 from .registry import AgentRegistry
 from .response_text import format_task_output_text
 
@@ -894,21 +895,31 @@ class MultiAgentCoordinator:
             tenant_id=self._tenant_id,
             user_id=user_id,
         )
+        active: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
         for turn in timeline.turns:
             for attempt in turn["attempts"]:
-                if any(action.get("thread_id") == thread_id for action in attempt["actions"]):
-                    action = next(
-                        item for item in attempt["actions"] if item.get("thread_id") == thread_id
-                    )
-                    return (
-                        self._projection.resolve_accepted(
-                            conversation_id=conversation_id,
-                            turn_id=str(turn["id"]),
-                            attempt_id=str(attempt["id"]),
-                        ),
-                        str(action["id"]),
-                    )
-        raise KeyError(f"审批线程缺少 durable Action: {thread_id}")
+                for action in attempt["actions"]:
+                    if action.get("thread_id") == thread_id and action.get("status") in {
+                        "pending",
+                        "approved",
+                        "rejected",
+                    }:
+                        active.append((turn, attempt, action))
+        if not active:
+            raise KeyError(f"审批线程 inactive: {thread_id}")
+        if len(active) > 1:
+            raise ConversationConflictError(
+                f"approval thread has multiple active actions: {thread_id}"
+            )
+        turn, attempt, action = active[0]
+        return (
+            self._projection.resolve_accepted(
+                conversation_id=conversation_id,
+                turn_id=str(turn["id"]),
+                attempt_id=str(attempt["id"]),
+            ),
+            str(action["id"]),
+        )
 
     def _route_event(self, run_id: str) -> dict[str, Any]:
         for event in self._audit.events_for(run_id):

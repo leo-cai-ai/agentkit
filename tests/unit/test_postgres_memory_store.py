@@ -736,6 +736,7 @@ def test_postgres_rollover_approval_locks_old_action_and_creates_new_pending_act
                         "pending",
                         "resuming",
                         None,
+                        100.0,
                     )
                 )
             if "ORDER BY id DESC LIMIT 1" in sql:
@@ -769,6 +770,10 @@ def test_postgres_rollover_approval_locks_old_action_and_creates_new_pending_act
     assert any("UPDATE conversation_actions" in sql for sql, _ in calls)
     assert any("decision_context_json" in sql and "approved" in params for sql, params in calls)
     assert any("INSERT INTO conversation_actions" in sql for sql, _ in calls)
+    action_insert = next(
+        params for sql, params in calls if "INSERT INTO conversation_actions" in sql
+    )
+    assert action_insert[-1] == 100.001
     assert any("awaiting_user_decision" in repr(params) for _, params in calls)
     assert all("?" not in sql for sql, _ in calls)
 

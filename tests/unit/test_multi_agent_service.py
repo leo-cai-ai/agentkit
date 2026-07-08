@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from uuid import UUID
 
 import pytest
 
 from agentkit.core.audit import InMemoryAuditLog
 from agentkit.core.context.errors import ContextOutputInvalidError
 from agentkit.core.contracts import TaskRequest, TaskResponse
-from agentkit.core.memory.store import ConversationStore
+from agentkit.core.memory.store import ConversationConflictError, ConversationStore
 from agentkit.core.multi_agent import AgentDirectory, MultiAgentCoordinator
 from agentkit.core.registry import AgentRegistry
 from agentkit.runtime.conversation_context import AgentConversationContext
@@ -532,6 +533,156 @@ def test_resume_waiting_again_atomically_rolls_over_durable_approval(tmp_path) -
     assert len(pending) == 1
     assert pending[0]["preview"]["title"] == "第二版"
     assert attempt["messages"][-1]["content"]
+
+
+def test_resume_same_thread_after_rollover_completes_active_action(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("agentkit.core.memory.store.time.time", lambda: 100.0)
+    service, gateway, audit, _, _, projection = _projection_service(
+        tmp_path,
+        child_status="waiting_for_approval",
+        child_output={"approval": {"skills": ["draft.review"], "preview": {"revision": 1}}},
+    )
+    request = _prepared_request(
+        projection,
+        message="@招聘 发布录用通知",
+        client_message_id="client-same-thread-resume",
+    )
+    first = service.handle(request)
+    child_run = first.governance["delegation"]["child_run_id"]
+    monkeypatch.setattr(
+        "agentkit.core.memory.store.uuid.uuid4",
+        lambda: UUID("ffffffff-ffff-ffff-ffff-ffffffffffff"),
+    )
+    resume_count = 0
+
+    def resume_same_thread(thread_id: str, **kwargs) -> TaskResponse:
+        nonlocal resume_count
+        resume_count += 1
+        audit.record(child_run, "run_resumed", {"thread_id": thread_id})
+        if resume_count == 1:
+            audit.record(
+                child_run,
+                "run_paused",
+                {"status": "waiting_for_approval", "thread_id": thread_id},
+            )
+            return TaskResponse(
+                status="waiting_for_approval",
+                output={
+                    "approval": {
+                        "skills": ["publish.review"],
+                        "preview": {"revision": 2},
+                    }
+                },
+                run_id=child_run,
+                thread_id=thread_id,
+                agent="hr_recruiter",
+                strategy="workflow",
+                conversation_id="",
+                governance={"approval": {"skills": ["publish.review"]}},
+                audit_events=audit.events_for(child_run),
+            )
+        audit.record(child_run, "run_finished", {"status": "completed"})
+        return TaskResponse(
+            status="completed",
+            output={"message": "第二次审批后完成"},
+            run_id=child_run,
+            thread_id=thread_id,
+            agent="hr_recruiter",
+            strategy="workflow",
+            conversation_id="",
+            governance={"strategy": "workflow"},
+            audit_events=audit.events_for(child_run),
+        )
+
+    gateway.resume = resume_same_thread
+    second = service.resume(
+        first.thread_id,
+        user_id="u1",
+        roles=["recruiter"],
+        approved_skills=["draft.review"],
+    )
+    terminal = service.resume(
+        second.thread_id,
+        user_id="u1",
+        roles=["recruiter"],
+        approved_skills=["publish.review"],
+    )
+
+    turn = _timeline(projection, terminal.conversation_id).turns[0]
+    attempt = turn["attempts"][0]
+    assert terminal.status == "completed"
+    assert [action["status"] for action in attempt["actions"]] == ["completed", "completed"]
+    assert attempt["status"] == "succeeded"
+    assert turn["canonical_attempt_id"] == attempt["id"]
+    assert turn["active_attempt_id"] is None
+
+
+def test_accepted_for_thread_rejects_multiple_active_actions(tmp_path) -> None:
+    service, _, _, _, _, projection = _projection_service(
+        tmp_path,
+        child_status="waiting_for_approval",
+        child_output={"approval": {"skills": ["draft.review"], "preview": {}}},
+    )
+    request = _prepared_request(
+        projection,
+        message="@招聘 发布录用通知",
+        client_message_id="client-conflicting-actions",
+    )
+    waiting = service.handle(request)
+    timeline = _timeline(projection, waiting.conversation_id)
+    action = timeline.turns[0]["attempts"][0]["actions"][0]
+    store = projection._store
+    with store._connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO conversation_actions (
+                id, conversation_id, turn_id, attempt_id, status, thread_id,
+                skills_json, preview_json, created_at
+            ) SELECT ?, conversation_id, turn_id, attempt_id, 'pending', thread_id,
+                     skills_json, preview_json, created_at + 0.001
+              FROM conversation_actions WHERE id = ?
+            """,
+            ("duplicate-active-action", action["id"]),
+        )
+
+    with pytest.raises(ConversationConflictError, match="multiple active"):
+        service._accepted_for_thread(
+            conversation_id=waiting.conversation_id,
+            user_id="u1",
+            thread_id=waiting.thread_id,
+        )
+
+
+def test_accepted_for_thread_reports_inactive_action(tmp_path) -> None:
+    service, _, _, _, _, projection = _projection_service(
+        tmp_path,
+        child_status="waiting_for_approval",
+        child_output={"approval": {"skills": ["draft.review"], "preview": {}}},
+    )
+    request = _prepared_request(
+        projection,
+        message="@招聘 发布录用通知",
+        client_message_id="client-inactive-action",
+    )
+    waiting = service.handle(request)
+    action_id = _timeline(projection, waiting.conversation_id).turns[0]["attempts"][0]["actions"][
+        0
+    ]["id"]
+    projection.fail_approval(
+        action_id,
+        error_code="expired",
+        error_summary="审批已失效",
+    )
+
+    with pytest.raises(KeyError, match="inactive"):
+        service._accepted_for_thread(
+            conversation_id=waiting.conversation_id,
+            user_id="u1",
+            thread_id=waiting.thread_id,
+        )
 
 
 def test_resume_failure_fails_existing_attempt(tmp_path) -> None:

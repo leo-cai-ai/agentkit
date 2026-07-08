@@ -606,6 +606,47 @@ def test_rollover_approval_rolls_back_old_action_when_new_action_insert_fails(
     assert store.get_attempt(accepted.attempt_id)["status"] == "waiting_for_approval"
 
 
+def test_rollover_approval_action_order_strictly_increases_with_frozen_clock(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("agentkit.core.memory.store.time.time", lambda: 100.0)
+    store, accepted = accepted_store(tmp_path)
+    store.bind_attempt_run(accepted.attempt_id, run_id="run-1", agent_id="xhs_growth")
+    _, current = store.persist_approval_request(
+        conversation_id=accepted.conversation_id,
+        turn_id=accepted.turn_id,
+        attempt_id=accepted.attempt_id,
+        agent_id="xhs_growth",
+        visible_content="第一版审核稿",
+        thread_id="same-thread",
+        skills=["draft.review"],
+        preview={"title": "第一版"},
+        preview_artifact_id=None,
+    )
+    action_ids = [current.id]
+
+    for revision in (2, 3):
+        _, current = store.rollover_approval_request(
+            current.id,
+            decision="approved",
+            decided_by="u1",
+            decision_context={"revision": revision},
+            agent_id="xhs_growth",
+            visible_content=f"第{revision}版审核稿",
+            thread_id="same-thread",
+            skills=["draft.review"],
+            preview={"revision": revision},
+            preview_artifact_id=None,
+        )
+        action_ids.append(current.id)
+
+    actions = store.timeline_turns(accepted.conversation_id)[0]["attempts"][0]["actions"]
+    assert [action["id"] for action in actions] == action_ids
+    created_at = [float(action["created_at"]) for action in actions]
+    assert all(later > earlier for earlier, later in zip(created_at, created_at[1:], strict=False))
+
+
 def test_accept_turn_is_idempotent_and_persists_input_before_run(tmp_path) -> None:
     store = ConversationStore(tmp_path / "conversation.sqlite")
 

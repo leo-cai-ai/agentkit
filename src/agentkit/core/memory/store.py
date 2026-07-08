@@ -914,7 +914,12 @@ class ConversationStore:
             row = conn.execute(
                 f"""
                 SELECT attempt.id, attempt.turn_id, turn.conversation_id,
-                       current_action.status, attempt.status, current_action.decision
+                       current_action.status, attempt.status, current_action.decision,
+                       (
+                           SELECT MAX(existing.created_at)
+                           FROM conversation_actions AS existing
+                           WHERE existing.attempt_id = attempt.id
+                       )
                 FROM conversation_actions AS current_action
                 JOIN conversation_attempts AS attempt
                   ON attempt.id = current_action.attempt_id
@@ -932,6 +937,7 @@ class ConversationStore:
                 action_status,
                 attempt_status,
                 current_decision,
+                max_action_created_at,
             ) = row
             if str(action_status) not in {"pending", "approved", "rejected"}:
                 raise ConversationConflictError("approval action is not active")
@@ -939,6 +945,10 @@ class ConversationStore:
                 raise ConversationConflictError("approval attempt is not active")
             if current_decision is not None and str(current_decision) != decision:
                 raise ConversationConflictError("approval action has another decision")
+            action_created_at = max(
+                resolved_now,
+                float(max_action_created_at) + 0.001,
+            )
 
             streaming = conn.execute(
                 f"""
@@ -1048,7 +1058,7 @@ class ConversationStore:
                     _canonical_json(skills),
                     preview_artifact_id,
                     _canonical_json(preview),
-                    resolved_now,
+                    action_created_at,
                 ),
             )
             waiting = conn.execute(
