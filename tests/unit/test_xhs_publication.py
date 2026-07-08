@@ -688,6 +688,9 @@ def test_explicit_media_uses_upload_when_text_image_is_default(tmp_path) -> None
 
     assert package["media_strategy"] == "upload"
     assert package["media_paths"] == [str(media)]
+    assert package["media_preview_urls"] == [
+        "/api/xhs/publish-assets/generated.png"
+    ]
     assert package["card_text"] == ""
 
 

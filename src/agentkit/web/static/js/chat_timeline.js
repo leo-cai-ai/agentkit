@@ -34,6 +34,10 @@
     rejected: "已拒绝",
     cancelled: "已取消",
   });
+  const SAME_ORIGIN_MEDIA_PREFIXES = Object.freeze([
+    "/api/xhs/publish-assets/",
+  ]);
+  const MEDIA_URL_VALIDATION_ORIGIN = "https://agentkit.invalid";
 
   function thinkingLabel(stage) {
     return STAGE_LABELS[String(stage || "")] || "正在处理";
@@ -126,6 +130,37 @@
     return node;
   }
 
+  function safeMediaPreviewUrl(value) {
+    const candidate = typeof value === "string" ? value : "";
+    if (
+      !candidate ||
+      candidate !== candidate.trim() ||
+      candidate.includes("\\") ||
+      /[\u0000-\u001f\u007f]/.test(candidate)
+    ) {
+      return "";
+    }
+
+    try {
+      if (candidate.startsWith("/") && !candidate.startsWith("//")) {
+        const parsed = new URL(candidate, MEDIA_URL_VALIDATION_ORIGIN);
+        if (
+          parsed.origin === MEDIA_URL_VALIDATION_ORIGIN &&
+          SAME_ORIGIN_MEDIA_PREFIXES.some((prefix) => parsed.pathname.startsWith(prefix))
+        ) {
+          return candidate;
+        }
+        return "";
+      }
+
+      if (!/^https?:\/\//i.test(candidate)) return "";
+      const parsed = new URL(candidate);
+      return parsed.protocol === "http:" || parsed.protocol === "https:" ? candidate : "";
+    } catch {
+      return "";
+    }
+  }
+
   function messageNode(message, handlers, roleOverride = "", key = "") {
     const role = roleOverride || (message?.role === "user" ? "user" : "assistant");
     const node = element("div", `chat-message ${role}`);
@@ -186,7 +221,7 @@
       container.appendChild(element("p", "ak-action-preview-meta", `${label}：${value}`));
     }
     const safeMediaUrls = Array.isArray(preview.media_preview_urls)
-      ? preview.media_preview_urls.filter((value) => /^https?:\/\//i.test(String(value)))
+      ? preview.media_preview_urls.map(safeMediaPreviewUrl).filter(Boolean)
       : [];
     if (safeMediaUrls.length) {
       container.appendChild(element(

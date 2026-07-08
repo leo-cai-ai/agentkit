@@ -79,7 +79,7 @@ const document = {
   createDocumentFragment: () => new FakeNode("#fragment"),
   activeElement: null,
 };
-const context = { AbortController, document, window: {} };
+const context = { AbortController, URL, document, window: {} };
 vm.createContext(context);
 const source = fs.readFileSync(
   path.join(__dirname, "../../src/agentkit/web/static/js/chat_timeline.js"),
@@ -158,12 +158,21 @@ const timeline = {
           media_strategy: "xhs_text_image",
           card_style: "notebook",
           media_preview_urls: [
+            "/api/xhs/publish-assets/cover.png?version=1#preview",
+            "https://example.test\\@evil.example/steal.png",
             "https://example.test/1.png",
             "https://example.test/2.png",
             "https://example.test/3.png",
             "https://example.test/4.png",
             "https://example.test/5.png",
+            "//evil.example/steal.png",
+            "/\\evil.example/steal.png",
+            "\\\\evil.example/steal.png",
+            "/api/other-assets/not-allowed.png",
             "javascript:alert(1)",
+            "data:image/png;base64,AAAA",
+            "file:///tmp/secret.png",
+            "ftp://example.test/legacy.png",
           ],
         },
       }],
@@ -190,11 +199,17 @@ assert.equal(withClass(root, "ak-thinking").length, 0, "等待审批不是循环
 assert.equal(singleClass(root, "ak-action-preview-title").textContent, "发布预览");
 assert.equal(singleClass(root, "ak-action-preview-summary").textContent, "这是摘要");
 assert.equal(singleClass(root, "ak-action-preview-body").textContent, "这是审批前必须看见的正文核心");
-assert.equal(singleClass(root, "ak-action-media-summary").textContent.includes("5"), true);
+assert.equal(singleClass(root, "ak-action-media-summary").textContent.includes("6"), true);
 const mediaLinks = withClass(root, "ak-action-media-link");
 const mediaImages = withClass(root, "ak-action-media-thumbnail");
 assert.equal(mediaLinks.length, 4, "安全缩略图最多显示四个");
 assert.equal(mediaImages.length, 4);
+assert.equal(
+  mediaLinks[0].attributes.href,
+  "/api/xhs/publish-assets/cover.png?version=1#preview",
+  "生产 connector 的同源素材路径保持原样",
+);
+assert.equal(mediaImages[0].attributes.src, mediaLinks[0].attributes.href);
 for (let index = 0; index < mediaLinks.length; index += 1) {
   assert.equal(mediaLinks[index].attributes.target, "_blank");
   assert.equal(mediaLinks[index].attributes.rel, "noopener noreferrer");
@@ -203,7 +218,7 @@ for (let index = 0; index < mediaLinks.length; index += 1) {
   assert.equal(mediaImages[index].attributes.width, "160");
   assert.equal(mediaImages[index].attributes.height, "120");
 }
-assert.equal(singleClass(root, "ak-action-media-more").textContent.includes("1"), true);
+assert.equal(singleClass(root, "ak-action-media-more").textContent.includes("2"), true);
 
 const buttons = descendants(root).filter((node) => node.tagName === "button");
 const approve = buttons.find((node) => node.dataset.timelineDecision === "approved");
