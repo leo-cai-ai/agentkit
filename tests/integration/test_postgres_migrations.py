@@ -62,12 +62,12 @@ def test_postgres_v5_backfills_duplicate_legacy_run_without_orphans(monkeypatch)
                 INSERT INTO messages (
                     conversation_id, role, content, run_id, agent_id, created_at
                 ) VALUES
-                    ('conversation-1', 'user', '问题一', 'run-shared', NULL, 1),
+                    ('conversation-1', 'user', '问题一', 'run-shared', NULL, 40),
                     ('conversation-1', 'assistant', '结果一', 'run-shared',
-                     'general_agent', 2),
-                    ('conversation-1', 'user', '问题二', 'run-shared', NULL, 3),
+                     'general_agent', 30),
+                    ('conversation-1', 'user', '问题二', 'run-shared', NULL, 20),
                     ('conversation-1', 'assistant', '结果二', 'run-shared',
-                     'general_agent', 4)
+                     'general_agent', 10)
                 """
             )
 
@@ -77,9 +77,10 @@ def test_postgres_v5_backfills_duplicate_legacy_run_without_orphans(monkeypatch)
         with scoped_connection(settings) as connection:
             attempts = connection.execute(
                 """
-                SELECT run_id, status, error_summary
-                FROM conversation_attempts
-                ORDER BY started_at, id
+                SELECT attempts.run_id, attempts.status, attempts.error_summary
+                FROM conversation_attempts AS attempts
+                JOIN conversation_turns AS turns ON turns.id = attempts.turn_id
+                ORDER BY turns.conversation_id, turns.user_message_id
                 """
             ).fetchall()
             messages = connection.execute(

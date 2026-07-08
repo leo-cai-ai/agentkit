@@ -562,6 +562,7 @@ _POSTGRES_MIGRATIONS: dict[int, tuple[str, ...]] = {
                 users.*,
                 turns.id AS legacy_turn_id,
                 conversations.agent AS conversation_agent,
+                conversations.created_at AS conversation_created_at,
                 COALESCE(
                     NULLIF(users.run_id, ''),
                     CASE
@@ -585,7 +586,7 @@ _POSTGRES_MIGRATIONS: dict[int, tuple[str, ...]] = {
                 attempt_candidates.*,
                 ROW_NUMBER() OVER (
                     PARTITION BY candidate_run_id
-                    ORDER BY created_at, id
+                    ORDER BY conversation_created_at, conversation_id, id
                 ) AS candidate_run_rank
             FROM attempt_candidates
         )

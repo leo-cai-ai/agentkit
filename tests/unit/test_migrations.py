@@ -609,6 +609,12 @@ def test_sqlite_v5_backfill_is_idempotent(tmp_path) -> None:
 
 def test_sqlite_v5_duplicate_run_across_pairs_keeps_every_turn_projected(tmp_path) -> None:
     db_path, _ = _two_pair_legacy_conversation_database(tmp_path)
+    assert [row["created_at"] for row in _read_rows(db_path, "messages")] == [
+        40.0,
+        30.0,
+        20.0,
+        10.0,
+    ]
     before = [
         (row["content"], row["run_id"])
         for row in _read_rows(db_path, "messages")
@@ -704,6 +710,17 @@ def test_postgres_v5_uses_set_based_legacy_adoption_without_content_updates() ->
     assert any("row_number() over" in statement for statement in normalized)
     assert any("on conflict" in statement for statement in normalized)
     assert not any("update messages set content" in statement for statement in normalized)
+    attempt_statement = next(
+        statement
+        for statement in normalized
+        if "insert into conversation_attempts" in statement
+    )
+    assert "conversations.created_at as conversation_created_at" in attempt_statement
+    assert (
+        "order by conversation_created_at, conversation_id, id"
+        in attempt_statement
+    )
+    assert "order by created_at, id" not in attempt_statement
 
 
 def test_postgres_v5_runner_executes_contract_under_advisory_lock(monkeypatch) -> None:
@@ -786,6 +803,18 @@ def _two_pair_legacy_conversation_database(tmp_path):
             content=content,
             run_id="run-shared",
             agent_id="general_agent" if role == "assistant" else None,
+        )
+    with sqlite3.connect(db_path) as conn:
+        message_ids = [
+            row[0]
+            for row in conn.execute(
+                "SELECT id FROM messages WHERE conversation_id = ? ORDER BY id",
+                (conversation_id,),
+            )
+        ]
+        conn.executemany(
+            "UPDATE messages SET created_at = ? WHERE id = ?",
+            zip((40.0, 30.0, 20.0, 10.0), message_ids, strict=True),
         )
     _mark_as_v4_database(db_path)
     return db_path, conversation_id

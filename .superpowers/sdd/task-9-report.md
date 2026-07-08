@@ -72,3 +72,19 @@
 - 最终 focused：52 passed，1 skipped in 4.96s。
 - 最终 full：944 passed，7 skipped in 94.71s。
 - Ruff 与 `git diff --check`：通过。
+
+## PostgreSQL duplicate winner 排序补充
+
+- SQLite 的既有确定性顺序是 conversation `(created_at, id)`，随后每个会话内按
+  user Message ID；message.created_at 不参与 duplicate run winner 选择。
+- PostgreSQL candidate ranking 已改为
+  `(conversation_created_at, conversation_id, user_message_id)`，从而在同会话和
+  跨会话场景精确匹配 SQLite。
+- SQLite fixture 将四条 legacy message 的 timestamps 设为 `40, 30, 20, 10`，
+  明确断言仍由较小 Message ID 的第一个 user Turn 保留 run_id。
+- PG SQL contract 断言精确排序键且禁止退回 `ORDER BY message.created_at, id`；
+  可选真实 PG integration 同样使用逆序 timestamps，并按 user_message_id 验证 winner。
+- targeted RED：SQLite 通过、PG SQL 断言失败、真实 PG 因无 DSN skip。
+- targeted GREEN：2 passed，1 skipped in 1.03s。
+- 最终 focused：52 passed，1 skipped in 4.68s。
+- 最终 full：944 passed，7 skipped in 85.51s。
