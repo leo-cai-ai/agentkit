@@ -1,12 +1,31 @@
 from __future__ import annotations
 
+import inspect
 import math
 import sqlite3
 
 import pytest
 
+from agentkit.core.memory.pg_store import PgConversationStore
 from agentkit.core.memory.store import ConversationConflictError, ConversationStore
 from agentkit.runtime.conversation_projection_models import ActionStatus, AttemptStatus
+
+_PROJECTION_READ_API = (
+    "get_projection_message",
+    "get_attempt_output",
+    "finalize_attempt_output",
+    "get_attempt_scope",
+    "timeline_turns",
+    "find_conversation_by_client_message",
+    "context_messages",
+)
+
+
+def test_projection_public_api_matches_between_sqlite_and_postgres() -> None:
+    for method_name in _PROJECTION_READ_API:
+        sqlite_method = getattr(ConversationStore, method_name)
+        postgres_method = getattr(PgConversationStore, method_name)
+        assert inspect.signature(sqlite_method) == inspect.signature(postgres_method)
 
 
 def _accept(

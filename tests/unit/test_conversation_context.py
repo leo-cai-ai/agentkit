@@ -14,6 +14,8 @@ from agentkit.core.execution.models import (
 )
 from agentkit.core.memory.store import ConversationStore
 from agentkit.runtime.conversation_context import ConversationContextService
+from agentkit.runtime.conversation_projection import ConversationProjectionService
+from agentkit.runtime.conversation_projection_models import AttemptStatus
 
 
 class FakeMemoryReader:
@@ -63,7 +65,7 @@ def test_context_builder_enables_rag_per_agent(tmp_path) -> None:
     store = ConversationStore(tmp_path / "memory.sqlite")
     knowledge = FakeKnowledgeService()
     service = ConversationContextService(
-        store=store,
+        store=ConversationProjectionService(store=store),
         memory_reader=FakeMemoryReader(),
         knowledge_service=knowledge,
     )
@@ -100,9 +102,20 @@ def test_context_is_scoped_by_tenant_agent_user(tmp_path) -> None:
     store = ConversationStore(tmp_path / "memory.sqlite")
     memory = FakeMemoryReader()
     memory.values[("t1", "customer_service", "u1")] = ["订单 O-1"]
-    service = ConversationContextService(store=store, memory_reader=memory)
-    customer_id = store.create_conversation(tenant_id="t1", agent="customer_service", user_id="u1")
-    store.add_message(conversation_id=customer_id, role="user", content="查询 O-1")
+    service = ConversationContextService(
+        store=ConversationProjectionService(store=store), memory_reader=memory
+    )
+    accepted = store.accept_turn(
+        tenant_id="t1",
+        agent="customer_service",
+        user_id="u1",
+        conversation_id=None,
+        title="查询 O-1",
+        client_message_id="customer-message-1",
+        user_content="查询 O-1",
+        user_token_estimate=4,
+    )
+    customer_id = accepted.conversation_id
     xhs_id = store.create_conversation(tenant_id="t1", agent="xhs_growth", user_id="u1")
 
     customer = service.build(
@@ -135,7 +148,7 @@ def test_context_rejects_cross_scope_conversation(tmp_path) -> None:
     conversation_id = store.create_conversation(
         tenant_id="t1", agent="customer_service", user_id="u1"
     )
-    service = ConversationContextService(store=store)
+    service = ConversationContextService(store=ConversationProjectionService(store=store))
 
     try:
         service.build(
@@ -157,14 +170,22 @@ def test_context_normalizes_legacy_structured_assistant_message(tmp_path) -> Non
     import json
 
     store = ConversationStore(tmp_path / "memory.sqlite")
-    conversation_id = store.create_conversation(
+    accepted = store.accept_turn(
         tenant_id="t1",
         agent="general_agent",
         user_id="u1",
+        conversation_id=None,
+        title="继续",
+        client_message_id="legacy-structured-1",
+        user_content="继续",
+        user_token_estimate=2,
     )
-    store.add_message(
-        conversation_id=conversation_id,
-        role="assistant",
+    projection = ConversationProjectionService(store=store)
+    projection.bind_run(accepted.attempt_id, run_id="r0", agent_id="general_agent")
+    projection.project_output(
+        accepted=accepted,
+        run_id="r0",
+        agent_id="xhs_growth",
         content=json.dumps(
             {
                 "campaign_id": "XHS-30D-10000",
@@ -179,19 +200,46 @@ def test_context_normalizes_legacy_structured_assistant_message(tmp_path) -> Non
             },
             ensure_ascii=False,
         ),
-        agent_id="xhs_growth",
+        status=AttemptStatus.SUCCEEDED,
     )
-    service = ConversationContextService(store=store)
+    service = ConversationContextService(store=projection)
 
     context = service.build(
         agent=_agent(agent_id="general_agent", rag_enabled=False),
         tenant_id="t1",
         agent_id="general_agent",
         user_id="u1",
-        conversation_id=conversation_id,
+        conversation_id=accepted.conversation_id,
         run_id="r1",
         message="继续",
     )
 
     assert context.recent_messages[-1]["content"] == ("内容审核未通过，未进入发布：证据不足")
     assert "workflow_trace" not in context.recent_messages[-1]["content"]
+
+
+def test_context_forwards_active_turn_exclusion(tmp_path) -> None:
+    store = ConversationStore(tmp_path / "memory.sqlite")
+    projection = ConversationProjectionService(store=store)
+    accepted = projection.accept_user_message(
+        tenant_id="t1",
+        user_id="u1",
+        conversation_id=None,
+        client_message_id="client-active",
+        content="当前问题",
+        title="当前问题",
+    )
+    service = ConversationContextService(store=projection)
+
+    context = service.build(
+        agent=_agent(agent_id="general_agent", rag_enabled=False),
+        tenant_id="t1",
+        agent_id="general_agent",
+        user_id="u1",
+        conversation_id=accepted.conversation_id,
+        run_id="r1",
+        message="当前问题",
+        exclude_turn_id=accepted.turn_id,
+    )
+
+    assert context.recent_messages == ()

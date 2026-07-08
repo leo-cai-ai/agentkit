@@ -34,6 +34,9 @@ from .store import (
 class PgConversationStore(ConversationStore):
     """PostgreSQL implementation of the ``ConversationStore`` API."""
 
+    _projection_placeholder = "%s"
+    _projection_lock_suffix = " FOR UPDATE"
+
     def __init__(self, settings: Any = None) -> None:
         self._settings = settings
         self._init_schema()
@@ -1254,6 +1257,10 @@ class PgConversationStore(ConversationStore):
 
     def _connect(self) -> Any:
         return connection(self._settings)
+
+    def _begin_projection_write(self, conn: Any) -> None:
+        # PostgreSQL connection context 已经提供事务边界，行锁在 SELECT 中声明。
+        del conn
 
     def _init_schema(self) -> None:
         with self._connect() as conn:

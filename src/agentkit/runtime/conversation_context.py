@@ -13,7 +13,13 @@ from agentkit.core.response_text import normalize_persisted_assistant_text
 class ConversationReader(Protocol):
     def get_conversation(self, conversation_id: str) -> dict[str, Any] | None: ...
 
-    def recent_messages(self, *, conversation_id: str, limit: int) -> list[dict[str, Any]]: ...
+    def context_messages(
+        self,
+        *,
+        conversation_id: str,
+        exclude_turn_id: str | None,
+        limit: int,
+    ) -> list[dict[str, Any]]: ...
 
     def get_summary(self, conversation_id: str) -> dict[str, Any] | None: ...
 
@@ -78,6 +84,7 @@ class ConversationContextService:
         run_id: str,
         message: str,
         roles: Sequence[str] = (),
+        exclude_turn_id: str | None = None,
     ) -> AgentConversationContext:
         if agent.name != agent_id:
             raise ValueError("AgentProfile 与请求 agent_id 不一致")
@@ -99,6 +106,7 @@ class ConversationContextService:
             run_id=run_id,
             message=message,
             roles=roles,
+            exclude_turn_id=exclude_turn_id,
         )
 
     def build_for_delegation(
@@ -112,6 +120,7 @@ class ConversationContextService:
         run_id: str,
         message: str,
         roles: Sequence[str] = (),
+        exclude_turn_id: str | None = None,
     ) -> AgentConversationContext:
         """共享 General 会话历史，同时使用目标 Agent 自己的记忆和 RAG。"""
         conversation = self._store.get_conversation(conversation_id)
@@ -131,6 +140,7 @@ class ConversationContextService:
             run_id=run_id,
             message=message,
             roles=roles,
+            exclude_turn_id=exclude_turn_id,
         )
 
     def _assemble_context(
@@ -143,14 +153,16 @@ class ConversationContextService:
         run_id: str,
         message: str,
         roles: Sequence[str],
+        exclude_turn_id: str | None,
     ) -> AgentConversationContext:
         policy = agent.context_policy
         recent: tuple[dict[str, str], ...] = ()
         summary = ""
         memories: tuple[str, ...] = ()
         if policy.memory.enabled:
-            rows = self._store.recent_messages(
+            rows = self._store.context_messages(
                 conversation_id=conversation_id,
+                exclude_turn_id=exclude_turn_id,
                 limit=policy.memory.window_turns * 2,
             )
             recent = tuple(_context_message(row) for row in rows if row.get("content"))

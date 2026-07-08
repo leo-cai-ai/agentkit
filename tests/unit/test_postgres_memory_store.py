@@ -599,3 +599,83 @@ def test_postgres_accept_turn_checks_status_before_duplicate_key(monkeypatch) ->
         )
 
     assert "FROM conversations" in calls[0][0]
+
+
+def test_postgres_projection_scope_uses_public_backend_neutral_shape(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class Result:
+        def fetchone(self):
+            return ("attempt-1", "turn-1", "conversation-1", "tenant-a", "xhs_growth")
+
+    class Connection:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+            return Result()
+
+    store = object.__new__(PgConversationStore)
+    store._settings = None
+    monkeypatch.setattr(store, "_connect", lambda: nullcontext(Connection()))
+
+    scope = store.get_attempt_scope("attempt-1")
+
+    assert scope == {
+        "attempt_id": "attempt-1",
+        "turn_id": "turn-1",
+        "conversation_id": "conversation-1",
+        "tenant_id": "tenant-a",
+        "agent_id": "xhs_growth",
+    }
+    assert calls[0][1] == ("attempt-1",)
+    assert "%s" in calls[0][0]
+    assert "?" not in calls[0][0]
+
+
+def test_postgres_finalize_projection_uses_row_lock_and_sets_canonical(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class Result:
+        rowcount = 1
+
+        def __init__(self, row=None) -> None:
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class Connection:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+            if "FROM messages AS m" in sql:
+                return Result(
+                    (
+                        "attempt-1",
+                        "turn-1",
+                        "conversation-1",
+                        "tenant-a",
+                        "run-1",
+                        "xhs_growth",
+                        "streaming",
+                    )
+                )
+            return Result()
+
+    store = object.__new__(PgConversationStore)
+    store._settings = None
+    monkeypatch.setattr(store, "_connect", lambda: nullcontext(Connection()))
+
+    changed, scope = store.finalize_attempt_output(
+        7,
+        content="最终结果",
+        message_state="sealed",
+        attempt_status="succeeded",
+        artifact_id=None,
+        token_estimate=4,
+        now=100.0,
+    )
+
+    assert changed is True
+    assert scope["attempt_id"] == "attempt-1"
+    assert "FOR UPDATE" in calls[0][0]
+    assert any("canonical_attempt_id = %s" in sql for sql, _ in calls)
+    assert all("?" not in sql for sql, _ in calls)

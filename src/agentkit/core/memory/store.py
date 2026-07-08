@@ -76,6 +76,18 @@ def _approval_action_from_row(row: Any) -> ApprovalAction:
     )
 
 
+def _projection_row(columns: tuple[str, ...], row: Any) -> dict[str, Any]:
+    return dict(zip(columns, tuple(row), strict=True))
+
+
+def _projection_json(value: Any, default: Any) -> Any:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
 def _pack_embedding(values: Sequence[float]) -> bytes:
     return array("f", [float(v) for v in values]).tobytes()
 
@@ -87,6 +99,9 @@ def _unpack_embedding(blob: bytes) -> list[float]:
 
 
 class ConversationStore:
+    _projection_placeholder = "?"
+    _projection_lock_suffix = ""
+
     def __init__(self, db_path: str | Path) -> None:
         self._db_path = Path(db_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -448,6 +463,370 @@ class ConversationStore:
         for row in result:
             row["metadata_json"] = json.loads(row["metadata_json"])
         return result
+
+    def get_projection_message(self, message_id: int) -> dict[str, Any] | None:
+        """读取包含 Turn/Attempt 字段的完整 Message 投影。"""
+        columns = (
+            "id",
+            "conversation_id",
+            "content",
+            "run_id",
+            "agent_id",
+            "turn_id",
+            "attempt_id",
+            "kind",
+            "state",
+            "artifact_id",
+            "updated_at",
+        )
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT {', '.join(columns)} FROM messages "
+                f"WHERE id = {self._projection_placeholder}",
+                (message_id,),
+            ).fetchone()
+        return _projection_row(columns, row) if row is not None else None
+
+    def get_attempt_output(
+        self,
+        attempt_id: str,
+        *,
+        state: str | None = None,
+    ) -> dict[str, Any] | None:
+        """返回 Attempt 唯一的 assistant_output Message。"""
+        columns = ("id", "content", "state", "updated_at")
+        params: list[Any] = [attempt_id]
+        state_clause = ""
+        if state is not None:
+            state_clause = f" AND state = {self._projection_placeholder}"
+            params.append(state)
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT {', '.join(columns)} FROM messages
+                WHERE attempt_id = {self._projection_placeholder}
+                  AND kind = 'assistant_output'{state_clause}
+                ORDER BY id LIMIT 1
+                """,
+                tuple(params),
+            ).fetchone()
+        return _projection_row(columns, row) if row is not None else None
+
+    def finalize_attempt_output(
+        self,
+        message_id: int,
+        *,
+        content: str,
+        message_state: str,
+        attempt_status: str,
+        artifact_id: str | None,
+        token_estimate: int,
+        error_code: str = "",
+        error_summary: str = "",
+        now: float | None = None,
+    ) -> tuple[bool, dict[str, Any]]:
+        """原子封口 Message、终结 Attempt，并在成功时设置 canonical Attempt。"""
+        if message_state not in _TERMINAL_MESSAGE_STATES:
+            raise ValueError("message state must be terminal")
+        if attempt_status not in _TERMINAL_ATTEMPT_STATUSES:
+            raise ValueError("attempt status must be terminal")
+        resolved_now = round(time.time() if now is None else now, 3)
+        placeholder = self._projection_placeholder
+        columns = (
+            "attempt_id",
+            "turn_id",
+            "conversation_id",
+            "tenant_id",
+            "run_id",
+            "agent_id",
+            "message_state",
+        )
+        with self._connect() as conn:
+            self._begin_projection_write(conn)
+            row = conn.execute(
+                f"""
+                SELECT a.id, a.turn_id, t.conversation_id, t.tenant_id, a.run_id,
+                       COALESCE(m.agent_id, a.agent_id, c.agent), m.state
+                FROM messages AS m
+                JOIN conversation_attempts AS a ON a.id = m.attempt_id
+                JOIN conversation_turns AS t ON t.id = a.turn_id
+                JOIN conversations AS c ON c.id = t.conversation_id
+                WHERE m.id = {placeholder}{self._projection_lock_suffix}
+                """,
+                (message_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(message_id)
+            scope = _projection_row(columns, row)
+            if scope["message_state"] != "streaming":
+                return False, scope
+            changed = conn.execute(
+                f"""
+                UPDATE messages SET content = {placeholder}, state = {placeholder},
+                    artifact_id = {placeholder}, token_estimate = {placeholder},
+                    run_id = {placeholder}, updated_at = {placeholder}
+                WHERE id = {placeholder} AND state = 'streaming'
+                """,
+                (
+                    content,
+                    message_state,
+                    artifact_id,
+                    token_estimate,
+                    scope["run_id"],
+                    resolved_now,
+                    message_id,
+                ),
+            )
+            if changed.rowcount != 1:
+                return False, scope
+            attempt_changed = conn.execute(
+                f"""
+                UPDATE conversation_attempts
+                SET status = {placeholder}, error_code = {placeholder},
+                    error_summary = {placeholder}, version = version + 1,
+                    finished_at = {placeholder}
+                WHERE id = {placeholder}
+                  AND status IN ('queued', 'running', 'waiting_for_approval', 'resuming')
+                """,
+                (
+                    attempt_status,
+                    error_code,
+                    error_summary,
+                    resolved_now,
+                    scope["attempt_id"],
+                ),
+            )
+            if attempt_changed.rowcount != 1:
+                raise ConversationConflictError("attempt cannot transition to terminal output")
+            canonical = (
+                f", canonical_attempt_id = {placeholder}"
+                if attempt_status == AttemptStatus.SUCCEEDED.value
+                else ""
+            )
+            turn_params: list[Any] = [resolved_now]
+            if attempt_status == AttemptStatus.SUCCEEDED.value:
+                turn_params.append(scope["attempt_id"])
+            turn_params.append(scope["turn_id"])
+            conn.execute(
+                f"""
+                UPDATE conversation_turns
+                SET active_attempt_id = NULL, updated_at = {placeholder}{canonical}
+                WHERE id = {placeholder}
+                """,
+                tuple(turn_params),
+            )
+        return True, scope
+
+    def get_attempt_scope(self, attempt_id: str) -> dict[str, Any] | None:
+        """返回审计与指标所需的安全 Attempt 作用域。"""
+        columns = ("attempt_id", "turn_id", "conversation_id", "tenant_id", "agent_id")
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT a.id, a.turn_id, t.conversation_id, t.tenant_id,
+                       COALESCE(a.agent_id, c.agent)
+                FROM conversation_attempts AS a
+                JOIN conversation_turns AS t ON t.id = a.turn_id
+                JOIN conversations AS c ON c.id = t.conversation_id
+                WHERE a.id = {self._projection_placeholder}
+                """,
+                (attempt_id,),
+            ).fetchone()
+        return _projection_row(columns, row) if row is not None else None
+
+    def timeline_turns(self, conversation_id: str) -> list[dict[str, Any]]:
+        """返回后端无关的 Timeline 嵌套行，展示规则由 Service 决定。"""
+        placeholder = self._projection_placeholder
+        turn_columns = (
+            "id",
+            "client_message_id",
+            "ordinal",
+            "active_attempt_id",
+            "canonical_attempt_id",
+            "created_at",
+            "updated_at",
+            "user_content",
+        )
+        attempt_columns = (
+            "id",
+            "run_id",
+            "attempt_no",
+            "retry_of_attempt_id",
+            "agent_id",
+            "status",
+            "stage",
+            "error_code",
+            "error_summary",
+            "version",
+            "started_at",
+            "finished_at",
+        )
+        message_columns = (
+            "id",
+            "role",
+            "content",
+            "agent_id",
+            "kind",
+            "state",
+            "artifact_id",
+            "supersedes_message_id",
+            "created_at",
+            "updated_at",
+        )
+        action_columns = (
+            "id",
+            "status",
+            "thread_id",
+            "skills_json",
+            "preview_artifact_id",
+            "preview_json",
+            "decision",
+            "version",
+            "created_at",
+            "decided_at",
+            "completed_at",
+        )
+        result: list[dict[str, Any]] = []
+        with self._connect() as conn:
+            turn_rows = conn.execute(
+                f"""
+                SELECT t.id, t.client_message_id, t.ordinal, t.active_attempt_id,
+                       t.canonical_attempt_id, t.created_at, t.updated_at, u.content
+                FROM conversation_turns AS t
+                JOIN messages AS u ON u.id = t.user_message_id
+                WHERE t.conversation_id = {placeholder}
+                ORDER BY t.ordinal
+                """,
+                (conversation_id,),
+            ).fetchall()
+            for turn_row in turn_rows:
+                turn = _projection_row(turn_columns, turn_row)
+                attempt_rows = conn.execute(
+                    f"""
+                    SELECT id, run_id, attempt_no, retry_of_attempt_id, agent_id,
+                           status, stage, error_code, error_summary, version,
+                           started_at, finished_at
+                    FROM conversation_attempts WHERE turn_id = {placeholder}
+                    ORDER BY attempt_no
+                    """,
+                    (turn["id"],),
+                ).fetchall()
+                attempts: list[dict[str, Any]] = []
+                for attempt_row in attempt_rows:
+                    attempt = _projection_row(attempt_columns, attempt_row)
+                    message_rows = conn.execute(
+                        f"""
+                        SELECT id, role, content, agent_id, kind, state, artifact_id,
+                               supersedes_message_id, created_at, updated_at
+                        FROM messages
+                        WHERE attempt_id = {placeholder} AND kind != 'user_input'
+                          AND visibility = 'user'
+                        ORDER BY id
+                        """,
+                        (attempt["id"],),
+                    ).fetchall()
+                    action_rows = conn.execute(
+                        f"""
+                        SELECT id, status, thread_id, skills_json, preview_artifact_id,
+                               preview_json, decision, version, created_at, decided_at,
+                               completed_at
+                        FROM conversation_actions WHERE attempt_id = {placeholder}
+                        ORDER BY created_at, id
+                        """,
+                        (attempt["id"],),
+                    ).fetchall()
+                    actions = [_projection_row(action_columns, row) for row in action_rows]
+                    for action in actions:
+                        action["skills"] = _projection_json(action.pop("skills_json"), [])
+                        action["preview"] = _projection_json(action.pop("preview_json"), {})
+                    attempt["messages"] = [
+                        _projection_row(message_columns, row) for row in message_rows
+                    ]
+                    attempt["actions"] = actions
+                    attempts.append(attempt)
+                turn["attempts"] = attempts
+                result.append(turn)
+        return result
+
+    def find_conversation_by_client_message(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        client_message_id: str,
+    ) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT conversation_id FROM conversation_turns
+                WHERE tenant_id = {self._projection_placeholder}
+                  AND user_id = {self._projection_placeholder}
+                  AND client_message_id = {self._projection_placeholder}
+                """,
+                (tenant_id, user_id, client_message_id),
+            ).fetchone()
+        return str(row[0]) if row is not None else None
+
+    def context_messages(
+        self,
+        *,
+        conversation_id: str,
+        exclude_turn_id: str | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """只返回每个 Turn 的用户输入与 canonical 成功输出。"""
+        if limit <= 0:
+            return []
+        placeholder = self._projection_placeholder
+        params: list[Any] = [conversation_id]
+        exclusion = ""
+        if exclude_turn_id is not None:
+            exclusion = f" AND t.id != {placeholder}"
+            params.append(exclude_turn_id)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT t.id, u.content, t.canonical_attempt_id
+                FROM conversation_turns AS t
+                JOIN messages AS u ON u.id = t.user_message_id
+                WHERE t.conversation_id = {placeholder}{exclusion}
+                ORDER BY t.ordinal
+                """,
+                tuple(params),
+            ).fetchall()
+            if not rows:
+                has_projection = conn.execute(
+                    f"""
+                    SELECT 1 FROM conversation_turns
+                    WHERE conversation_id = {placeholder} LIMIT 1
+                    """,
+                    (conversation_id,),
+                ).fetchone()
+                if has_projection is None:
+                    return self.recent_messages(conversation_id=conversation_id, limit=limit)
+                return []
+            result: list[dict[str, Any]] = []
+            for row in rows:
+                result.append({"role": "user", "content": str(row[1])})
+                if row[2] is None:
+                    continue
+                assistant = conn.execute(
+                    f"""
+                    SELECT m.content
+                    FROM messages AS m
+                    JOIN conversation_attempts AS a ON a.id = m.attempt_id
+                    WHERE m.attempt_id = {placeholder}
+                      AND a.status = 'succeeded'
+                      AND m.role = 'assistant'
+                      AND m.visibility = 'user'
+                      AND m.state = 'sealed'
+                    ORDER BY m.id DESC LIMIT 1
+                    """,
+                    (row[2],),
+                ).fetchone()
+                if assistant is not None:
+                    result.append({"role": "assistant", "content": str(assistant[0])})
+        return result[-limit:]
 
     def persist_approval_request(
         self,
@@ -1205,6 +1584,9 @@ class ConversationStore:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
+
+    def _begin_projection_write(self, conn: Any) -> None:
+        conn.execute("BEGIN IMMEDIATE")
 
     def _init_schema(self) -> None:
         with self._connect() as conn:
