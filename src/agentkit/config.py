@@ -104,7 +104,7 @@ class Settings(BaseSettings):
     # checkpoints so a paused task survives restarts and is resumable across
     # processes/workers; "none" uses waiting output plus a protected full
     # resubmit to approve.
-    approval_checkpointer: Literal["memory", "sqlite", "postgres", "none"] = "memory"
+    approval_checkpointer: Literal["memory", "sqlite", "postgres", "none"] = "sqlite"
 
     # AI provider credentials — vendor-neutral naming (consumed by the
     # customer_band provider). Canonical env vars are AI_CLIENT_ID /
@@ -274,6 +274,17 @@ class Settings(BaseSettings):
     pg_user: str = "agentkit"
     pg_password: SecretStr | None = None
     pg_sslmode: str = "prefer"
+
+
+def validate_runtime_settings(settings: Settings) -> None:
+    """在连接外部资源前拒绝生产环境中的非持久化审批状态。"""
+    if (
+        settings.runtime_environment == "production"
+        and settings.approval_checkpointer in {"memory", "none"}
+    ):
+        raise ValueError(
+            "production requires a durable approval checkpointer: sqlite or postgres"
+        )
 
 
 @lru_cache(maxsize=1)

@@ -35,7 +35,7 @@ MESSAGE_PROJECTION_COLUMNS = {
 def test_sqlite_v4_creates_conversation_projection_schema(tmp_path) -> None:
     db_path = tmp_path / "runtime.sqlite"
 
-    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4]
+    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4, 5]
     with sqlite3.connect(db_path) as conn:
         tables = {
             row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -60,7 +60,7 @@ def test_sqlite_v4_upgrades_existing_v3_conversation_schema(tmp_path) -> None:
     db_path = tmp_path / "runtime.sqlite"
     _create_existing_v3_conversation_schema(db_path)
 
-    assert run_sqlite_migrations(db_path) == [4]
+    assert run_sqlite_migrations(db_path) == [4, 5]
     with sqlite3.connect(db_path) as conn:
         tables = {
             row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -143,7 +143,7 @@ def test_sqlite_store_schema_matches_v4_migration(tmp_path) -> None:
 def test_sqlite_migrations_bootstrap_and_record_version(tmp_path) -> None:
     db_path = tmp_path / "runtime.sqlite"
 
-    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4]
+    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4, 5]
     assert run_sqlite_migrations(db_path) == []
 
     with sqlite3.connect(db_path) as conn:
@@ -174,7 +174,7 @@ def test_sqlite_migrations_bootstrap_and_record_version(tmp_path) -> None:
         "tool_idempotency_records",
         "workflow_artifacts",
     ]
-    assert versions == [(1,), (2,), (3,), (4,)]
+    assert versions == [(1,), (2,), (3,), (4,), (5,)]
     with sqlite3.connect(db_path) as conn:
         run_columns = {row[1] for row in conn.execute("PRAGMA table_info(task_runs)").fetchall()}
     assert {"agent_id", "parent_run_id", "conversation_id"} <= run_columns
@@ -215,7 +215,7 @@ def test_sqlite_migrations_accept_existing_audit_schema(tmp_path) -> None:
             """
         )
 
-    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4]
+    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4, 5]
 
 
 def test_sqlite_migrations_record_applied_timestamp(tmp_path) -> None:
@@ -334,7 +334,7 @@ def test_sqlite_migrations_are_safe_during_concurrent_bootstrap(tmp_path) -> Non
 
     assert not any(caller.is_alive() for caller in callers)
     assert errors == []
-    assert sorted(results) == [[], [1, 2, 3, 4]]
+    assert sorted(results) == [[], [1, 2, 3, 4, 5]]
 
 
 def test_sqlite_migrations_close_connection(tmp_path, monkeypatch) -> None:
@@ -368,7 +368,7 @@ def test_sqlite_migrations_close_connection(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(migrations.sqlite3, "connect", tracking_connect)
 
-    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4]
+    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4, 5]
     assert len(connections) == 1
     assert connections[0].closed is True
 
@@ -384,6 +384,7 @@ def test_sqlite_audit_log_bootstraps_migrations(tmp_path) -> None:
             (2,),
             (3,),
             (4,),
+            (5,),
         ]
 
 
@@ -421,7 +422,7 @@ def test_sqlite_v2_adopts_legacy_artifacts_without_losing_valid_rows(tmp_path) -
             ),
         )
 
-    assert run_sqlite_migrations(db_path) == [2, 3, 4]
+    assert run_sqlite_migrations(db_path) == [2, 3, 4, 5]
 
     with sqlite3.connect(db_path) as conn:
         preserved = conn.execute(
@@ -477,7 +478,7 @@ def test_sqlite_migrations_log_new_versions_once(tmp_path, caplog) -> None:
     db_path = tmp_path / "runtime.sqlite"
     caplog.set_level(logging.INFO, logger="agentkit.core.migrations")
 
-    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4]
+    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4, 5]
 
     migration_records = [
         record for record in caplog.records if record.getMessage() == "schema_migrated"
@@ -487,11 +488,205 @@ def test_sqlite_migrations_log_new_versions_once(tmp_path, caplog) -> None:
         ("sqlite", 2),
         ("sqlite", 3),
         ("sqlite", 4),
+        ("sqlite", 5),
     ]
 
     caplog.clear()
     assert run_sqlite_migrations(db_path) == []
     assert [record for record in caplog.records if record.getMessage() == "schema_migrated"] == []
+
+
+def test_sqlite_v5_backfills_legacy_messages_without_rewriting_content(tmp_path) -> None:
+    db_path, conversation_id = _legacy_conversation_database(tmp_path)
+    before = _read_message_contents(db_path)
+
+    assert run_sqlite_migrations(db_path) == [5]
+
+    assert _read_message_contents(db_path) == before
+    turns = _read_rows(db_path, "conversation_turns")
+    attempts = _read_rows(db_path, "conversation_attempts")
+    messages = _read_rows(db_path, "messages")
+    assert len(turns) == 2
+    assert [turn["ordinal"] for turn in turns] == [1, 2]
+    assert [attempt["source"] for attempt in attempts] == [
+        "legacy_imported",
+        "legacy_imported",
+    ]
+    assert [(attempt["run_id"], attempt["status"]) for attempt in attempts] == [
+        ("run-1", "succeeded"),
+        (None, "interrupted"),
+    ]
+    assert messages[0]["turn_id"] == messages[1]["turn_id"] == turns[0]["id"]
+    assert messages[0]["attempt_id"] == messages[1]["attempt_id"] == attempts[0]["id"]
+    assert messages[2]["turn_id"] == turns[1]["id"]
+    assert messages[2]["attempt_id"] == attempts[1]["id"]
+    assert all(message["updated_at"] == message["created_at"] for message in messages)
+    assert turns[0]["canonical_attempt_id"] == attempts[0]["id"]
+    assert turns[1]["canonical_attempt_id"] is None
+    assert all(turn["active_attempt_id"] is None for turn in turns)
+    assert _read_rows(db_path, "conversation_actions") == []
+    assert all(row["conversation_id"] == conversation_id for row in messages)
+
+
+def test_sqlite_v5_backfills_empty_conversation_from_root_task_run(tmp_path) -> None:
+    db_path = tmp_path / "empty.sqlite"
+    store = ConversationStore(db_path)
+    conversation_id = store.create_conversation(
+        tenant_id="tenant-a",
+        agent="general_agent",
+        user_id="u1",
+        title="空会话",
+    )
+    _mark_as_v4_database(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO task_runs (
+                run_id, tenant_id, user_id, text, status, started_at,
+                finished_at, agent_id, parent_run_id, conversation_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "run-root",
+                    "tenant-a",
+                    "u1",
+                    "保留原始问题",
+                    "running",
+                    10.0,
+                    None,
+                    "general_agent",
+                    None,
+                    conversation_id,
+                ),
+                (
+                    "run-child",
+                    "tenant-a",
+                    "u1",
+                    "不得采用子任务文本",
+                    "completed",
+                    11.0,
+                    12.0,
+                    "worker",
+                    "run-root",
+                    conversation_id,
+                ),
+            ],
+        )
+
+    assert run_sqlite_migrations(db_path) == [5]
+
+    messages = _read_rows(db_path, "messages")
+    turns = _read_rows(db_path, "conversation_turns")
+    attempts = _read_rows(db_path, "conversation_attempts")
+    assert [(row["role"], row["content"], row["run_id"]) for row in messages] == [
+        ("user", "保留原始问题", "run-root")
+    ]
+    assert len(turns) == len(attempts) == 1
+    assert attempts[0]["run_id"] == "run-root"
+    assert attempts[0]["source"] == "legacy_imported"
+    assert attempts[0]["status"] == "interrupted"
+    assert messages[0]["turn_id"] == turns[0]["id"]
+    assert messages[0]["attempt_id"] == attempts[0]["id"]
+
+
+def test_sqlite_v5_backfill_is_idempotent(tmp_path) -> None:
+    db_path, _ = _legacy_conversation_database(tmp_path)
+    assert run_sqlite_migrations(db_path) == [5]
+    before = {
+        table: _read_rows(db_path, table)
+        for table in ("messages", "conversation_turns", "conversation_attempts")
+    }
+
+    assert run_sqlite_migrations(db_path) == []
+
+    assert {
+        table: _read_rows(db_path, table)
+        for table in ("messages", "conversation_turns", "conversation_attempts")
+    } == before
+
+
+def test_postgres_v5_uses_set_based_legacy_adoption_without_content_updates() -> None:
+    statements = migrations._POSTGRES_MIGRATIONS[5]
+    normalized = [" ".join(statement.lower().split()) for statement in statements]
+
+    assert any(
+        "insert into messages" in statement and "select" in statement
+        for statement in normalized
+    )
+    assert any("insert into conversation_turns" in statement for statement in normalized)
+    assert any("insert into conversation_attempts" in statement for statement in normalized)
+    assert any("row_number() over" in statement for statement in normalized)
+    assert any("on conflict" in statement for statement in normalized)
+    assert not any("update messages set content" in statement for statement in normalized)
+
+
+def _legacy_conversation_database(tmp_path):
+    db_path = tmp_path / "legacy.sqlite"
+    store = ConversationStore(db_path)
+    conversation_id = store.create_conversation(
+        tenant_id="tenant-a",
+        agent="general_agent",
+        user_id="u1",
+        title="旧会话",
+    )
+    store.add_message(
+        conversation_id=conversation_id,
+        role="user",
+        content="问题一",
+        run_id="run-1",
+    )
+    store.add_message(
+        conversation_id=conversation_id,
+        role="assistant",
+        content="结果一",
+        run_id="run-1",
+        agent_id="general_agent",
+    )
+    store.add_message(
+        conversation_id=conversation_id,
+        role="user",
+        content="问题二",
+        run_id=None,
+    )
+    _mark_as_v4_database(db_path)
+    return db_path, conversation_id
+
+
+def _mark_as_v4_database(db_path) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS task_runs (
+                run_id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                text TEXT NOT NULL,
+                status TEXT NOT NULL,
+                started_at REAL NOT NULL,
+                finished_at REAL,
+                agent_id TEXT,
+                parent_run_id TEXT,
+                conversation_id TEXT
+            );
+            INSERT INTO schema_migrations(version, applied_at)
+            VALUES (1, 1), (2, 1), (3, 1), (4, 1);
+            """
+        )
+
+
+def _read_rows(db_path, table):
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY rowid")]
+
+
+def _read_message_contents(db_path):
+    return [row["content"] for row in _read_rows(db_path, "messages")]
 
 
 def _create_legacy_v1_artifact_schema(db_path) -> None:

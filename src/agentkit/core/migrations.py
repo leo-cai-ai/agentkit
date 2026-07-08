@@ -198,6 +198,7 @@ _SQLITE_MIGRATIONS: dict[int, tuple[str, ...]] = {
         WHERE attempt_id IS NOT NULL AND state = 'streaming'
         """,
     ),
+    5: (),
 }
 
 
@@ -451,6 +452,221 @@ _POSTGRES_MIGRATIONS: dict[int, tuple[str, ...]] = {
         WHERE attempt_id IS NOT NULL AND state = 'streaming'
         """,
     ),
+    5: (
+        """
+        WITH ranked_roots AS (
+            SELECT
+                conversations.id AS conversation_id,
+                runs.run_id,
+                runs.text,
+                COALESCE(runs.agent_id, conversations.agent) AS agent_id,
+                runs.started_at,
+                ROW_NUMBER() OVER (
+                    PARTITION BY conversations.id
+                    ORDER BY runs.started_at, runs.run_id
+                ) AS root_rank
+            FROM conversations
+            JOIN task_runs AS runs
+              ON runs.conversation_id = conversations.id
+            WHERE runs.parent_run_id IS NULL
+              AND NULLIF(runs.text, '') IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM messages
+                  WHERE messages.conversation_id = conversations.id
+              )
+        )
+        INSERT INTO messages (
+            conversation_id, role, content, token_estimate, run_id, agent_id,
+            created_at, kind, state, visibility, metadata_json, updated_at
+        )
+        SELECT
+            conversation_id, 'user', text, 0, run_id, agent_id,
+            started_at, 'user_input', 'sealed', 'user', '{}'::jsonb, started_at
+        FROM ranked_roots
+        WHERE root_rank = 1
+        ON CONFLICT DO NOTHING
+        """,
+        """
+        WITH ordered_messages AS (
+            SELECT
+                messages.*,
+                LEAD(messages.id) OVER (
+                    PARTITION BY messages.conversation_id ORDER BY messages.id
+                ) AS next_message_id,
+                LEAD(messages.role) OVER (
+                    PARTITION BY messages.conversation_id ORDER BY messages.id
+                ) AS next_role,
+                ROW_NUMBER() OVER (
+                    PARTITION BY messages.conversation_id, messages.role
+                    ORDER BY messages.id
+                ) AS role_ordinal
+            FROM messages
+        ),
+        ordinal_bases AS (
+            SELECT conversation_id, COALESCE(MAX(ordinal), 0) AS base_ordinal
+            FROM conversation_turns
+            GROUP BY conversation_id
+        )
+        INSERT INTO conversation_turns (
+            id, conversation_id, tenant_id, user_id, client_message_id,
+            user_message_id, ordinal, active_attempt_id, canonical_attempt_id,
+            created_at, updated_at
+        )
+        SELECT
+            'legacy-turn:' || users.conversation_id || ':' || users.id,
+            users.conversation_id,
+            conversations.tenant_id,
+            conversations.user_id,
+            'legacy-message:' || users.conversation_id || ':' || users.id,
+            users.id,
+            COALESCE(ordinal_bases.base_ordinal, 0) + users.role_ordinal,
+            NULL,
+            NULL,
+            users.created_at,
+            users.created_at
+        FROM ordered_messages AS users
+        JOIN conversations ON conversations.id = users.conversation_id
+        LEFT JOIN ordinal_bases
+          ON ordinal_bases.conversation_id = users.conversation_id
+        WHERE users.role = 'user'
+          AND users.turn_id IS NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM conversation_turns AS existing
+              WHERE existing.user_message_id = users.id
+          )
+        ON CONFLICT DO NOTHING
+        """,
+        """
+        WITH ordered_messages AS (
+            SELECT
+                messages.*,
+                LEAD(messages.role) OVER (
+                    PARTITION BY messages.conversation_id ORDER BY messages.id
+                ) AS next_role,
+                LEAD(messages.run_id) OVER (
+                    PARTITION BY messages.conversation_id ORDER BY messages.id
+                ) AS next_run_id,
+                LEAD(messages.agent_id) OVER (
+                    PARTITION BY messages.conversation_id ORDER BY messages.id
+                ) AS next_agent_id,
+                LEAD(messages.created_at) OVER (
+                    PARTITION BY messages.conversation_id ORDER BY messages.id
+                ) AS next_created_at,
+                LEAD(messages.turn_id) OVER (
+                    PARTITION BY messages.conversation_id ORDER BY messages.id
+                ) AS next_turn_id
+            FROM messages
+        )
+        INSERT INTO conversation_attempts (
+            id, turn_id, run_id, attempt_no, retry_of_attempt_id,
+            idempotency_key, source, agent_id, status, stage,
+            error_code, error_summary, version, started_at, finished_at
+        )
+        SELECT
+            'legacy-attempt:' || users.conversation_id || ':' || users.id,
+            turns.id,
+            COALESCE(
+                NULLIF(users.run_id, ''),
+                CASE
+                    WHEN users.next_role = 'assistant' AND users.next_turn_id IS NULL
+                    THEN NULLIF(users.next_run_id, '')
+                END
+            ),
+            1,
+            NULL,
+            NULL,
+            'legacy_imported',
+            COALESCE(
+                CASE
+                    WHEN users.next_role = 'assistant' AND users.next_turn_id IS NULL
+                    THEN users.next_agent_id
+                END,
+                users.agent_id,
+                conversations.agent
+            ),
+            CASE
+                WHEN users.next_role = 'assistant' AND users.next_turn_id IS NULL
+                THEN 'succeeded'
+                ELSE 'interrupted'
+            END,
+            'finalizing',
+            '',
+            '',
+            1,
+            users.created_at,
+            CASE
+                WHEN users.next_role = 'assistant' AND users.next_turn_id IS NULL
+                THEN users.next_created_at
+                ELSE users.created_at
+            END
+        FROM ordered_messages AS users
+        JOIN conversations ON conversations.id = users.conversation_id
+        JOIN conversation_turns AS turns
+          ON turns.id = 'legacy-turn:' || users.conversation_id || ':' || users.id
+        WHERE users.role = 'user'
+          AND NOT EXISTS (
+              SELECT 1 FROM conversation_attempts AS existing
+              WHERE existing.turn_id = turns.id
+          )
+        ON CONFLICT DO NOTHING
+        """,
+        """
+        UPDATE conversation_turns AS turns
+        SET canonical_attempt_id = attempts.id,
+            active_attempt_id = NULL,
+            updated_at = GREATEST(turns.updated_at, attempts.finished_at)
+        FROM conversation_attempts AS attempts
+        WHERE attempts.turn_id = turns.id
+          AND attempts.source = 'legacy_imported'
+          AND attempts.status = 'succeeded'
+          AND turns.canonical_attempt_id IS NULL
+        """,
+        """
+        UPDATE messages AS user_messages
+        SET turn_id = turns.id,
+            attempt_id = attempts.id,
+            kind = 'user_input',
+            state = 'sealed',
+            updated_at = GREATEST(user_messages.updated_at, user_messages.created_at)
+        FROM conversation_turns AS turns
+        JOIN conversation_attempts AS attempts ON attempts.turn_id = turns.id
+        WHERE user_messages.id = turns.user_message_id
+          AND attempts.source = 'legacy_imported'
+          AND user_messages.turn_id IS NULL
+        """,
+        """
+        WITH paired_assistants AS (
+            SELECT
+                turns.id AS turn_id,
+                attempts.id AS attempt_id,
+                (
+                    SELECT candidate.id
+                    FROM messages AS candidate
+                    WHERE candidate.conversation_id = turns.conversation_id
+                      AND candidate.id > turns.user_message_id
+                    ORDER BY candidate.id
+                    LIMIT 1
+                ) AS assistant_message_id
+            FROM conversation_turns AS turns
+            JOIN conversation_attempts AS attempts ON attempts.turn_id = turns.id
+            WHERE attempts.source = 'legacy_imported'
+              AND attempts.status = 'succeeded'
+        )
+        UPDATE messages AS assistant_messages
+        SET turn_id = pairs.turn_id,
+            attempt_id = pairs.attempt_id,
+            kind = 'assistant_output',
+            state = 'sealed',
+            updated_at = GREATEST(
+                assistant_messages.updated_at,
+                assistant_messages.created_at
+            )
+        FROM paired_assistants AS pairs
+        WHERE assistant_messages.id = pairs.assistant_message_id
+          AND assistant_messages.role = 'assistant'
+          AND assistant_messages.turn_id IS NULL
+        """,
+    ),
 }
 
 
@@ -478,6 +694,8 @@ def run_sqlite_migrations(path: str | Path) -> list[int]:
                 _sqlite_add_workflow_artifact_run_fk(conn)
             elif version == 3:
                 _sqlite_add_multi_agent_run_columns(conn)
+            elif version == 5:
+                _sqlite_adopt_legacy_conversations(conn)
             conn.execute(
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                 (version, round(time.time(), 3)),
@@ -750,6 +968,184 @@ def _sqlite_prepare_conversation_projection(conn: sqlite3.Connection) -> None:
         conn.execute("UPDATE messages SET kind = 'user_input' WHERE role = 'user'")
     if added_updated_at:
         conn.execute("UPDATE messages SET updated_at = created_at")
+
+
+def _sqlite_adopt_legacy_conversations(conn: sqlite3.Connection) -> None:
+    """将旧消息确定性地绑定到可恢复投影，且绝不改写历史内容。"""
+    _sqlite_seed_empty_conversations(conn)
+    conversations = conn.execute(
+        """
+        SELECT id, tenant_id, user_id, agent
+        FROM conversations
+        ORDER BY created_at, id
+        """
+    ).fetchall()
+    for conversation_id, tenant_id, user_id, conversation_agent in conversations:
+        messages = conn.execute(
+            """
+            SELECT id, role, run_id, agent_id, created_at, turn_id
+            FROM messages
+            WHERE conversation_id = ?
+            ORDER BY id
+            """,
+            (conversation_id,),
+        ).fetchall()
+        ordinal_row = conn.execute(
+            "SELECT COALESCE(MAX(ordinal), 0) FROM conversation_turns WHERE conversation_id = ?",
+            (conversation_id,),
+        ).fetchone()
+        next_ordinal = int(ordinal_row[0]) + 1
+        for index, user_message in enumerate(messages):
+            if user_message[1] != "user" or user_message[5] is not None:
+                continue
+            assistant_message = messages[index + 1] if index + 1 < len(messages) else None
+            if (
+                assistant_message is None
+                or assistant_message[1] != "assistant"
+                or assistant_message[5] is not None
+            ):
+                assistant_message = None
+
+            user_message_id = int(user_message[0])
+            turn_id = f"legacy-turn:{conversation_id}:{user_message_id}"
+            attempt_id = f"legacy-attempt:{conversation_id}:{user_message_id}"
+            client_message_id = f"legacy-message:{conversation_id}:{user_message_id}"
+            user_run_id = str(user_message[2] or "").strip() or None
+            assistant_run_id = (
+                str(assistant_message[2] or "").strip() or None
+                if assistant_message is not None
+                else None
+            )
+            run_id = user_run_id or assistant_run_id
+            succeeded = assistant_message is not None
+            started_at = float(user_message[4])
+            finished_at = float(assistant_message[4]) if succeeded else started_at
+            agent_id = (
+                str(assistant_message[3] or "").strip()
+                if assistant_message is not None
+                else ""
+            ) or str(user_message[3] or "").strip() or str(conversation_agent)
+
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO conversation_turns (
+                    id, conversation_id, tenant_id, user_id, client_message_id,
+                    user_message_id, ordinal, active_attempt_id,
+                    canonical_attempt_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+                """,
+                (
+                    turn_id,
+                    conversation_id,
+                    tenant_id,
+                    user_id,
+                    client_message_id,
+                    user_message_id,
+                    next_ordinal,
+                    started_at,
+                    finished_at,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO conversation_attempts (
+                    id, turn_id, run_id, attempt_no, retry_of_attempt_id,
+                    idempotency_key, source, agent_id, status, stage,
+                    error_code, error_summary, version, started_at, finished_at
+                ) VALUES (?, ?, ?, 1, NULL, NULL, 'legacy_imported', ?, ?,
+                          'finalizing', '', '', 1, ?, ?)
+                """,
+                (
+                    attempt_id,
+                    turn_id,
+                    run_id,
+                    agent_id,
+                    "succeeded" if succeeded else "interrupted",
+                    started_at,
+                    finished_at,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE messages
+                SET turn_id = ?, attempt_id = ?, kind = 'user_input', state = 'sealed',
+                    updated_at = CASE
+                        WHEN updated_at = 0 THEN created_at ELSE updated_at
+                    END
+                WHERE id = ? AND turn_id IS NULL
+                """,
+                (turn_id, attempt_id, user_message_id),
+            )
+            if assistant_message is not None:
+                conn.execute(
+                    """
+                    UPDATE messages
+                    SET turn_id = ?, attempt_id = ?,
+                        kind = 'assistant_output', state = 'sealed',
+                        updated_at = CASE
+                            WHEN updated_at = 0 THEN created_at ELSE updated_at
+                        END
+                    WHERE id = ? AND turn_id IS NULL
+                    """,
+                    (turn_id, attempt_id, int(assistant_message[0])),
+                )
+                conn.execute(
+                    """
+                    UPDATE conversation_turns
+                    SET canonical_attempt_id = ?, active_attempt_id = NULL, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (attempt_id, finished_at, turn_id),
+                )
+            next_ordinal += 1
+
+
+def _sqlite_seed_empty_conversations(conn: sqlite3.Connection) -> None:
+    """从最早的根任务运行恢复空会话的原始用户输入。"""
+    empty_conversations = conn.execute(
+        """
+        SELECT conversations.id
+        FROM conversations
+        WHERE NOT EXISTS (
+            SELECT 1 FROM messages
+            WHERE messages.conversation_id = conversations.id
+        )
+        ORDER BY conversations.created_at, conversations.id
+        """
+    ).fetchall()
+    for (conversation_id,) in empty_conversations:
+        root_run = conn.execute(
+            """
+            SELECT run_id, text, agent_id, started_at
+            FROM task_runs
+            WHERE conversation_id = ?
+              AND parent_run_id IS NULL
+              AND text <> ''
+            ORDER BY started_at, run_id
+            LIMIT 1
+            """,
+            (conversation_id,),
+        ).fetchone()
+        if root_run is None:
+            continue
+        conn.execute(
+            """
+            INSERT INTO messages (
+                conversation_id, role, content, token_estimate, run_id,
+                agent_id, created_at, kind, state, visibility,
+                metadata_json, updated_at
+            ) VALUES (?, 'user', ?, 0, ?, ?, ?, 'user_input', 'sealed',
+                      'user', '{}', ?)
+            """,
+            (
+                conversation_id,
+                root_run[1],
+                root_run[0],
+                root_run[2],
+                root_run[3],
+                root_run[3],
+            ),
+        )
 
 
 def _log_schema_migrations(backend: str, versions: list[int]) -> None:

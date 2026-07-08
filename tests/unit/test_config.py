@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 import agentkit.config as config_mod
 
 
@@ -58,6 +60,8 @@ def _fresh_settings(monkeypatch, **env):
         "AGENTKIT_MEMORY_WINDOW_TURNS",
         "AGENTKIT_MEMORY_MAX_CONTEXT_TOKENS",
         "AGENTKIT_ARTIFACT_MAX_PAYLOAD_BYTES",
+        "AGENTKIT_RUNTIME_ENVIRONMENT",
+        "AGENTKIT_APPROVAL_CHECKPOINTER",
     ]:
         monkeypatch.delenv(var, raising=False)
     for key, value in env.items():
@@ -78,6 +82,7 @@ def test_defaults(monkeypatch):
     assert s.web_token_business_roles == ""
     assert s.auth_proxy_business_roles_header == "X-Forwarded-Business-Roles"
     assert s.xhs_research_provider == "mock"
+    assert s.approval_checkpointer == "sqlite"
     assert s.xhs_publish_media_strategy == "upload"
     assert s.xhs_text_image_style == "涂鸦"
     assert s.xhs_text_image_generation_timeout_seconds == 120.0
@@ -88,6 +93,28 @@ def test_defaults(monkeypatch):
     assert s.web_search_storage_state_root is None
     assert s.browser_publish_observation_seconds == 90.0
     assert s.artifact_max_payload_bytes == 1_048_576
+
+
+@pytest.mark.parametrize("mode", ["memory", "none"])
+def test_production_rejects_non_durable_approval_checkpointer(monkeypatch, mode) -> None:
+    settings = _fresh_settings(
+        monkeypatch,
+        AGENTKIT_RUNTIME_ENVIRONMENT="production",
+        AGENTKIT_APPROVAL_CHECKPOINTER=mode,
+    )
+
+    with pytest.raises(ValueError, match="durable approval checkpointer"):
+        config_mod.validate_runtime_settings(settings)
+
+
+def test_development_allows_memory_approval_checkpointer(monkeypatch) -> None:
+    settings = _fresh_settings(
+        monkeypatch,
+        AGENTKIT_RUNTIME_ENVIRONMENT="development",
+        AGENTKIT_APPROVAL_CHECKPOINTER="memory",
+    )
+
+    assert config_mod.validate_runtime_settings(settings) is None
 
 
 def test_media_understanding_defaults(monkeypatch):

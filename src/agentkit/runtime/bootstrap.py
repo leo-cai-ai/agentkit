@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from agentkit.config import get_settings
+from agentkit.config import get_settings, validate_runtime_settings
 from agentkit.core.artifacts import ArtifactRecord, build_artifact_store
 from agentkit.core.audit import PostgresAuditLog, SQLiteAuditLog
 from agentkit.core.context import (
@@ -157,13 +157,14 @@ def build_runtime(
     db_path: Path | None = None,
 ) -> AgentKitRuntime:
     """从声明式目录编译唯一 Runtime，不注册隐式平台 Agent。"""
+    settings = get_settings()
+    validate_runtime_settings(settings)
     resolved_tenant_id = resolve_tenant_id(tenant_id)
     if db_path is None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         db_path = DATA_DIR / f"{resolved_tenant_id}.sqlite"
     tenant_config = load_tenant_config(resolved_tenant_id)
     tenant_key = str(tenant_config.get("tenant_id") or resolved_tenant_id)
-    settings = get_settings()
     storage_backend = str(getattr(settings, "storage_backend", "sqlite")).lower()
     run_storage_migrations(settings, sqlite_path=db_path)
     audit: PostgresAuditLog | SQLiteAuditLog
