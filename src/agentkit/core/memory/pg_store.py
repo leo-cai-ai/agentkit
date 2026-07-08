@@ -243,6 +243,14 @@ class PgConversationStore(ConversationStore):
                 UPDATE conversation_attempts
                 SET status = %s, stage = COALESCE(%s, stage), error_code = %s,
                     error_summary = %s, version = version + 1,
+                    resume_lease_owner = CASE
+                        WHEN status = 'running' AND %s = 'running' THEN resume_lease_owner
+                        ELSE NULL
+                    END,
+                    resume_lease_expires_at = CASE
+                        WHEN status = 'running' AND %s = 'running' THEN resume_lease_expires_at
+                        ELSE NULL
+                    END,
                     finished_at = CASE WHEN %s IS NULL THEN finished_at ELSE %s END
                 WHERE id = %s AND status IN ({placeholders})
                 """,
@@ -251,6 +259,8 @@ class PgConversationStore(ConversationStore):
                     stage,
                     error_code,
                     error_summary,
+                    status,
+                    status,
                     finished_at,
                     finished_at,
                     attempt_id,
@@ -530,7 +540,8 @@ class PgConversationStore(ConversationStore):
                 """
                 UPDATE conversation_attempts
                 SET status = 'waiting_for_approval', stage = 'awaiting_user_decision',
-                    agent_id = %s, version = version + 1
+                    agent_id = %s, version = version + 1, resume_lease_owner = NULL,
+                    resume_lease_expires_at = NULL
                 WHERE id = %s AND turn_id = %s AND status IN ('queued', 'running')
                 """,
                 (agent_id, attempt_id, turn_id),
@@ -642,7 +653,8 @@ class PgConversationStore(ConversationStore):
             resumed = conn.execute(
                 """
                 UPDATE conversation_attempts
-                SET status = 'resuming', version = version + 1
+                SET status = 'resuming', version = version + 1,
+                    resume_lease_owner = NULL, resume_lease_expires_at = NULL
                 WHERE id = %s AND status = 'waiting_for_approval'
                 """,
                 (str(row[1]),),
@@ -701,7 +713,9 @@ class PgConversationStore(ConversationStore):
                 """
                 UPDATE conversation_attempts
                 SET status = %s, error_code = %s, error_summary = %s,
-                    version = version + 1, finished_at = COALESCE(%s, finished_at)
+                    version = version + 1, resume_lease_owner = NULL,
+                    resume_lease_expires_at = NULL,
+                    finished_at = COALESCE(%s, finished_at)
                 WHERE id = %s
                 """,
                 (attempt_status, error_code, error_summary, finished_at, str(current[0])),
@@ -716,6 +730,75 @@ class PgConversationStore(ConversationStore):
                     (now, str(current[0])),
                 )
         return True
+
+    def claim_action_resume(
+        self,
+        action_id: str,
+        *,
+        lease_owner: str,
+        lease_seconds: float,
+        now: float | None = None,
+    ) -> bool:
+        """抢占审批恢复租约；PostgreSQL 通过行锁串行化多实例竞争。"""
+        if not lease_owner or lease_seconds <= 0:
+            raise ValueError("resume lease owner and duration are required")
+        resolved_now = round(time.time() if now is None else now, 3)
+        expires_at = round(resolved_now + lease_seconds, 3)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT action.attempt_id, attempt.status, attempt.resume_lease_expires_at
+                FROM conversation_actions AS action
+                JOIN conversation_attempts AS attempt ON attempt.id = action.attempt_id
+                WHERE action.id = %s AND action.status IN ('approved', 'rejected')
+                  AND action.decision IN ('approved', 'rejected')
+                FOR UPDATE OF action, attempt
+                """,
+                (action_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            status = str(row[1])
+            lease_expiry = float(row[2]) if row[2] is not None else None
+            if status != "resuming" and not (
+                status == "running" and (lease_expiry is None or lease_expiry <= resolved_now)
+            ):
+                return False
+            changed = conn.execute(
+                """
+                UPDATE conversation_attempts
+                SET status = 'running', resume_lease_owner = %s,
+                    resume_lease_expires_at = %s, version = version + 1
+                WHERE id = %s
+                """,
+                (lease_owner, expires_at, str(row[0])),
+            )
+        return changed.rowcount == 1
+
+    def renew_action_resume_lease(
+        self,
+        action_id: str,
+        *,
+        lease_owner: str,
+        lease_seconds: float,
+        now: float | None = None,
+    ) -> bool:
+        if not lease_owner or lease_seconds <= 0:
+            raise ValueError("resume lease owner and duration are required")
+        resolved_now = round(time.time() if now is None else now, 3)
+        expires_at = round(resolved_now + lease_seconds, 3)
+        with self._connect() as conn:
+            changed = conn.execute(
+                """
+                UPDATE conversation_attempts
+                SET resume_lease_expires_at = %s, version = version + 1
+                WHERE id = (SELECT attempt_id FROM conversation_actions WHERE id = %s)
+                  AND status = 'running' AND resume_lease_owner = %s
+                  AND resume_lease_expires_at > %s
+                """,
+                (expires_at, action_id, lease_owner, resolved_now),
+            )
+        return changed.rowcount == 1
 
     def create_retry_attempt(
         self,
@@ -1314,7 +1397,9 @@ class PgConversationStore(ConversationStore):
                     error_summary TEXT NOT NULL DEFAULT '',
                     version INTEGER NOT NULL DEFAULT 1,
                     started_at DOUBLE PRECISION NOT NULL,
-                    finished_at DOUBLE PRECISION
+                    finished_at DOUBLE PRECISION,
+                    resume_lease_owner TEXT,
+                    resume_lease_expires_at DOUBLE PRECISION
                 )
                 """
             )
@@ -1368,6 +1453,11 @@ class PgConversationStore(ConversationStore):
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_attempts_one_active
                 ON conversation_attempts(turn_id)
                 WHERE status IN ('queued', 'running', 'waiting_for_approval', 'resuming')
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS idx_conversation_attempts_resume_lease
+                ON conversation_attempts(status, resume_lease_expires_at)
+                WHERE status = 'running'
                 """,
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_actions_idempotency

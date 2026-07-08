@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from agentkit.core.audit import InMemoryAuditLog
-from agentkit.core.metrics import record_scoped_metric, timed_event
+from agentkit.core.metrics import RuntimeMetricsRecorder, record_scoped_metric, timed_event
 
 
 class CaptureMetrics:
@@ -76,3 +76,25 @@ def test_scoped_metric_rejects_content_and_raw_tool_dimensions(unsafe_key: str) 
         )
 
     assert metrics.samples == []
+
+
+def test_runtime_metrics_recorder_emits_structured_metric(caplog) -> None:
+    caplog.set_level("INFO", logger="agentkit.metrics")
+    recorder = RuntimeMetricsRecorder()
+
+    recorder.record(
+        "conversation_recovery_total",
+        1.0,
+        tenant_id="tenant-a",
+        agent_id="general_agent",
+        outcome="resumed",
+    )
+
+    record = next(item for item in caplog.records if item.getMessage() == "runtime_metric")
+    assert record.metric_name == "conversation_recovery_total"
+    assert record.metric_value == 1.0
+    assert record.metric_dimensions == {
+        "tenant_id": "tenant-a",
+        "agent_id": "general_agent",
+        "outcome": "resumed",
+    }

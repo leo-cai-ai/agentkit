@@ -604,6 +604,61 @@ def test_action_resume_failure_emits_safe_invalidation_audit(tmp_path) -> None:
     assert "发布录用通知" not in repr(invalidated)
 
 
+def test_action_resume_claims_durable_lease_before_gateway(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    service, gateway, _, _, _, projection = _projection_service(
+        tmp_path,
+        child_status="waiting_for_approval",
+        child_output={"approval": {"skills": ["candidate.rank"], "preview": {}}},
+    )
+    waiting = service.handle(
+        _prepared_request(
+            projection,
+            message="@招聘 发布录用通知",
+            client_message_id="client-action-lease",
+        )
+    )
+    attempt_view = _timeline(projection, waiting.conversation_id).turns[0]["attempts"][0]
+    action = attempt_view["actions"][0]
+    attempt_id = attempt_view["id"]
+    store = projection._store
+    original_claim = store.claim_action_resume
+    claims: list[dict] = []
+
+    def record_claim(action_id: str, **kwargs) -> bool:
+        claims.append({"action_id": action_id, **kwargs})
+        return original_claim(action_id, **kwargs)
+
+    monkeypatch.setattr(store, "claim_action_resume", record_claim)
+    original_resume = gateway.resume
+    observed_lease: list[tuple[str | None, float | None]] = []
+
+    def inspect_lease(thread_id: str, **kwargs):
+        attempt = store.get_attempt(attempt_id)
+        observed_lease.append((attempt["resume_lease_owner"], attempt["resume_lease_expires_at"]))
+        return original_resume(thread_id, **kwargs)
+
+    monkeypatch.setattr(gateway, "resume", inspect_lease)
+
+    service.decide_action(
+        action["id"],
+        decision="approved",
+        decided_by="u1",
+        decision_context={"roles": ["recruiter"]},
+        idempotency_key="approve-lease",
+        expected_version=action["version"],
+    )
+
+    assert len(claims) == 1
+    assert claims[0]["action_id"] == action["id"]
+    assert claims[0]["lease_owner"]
+    assert claims[0]["lease_seconds"] > 0
+    assert observed_lease[0][0] == claims[0]["lease_owner"]
+    assert observed_lease[0][1] > claims[0]["now"]
+
+
 def test_resume_waiting_again_atomically_rolls_over_durable_approval(tmp_path) -> None:
     service, gateway, audit, _, _, projection = _projection_service(
         tmp_path,

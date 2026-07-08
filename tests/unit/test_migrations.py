@@ -38,13 +38,18 @@ def test_sqlite_v4_creates_conversation_projection_schema(tmp_path) -> None:
     assert run_sqlite_migrations(db_path) == [1, 2, 3, 4]
     with sqlite3.connect(db_path) as conn:
         tables = {
-            row[0]
-            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
         message_columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
+        attempt_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(conversation_attempts)")
+        }
+        indexes = {row[1] for row in conn.execute("PRAGMA index_list(conversation_attempts)")}
 
     assert PROJECTION_TABLES <= tables
     assert MESSAGE_PROJECTION_COLUMNS <= message_columns
+    assert {"resume_lease_owner", "resume_lease_expires_at"} <= attempt_columns
+    assert "idx_conversation_attempts_resume_lease" in indexes
 
 
 def test_sqlite_v4_upgrades_existing_v3_conversation_schema(tmp_path) -> None:
@@ -54,10 +59,12 @@ def test_sqlite_v4_upgrades_existing_v3_conversation_schema(tmp_path) -> None:
     assert run_sqlite_migrations(db_path) == [4]
     with sqlite3.connect(db_path) as conn:
         tables = {
-            row[0]
-            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
         message_columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
+        attempt_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(conversation_attempts)")
+        }
         messages = conn.execute(
             """
             SELECT role, content, kind, state, created_at, updated_at
@@ -68,6 +75,7 @@ def test_sqlite_v4_upgrades_existing_v3_conversation_schema(tmp_path) -> None:
 
     assert PROJECTION_TABLES <= tables
     assert MESSAGE_PROJECTION_COLUMNS <= message_columns
+    assert {"resume_lease_owner", "resume_lease_expires_at"} <= attempt_columns
     assert messages == [
         ("user", "旧用户问题", "user_input", "sealed", 11.0, 11.0),
         ("assistant", "旧助手回答", "assistant_output", "sealed", 12.0, 12.0),
@@ -162,6 +170,11 @@ def test_sqlite_migrations_bootstrap_and_record_version(tmp_path) -> None:
     with sqlite3.connect(db_path) as conn:
         run_columns = {row[1] for row in conn.execute("PRAGMA table_info(task_runs)").fetchall()}
     assert {"agent_id", "parent_run_id", "conversation_id"} <= run_columns
+    with sqlite3.connect(db_path) as conn:
+        attempt_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(conversation_attempts)").fetchall()
+        }
+    assert {"resume_lease_owner", "resume_lease_expires_at"} <= attempt_columns
 
 
 def test_sqlite_migrations_accept_existing_audit_schema(tmp_path) -> None:

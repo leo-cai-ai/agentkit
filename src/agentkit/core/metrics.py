@@ -12,6 +12,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any, Protocol
 
+from .logging_config import get_logger
+
 
 class _Audit(Protocol):
     def record(self, run_id: str, event_type: str, payload: dict[str, Any]) -> None: ...
@@ -31,6 +33,23 @@ _SENSITIVE_DIMENSION_PARTS = (
     "preview",
     "prompt",
 )
+
+
+class RuntimeMetricsRecorder:
+    """把低基数运行时指标写入结构化日志采集链路。"""
+
+    def __init__(self) -> None:
+        self._logger = get_logger("agentkit.metrics")
+
+    def record(self, name: str, value: float, **dimensions: Any) -> None:
+        self._logger.info(
+            "runtime_metric",
+            extra={
+                "metric_name": name,
+                "metric_value": float(value),
+                "metric_dimensions": dict(dimensions),
+            },
+        )
 
 
 def record_scoped_metric(
@@ -84,4 +103,4 @@ def timed_event(
         audit.record(run_id, event_type, {**fields, "duration_ms": duration_ms, "ok": ok})
 
 
-__all__ = ["record_scoped_metric", "timed_event"]
+__all__ = ["RuntimeMetricsRecorder", "record_scoped_metric", "timed_event"]

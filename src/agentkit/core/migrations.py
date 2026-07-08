@@ -123,6 +123,8 @@ _SQLITE_MIGRATIONS: dict[int, tuple[str, ...]] = {
             version INTEGER NOT NULL DEFAULT 1,
             started_at REAL NOT NULL,
             finished_at REAL,
+            resume_lease_owner TEXT,
+            resume_lease_expires_at REAL,
             FOREIGN KEY(turn_id) REFERENCES conversation_turns(id),
             FOREIGN KEY(retry_of_attempt_id) REFERENCES conversation_attempts(id)
         )
@@ -178,6 +180,11 @@ _SQLITE_MIGRATIONS: dict[int, tuple[str, ...]] = {
         CREATE UNIQUE INDEX idx_conversation_attempts_one_active
         ON conversation_attempts(turn_id)
         WHERE status IN ('queued', 'running', 'waiting_for_approval', 'resuming')
+        """,
+        """
+        CREATE INDEX idx_conversation_attempts_resume_lease
+        ON conversation_attempts(status, resume_lease_expires_at)
+        WHERE status = 'running'
         """,
         """
         CREATE UNIQUE INDEX idx_conversation_actions_idempotency
@@ -372,7 +379,9 @@ _POSTGRES_MIGRATIONS: dict[int, tuple[str, ...]] = {
             error_summary TEXT NOT NULL DEFAULT '',
             version INTEGER NOT NULL DEFAULT 1,
             started_at DOUBLE PRECISION NOT NULL,
-            finished_at DOUBLE PRECISION
+            finished_at DOUBLE PRECISION,
+            resume_lease_owner TEXT,
+            resume_lease_expires_at DOUBLE PRECISION
         )
         """,
         """
@@ -423,6 +432,11 @@ _POSTGRES_MIGRATIONS: dict[int, tuple[str, ...]] = {
         CREATE UNIQUE INDEX idx_conversation_attempts_one_active
         ON conversation_attempts(turn_id)
         WHERE status IN ('queued', 'running', 'waiting_for_approval', 'resuming')
+        """,
+        """
+        CREATE INDEX idx_conversation_attempts_resume_lease
+        ON conversation_attempts(status, resume_lease_expires_at)
+        WHERE status = 'running'
         """,
         """
         CREATE UNIQUE INDEX idx_conversation_actions_idempotency

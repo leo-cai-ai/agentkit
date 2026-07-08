@@ -96,7 +96,9 @@ class ConversationRecoveryService:
                     changed_ids.append(attempt_id)
                 continue
 
-            if status not in {"waiting_for_approval", "resuming"}:
+            if status not in {"waiting_for_approval", "resuming", "running"}:
+                continue
+            if status == "running" and action is None:
                 continue
             if action is None:
                 if self._store.transition_attempt(
@@ -112,6 +114,13 @@ class ConversationRecoveryService:
 
             action_id = str(action["id"])
             thread_id = str(action["thread_id"])
+            decision = str(action.get("decision") or action.get("status") or "")
+            if status == "running":
+                if decision not in _DECIDED_ACTION_STATUSES:
+                    continue
+                lease_expiry = attempt.get("resume_lease_expires_at")
+                if lease_expiry is not None and float(lease_expiry) > float(self._clock()):
+                    continue
             if not self._coordinator.pending_approval(thread_id):
                 if self._store.transition_action_attempt(
                     action_id,
@@ -132,8 +141,7 @@ class ConversationRecoveryService:
                     changed_ids.append(action_id)
                 continue
 
-            decision = str(action.get("decision") or action.get("status") or "")
-            if status == "resuming" and decision in _DECIDED_ACTION_STATUSES:
+            if status in {"resuming", "running"} and decision in _DECIDED_ACTION_STATUSES:
                 try:
                     self._coordinator.resume_action(action_id)
                 except ConversationConflictError:

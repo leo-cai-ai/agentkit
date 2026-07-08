@@ -306,6 +306,14 @@ class ConversationStore:
                 UPDATE conversation_attempts
                 SET status = ?, stage = COALESCE(?, stage), error_code = ?,
                     error_summary = ?, version = version + 1,
+                    resume_lease_owner = CASE
+                        WHEN status = 'running' AND ? = 'running' THEN resume_lease_owner
+                        ELSE NULL
+                    END,
+                    resume_lease_expires_at = CASE
+                        WHEN status = 'running' AND ? = 'running' THEN resume_lease_expires_at
+                        ELSE NULL
+                    END,
                     finished_at = CASE WHEN ? IS NULL THEN finished_at ELSE ? END
                 WHERE id = ? AND status IN ({placeholders})
                 """,
@@ -314,6 +322,8 @@ class ConversationStore:
                     stage,
                     error_code,
                     error_summary,
+                    status,
+                    status,
                     finished_at,
                     finished_at,
                     attempt_id,
@@ -655,6 +665,7 @@ class ConversationStore:
                 UPDATE conversation_attempts
                 SET status = {placeholder}, error_code = {placeholder},
                     error_summary = {placeholder}, version = version + 1,
+                    resume_lease_owner = NULL, resume_lease_expires_at = NULL,
                     finished_at = {placeholder}
                 WHERE id = {placeholder}
                   AND status IN ('queued', 'running', 'waiting_for_approval', 'resuming')
@@ -855,6 +866,7 @@ class ConversationStore:
                 UPDATE conversation_attempts
                 SET status = {placeholder}, error_code = {placeholder},
                     error_summary = {placeholder}, version = version + 1,
+                    resume_lease_owner = NULL, resume_lease_expires_at = NULL,
                     finished_at = {placeholder}
                 WHERE id = {placeholder}
                   AND status IN ('queued', 'running', 'waiting_for_approval', 'resuming')
@@ -1065,7 +1077,8 @@ class ConversationStore:
                 f"""
                 UPDATE conversation_attempts
                 SET status = {placeholder}, stage = {placeholder}, agent_id = {placeholder},
-                    version = version + 1
+                    version = version + 1, resume_lease_owner = NULL,
+                    resume_lease_expires_at = NULL
                 WHERE id = {placeholder}
                   AND status IN ('queued', 'running', 'waiting_for_approval', 'resuming')
                 """,
@@ -1430,7 +1443,8 @@ class ConversationStore:
                 """
                 UPDATE conversation_attempts
                 SET status = 'waiting_for_approval', stage = 'awaiting_user_decision',
-                    agent_id = ?, version = version + 1
+                    agent_id = ?, version = version + 1, resume_lease_owner = NULL,
+                    resume_lease_expires_at = NULL
                 WHERE id = ? AND turn_id = ? AND status IN ('queued', 'running')
                 """,
                 (agent_id, attempt_id, turn_id),
@@ -1514,7 +1528,8 @@ class ConversationStore:
             resumed = conn.execute(
                 """
                 UPDATE conversation_attempts
-                SET status = 'resuming', version = version + 1
+                SET status = 'resuming', version = version + 1,
+                    resume_lease_owner = NULL, resume_lease_expires_at = NULL
                 WHERE id = ? AND status = 'waiting_for_approval'
                 """,
                 (str(row[1]),),
@@ -1564,6 +1579,7 @@ class ConversationStore:
                 f"""
                 UPDATE conversation_attempts
                 SET status = ?, error_code = ?, error_summary = ?, version = version + 1,
+                    resume_lease_owner = NULL, resume_lease_expires_at = NULL,
                     finished_at = CASE WHEN ? IS NULL THEN finished_at ELSE ? END
                 WHERE id = (SELECT attempt_id FROM conversation_actions WHERE id = ?)
                   AND status IN ({attempt_slots})
@@ -1593,6 +1609,76 @@ class ConversationStore:
                     (now, action_id),
                 )
         return True
+
+    def claim_action_resume(
+        self,
+        action_id: str,
+        *,
+        lease_owner: str,
+        lease_seconds: float,
+        now: float | None = None,
+    ) -> bool:
+        """抢占审批恢复租约；仅 resuming 或租约已过期的 running 可成功。"""
+        if not lease_owner or lease_seconds <= 0:
+            raise ValueError("resume lease owner and duration are required")
+        resolved_now = round(time.time() if now is None else now, 3)
+        expires_at = round(resolved_now + lease_seconds, 3)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT action.attempt_id, attempt.status, attempt.resume_lease_expires_at
+                FROM conversation_actions AS action
+                JOIN conversation_attempts AS attempt ON attempt.id = action.attempt_id
+                WHERE action.id = ? AND action.status IN ('approved', 'rejected')
+                  AND action.decision IN ('approved', 'rejected')
+                """,
+                (action_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            status = str(row[1])
+            lease_expiry = float(row[2]) if row[2] is not None else None
+            if status != "resuming" and not (
+                status == "running" and (lease_expiry is None or lease_expiry <= resolved_now)
+            ):
+                return False
+            changed = conn.execute(
+                """
+                UPDATE conversation_attempts
+                SET status = 'running', resume_lease_owner = ?, resume_lease_expires_at = ?,
+                    version = version + 1
+                WHERE id = ?
+                """,
+                (lease_owner, expires_at, str(row[0])),
+            )
+        return changed.rowcount == 1
+
+    def renew_action_resume_lease(
+        self,
+        action_id: str,
+        *,
+        lease_owner: str,
+        lease_seconds: float,
+        now: float | None = None,
+    ) -> bool:
+        """仅当前 owner 可为仍活跃的 running 恢复续租。"""
+        if not lease_owner or lease_seconds <= 0:
+            raise ValueError("resume lease owner and duration are required")
+        resolved_now = round(time.time() if now is None else now, 3)
+        expires_at = round(resolved_now + lease_seconds, 3)
+        with self._connect() as conn:
+            changed = conn.execute(
+                """
+                UPDATE conversation_attempts
+                SET resume_lease_expires_at = ?, version = version + 1
+                WHERE id = (SELECT attempt_id FROM conversation_actions WHERE id = ?)
+                  AND status = 'running' AND resume_lease_owner = ?
+                  AND resume_lease_expires_at > ?
+                """,
+                (expires_at, action_id, lease_owner, resolved_now),
+            )
+        return changed.rowcount == 1
 
     def create_retry_attempt(
         self,
@@ -2141,6 +2227,8 @@ class ConversationStore:
                     version INTEGER NOT NULL DEFAULT 1,
                     started_at REAL NOT NULL,
                     finished_at REAL,
+                    resume_lease_owner TEXT,
+                    resume_lease_expires_at REAL,
                     FOREIGN KEY(turn_id) REFERENCES conversation_turns(id),
                     FOREIGN KEY(retry_of_attempt_id) REFERENCES conversation_attempts(id)
                 )
@@ -2199,6 +2287,11 @@ class ConversationStore:
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_attempts_one_active
                 ON conversation_attempts(turn_id)
                 WHERE status IN ('queued', 'running', 'waiting_for_approval', 'resuming')
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS idx_conversation_attempts_resume_lease
+                ON conversation_attempts(status, resume_lease_expires_at)
+                WHERE status = 'running'
                 """,
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_actions_idempotency

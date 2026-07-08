@@ -47,3 +47,15 @@
 - 为把 LangGraph 只读检查公开到恢复 Coordinator，除 brief 文件外最小修改了 `src/agentkit/core/gateway.py`。
 - 为覆盖 Action-based Coordinator 与 startup reconcile，补充修改了 `tests/unit/test_multi_agent_service.py` 与 `tests/unit/test_unified_runtime_bootstrap.py`。
 - 对五个相关源文件执行普通 targeted mypy 时，mypy 报告未修改的 `src/agentkit/runtime/conversation_persistence.py:229` 可选 reader union 错误；本任务未扩大范围修复。新建 recovery 模块的隔离类型检查通过。
+
+## Review Fixes: Action Web Boundary, Resume Lease, Metrics Wiring
+
+- Web 审批改为 `/api/conversation-actions/{action_id}/decision` 与 SSE 版本；请求只允许 `decision`、`expected_version`、`idempotency_key`，Action ID 来自路径。RBAC 后使用服务端 Principal/roles 调 `chat_service.decide_action`，thread/Skills 只从 durable Action 读取。旧 `/api/tasks/resume|approve` 返回 410，旧 Chat approval payload 被拒绝；浏览器只保存 Action ID/version 并生成幂等键。
+- waiting response 与幂等 Timeline replay 均返回 Action ID/version。API 测试覆盖成功、拒绝、重复幂等、缺字段、browser thread/skills 注入拒绝与 legacy endpoint 停用。
+- projection migration v4（未占用保留的 v5）与 SQLite/PostgreSQL Store latest schema 新增 `resume_lease_owner`、`resume_lease_expires_at` 及 running lease 索引。
+- Store 新增原子 `claim_action_resume` 与 owner-only `renew_action_resume_lease`；只允许 `resuming` 或 lease 过期/缺失的 `running` 抢占。stage-only running 更新保留 lease；waiting/terminal/rollover/decide 会清 lease。
+- Coordinator 使用唯一 owner + 60 秒 lease，在同步 Gateway 调用期间以 lease/3 周期 daemon heartbeat 续租，并在所有退出路径 stop/join。Recovery 跳过 active lease，对 expired-running 重新走 Checkpoint 检查与 CAS claim。
+- 确定性测试覆盖 claim 后崩溃、未过期不接管、过期时两个恢复者仅一个获胜、Gateway 调用期间 lease 存活、终态清 lease且 Message 不丢。
+- 新增 `RuntimeMetricsRecorder`，将低基数指标写入 `agentkit.metrics` structured log；bootstrap 创建单一实例并注入 Projection、Coordinator、Recovery，同时暴露在 Runtime。
+- Review RED：Web `6 failed`；lease schema/claim `4 failed`，production claim `1 failed`，stage 更新清 lease `1 failed`；metrics import collection error。逐项修复后 review focused 为 `156 passed`。
+- Review full（lease-preserve/index 最终改动后）：`901 passed, 6 skipped in 99.59s`。

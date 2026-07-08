@@ -37,6 +37,7 @@ from agentkit.core.memory.retrieval import MemoryRetriever
 from agentkit.core.memory.store import build_conversation_store
 from agentkit.core.memory.summarizer import Summarizer
 from agentkit.core.memory.vector_store import SqliteVectorStore, build_vector_store
+from agentkit.core.metrics import RuntimeMetricsRecorder
 from agentkit.core.migrations import run_storage_migrations
 from agentkit.core.multi_agent import AgentDirectory, MultiAgentCoordinator
 from agentkit.core.rag.service import build_knowledge_service
@@ -88,6 +89,7 @@ class AgentKitRuntime:
     conversation_runs: ConversationRunStateResolver
     conversation_projection: ConversationProjectionService
     conversation_recovery: ConversationRecoveryService
+    metrics: RuntimeMetricsRecorder
     manifest: dict[str, Any] | None = None
     # 迁移期间保留属性形状，但不再存在第二套 Chat Runtime。
     chat_service: MultiAgentCoordinator | None = None
@@ -237,9 +239,11 @@ def build_runtime(
     )
     strategies = _build_strategies(checkpointer)
     conversation_store = build_conversation_store(settings, db_path)
+    metrics = RuntimeMetricsRecorder()
     conversation_projection = ConversationProjectionService(
         store=conversation_store,
         audit=audit,
+        metrics=metrics,
     )
     conversation_runs = ConversationRunStateResolver(
         audit=audit,
@@ -345,11 +349,13 @@ def build_runtime(
         conversation_persistence=conversation_persistence,
         conversation_projection=conversation_projection,
         conversation_store=conversation_store,
+        metrics=metrics,
     )
     conversation_recovery = ConversationRecoveryService(
         store=conversation_store,
         coordinator=chat_service,
         audit=audit,
+        metrics=metrics,
     )
     conversation_recovery.reconcile(tenant_id=tenant_key)
     strategy_names = ("direct", "workflow", "batch", "parallel", "react", "plan_execute")
@@ -367,6 +373,7 @@ def build_runtime(
         conversation_runs=conversation_runs,
         conversation_projection=conversation_projection,
         conversation_recovery=conversation_recovery,
+        metrics=metrics,
         manifest=manifest,
         chat_service=chat_service,
     )

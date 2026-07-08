@@ -432,3 +432,16 @@ def test_shared_components_define_loading_empty_error_and_permission_states(clie
         ".ak-drawer",
     ):
         assert selector in css
+
+
+def test_browser_approval_payload_uses_only_durable_action_command(client) -> None:
+    source = client.get("/static/js/app.js").get_data(as_text=True)
+    function = source.split("function buildApprovalChatPayload", 1)[1].split(
+        "async function runUnifiedChatTurn", 1
+    )[0]
+
+    assert "action_id" in function
+    assert "expected_version" in function
+    assert "idempotency_key" in function
+    assert "thread_id" not in function
+    assert "skills" not in function

@@ -26,6 +26,7 @@ def test_postgres_v4_migration_uses_projection_contract() -> None:
     assert "CREATE INDEX IF NOT EXISTS idx_conversations_scope" in sql
     assert "CREATE INDEX IF NOT EXISTS idx_messages_conv" in sql
     assert "CREATE UNIQUE INDEX idx_conversation_attempts_one_active" in sql
+    assert "CREATE INDEX idx_conversation_attempts_resume_lease" in sql
     assert "CREATE UNIQUE INDEX idx_messages_one_streaming_per_attempt" in sql
 
 
@@ -940,3 +941,38 @@ def test_postgres_open_active_message_rejects_terminal_before_insert(monkeypatch
 
     assert len(calls) == 1
     assert "FOR UPDATE" in calls[0]
+
+
+def test_postgres_resume_lease_claim_locks_action_and_attempt(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class Result:
+        def __init__(self, row=None, rowcount=1) -> None:
+            self._row = row
+            self.rowcount = rowcount
+
+        def fetchone(self):
+            return self._row
+
+    class Connection:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+            if "FOR UPDATE OF action, attempt" in sql:
+                return Result(("attempt-1", "resuming", None))
+            return Result()
+
+    store = object.__new__(PgConversationStore)
+    store._settings = None
+    monkeypatch.setattr(store, "_connect", lambda: nullcontext(Connection()))
+
+    assert store.claim_action_resume(
+        "action-1",
+        lease_owner="owner-1",
+        lease_seconds=10.0,
+        now=100.0,
+    )
+
+    assert "FOR UPDATE" in calls[0][0]
+    assert "resume_lease_owner" in calls[1][0]
+    assert calls[1][1] == ("owner-1", 110.0, "attempt-1")
+    assert all("?" not in sql for sql, _ in calls)

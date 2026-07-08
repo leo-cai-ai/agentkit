@@ -64,6 +64,36 @@ class FakeRecoveryCoordinator:
         return None
 
 
+class LeaseRecoveryCoordinator:
+    def __init__(self, store, *, now: float, owner: str) -> None:
+        self.store = store
+        self.now = now
+        self.owner = owner
+        self.resumed: list[str] = []
+
+    def pending_approval(self, thread_id: str) -> bool:
+        return True
+
+    def resume_action(self, action_id: str):
+        claimed = self.store.claim_action_resume(
+            action_id,
+            lease_owner=self.owner,
+            lease_seconds=10.0,
+            now=self.now,
+        )
+        if not claimed:
+            return None
+        self.resumed.append(action_id)
+        self.store.transition_action_attempt(
+            action_id,
+            expected_action={"approved", "rejected"},
+            action_status="completed",
+            expected_attempt={"running"},
+            attempt_status="succeeded",
+        )
+        return None
+
+
 def accepted_store(tmp_path):
     store = ConversationStore(tmp_path / "conversation.sqlite")
     accepted = store.accept_turn(
@@ -143,6 +173,88 @@ def test_approved_action_with_pending_checkpoint_resumes_once(tmp_path) -> None:
 
     assert gateway.resumed_threads == [action.thread_id]
     assert store.get_action(action.id)["status"] == "completed"
+
+
+def test_resume_lease_claim_allows_one_owner_then_expired_takeover(tmp_path) -> None:
+    store, _, _, action, _ = recovery_fixture(
+        tmp_path,
+        checkpoint_exists=True,
+        approved=True,
+    )
+
+    assert store.claim_action_resume(
+        action.id,
+        lease_owner="owner-1",
+        lease_seconds=10.0,
+        now=100.0,
+    )
+    assert not store.claim_action_resume(
+        action.id,
+        lease_owner="owner-2",
+        lease_seconds=10.0,
+        now=105.0,
+    )
+    assert store.claim_action_resume(
+        action.id,
+        lease_owner="owner-2",
+        lease_seconds=10.0,
+        now=111.0,
+    )
+
+    attempt = store.get_attempt(action.attempt_id)
+    assert attempt["status"] == "running"
+    assert attempt["resume_lease_owner"] == "owner-2"
+    assert attempt["resume_lease_expires_at"] == 121.0
+
+
+def test_recovery_skips_active_lease_then_one_worker_takes_expired_crash(tmp_path) -> None:
+    store, _, _, action, _ = recovery_fixture(
+        tmp_path,
+        checkpoint_exists=True,
+        approved=True,
+    )
+    before = store.messages_for_attempt(action.attempt_id)
+    assert store.claim_action_resume(
+        action.id,
+        lease_owner="crashed-owner",
+        lease_seconds=10.0,
+        now=100.0,
+    )
+
+    active_coordinator = LeaseRecoveryCoordinator(store, now=105.0, owner="too-early")
+    active = ConversationRecoveryService(
+        store=store,
+        coordinator=active_coordinator,
+        audit=RecordingAudit(),
+        clock=lambda: 105.0,
+    )
+    assert active.reconcile(tenant_id="tenant-a") == []
+    assert active_coordinator.resumed == []
+
+    winner = LeaseRecoveryCoordinator(store, now=111.0, owner="winner")
+    loser = LeaseRecoveryCoordinator(store, now=111.0, owner="loser")
+    first = ConversationRecoveryService(
+        store=store,
+        coordinator=winner,
+        audit=RecordingAudit(),
+        clock=lambda: 111.0,
+    )
+    second = ConversationRecoveryService(
+        store=store,
+        coordinator=loser,
+        audit=RecordingAudit(),
+        clock=lambda: 111.0,
+    )
+
+    first.reconcile(tenant_id="tenant-a")
+    second.reconcile(tenant_id="tenant-a")
+
+    assert winner.resumed == [action.id]
+    assert loser.resumed == []
+    assert store.get_attempt(action.attempt_id)["status"] == "succeeded"
+    assert store.get_attempt(action.attempt_id)["resume_lease_owner"] is None
+    assert store.get_attempt(action.attempt_id)["resume_lease_expires_at"] is None
+    assert store.messages_for_attempt(action.attempt_id) == before
 
 
 def test_missing_checkpoint_invalidates_action_but_keeps_messages(tmp_path) -> None:

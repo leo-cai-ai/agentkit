@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import re
+import threading
+import time
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -25,6 +28,50 @@ from .registry import AgentRegistry
 from .response_text import format_task_output_text
 
 GENERAL_AGENT_ID = "general_agent"
+
+
+class _ResumeLeaseHeartbeat:
+    """在同步 Gateway 调用期间定期续租，避免长任务被另一实例接管。"""
+
+    def __init__(
+        self,
+        *,
+        store: Any,
+        action_id: str,
+        lease_owner: str,
+        lease_seconds: float,
+        clock: Any,
+    ) -> None:
+        self._store = store
+        self._action_id = action_id
+        self._lease_owner = lease_owner
+        self._lease_seconds = lease_seconds
+        self._clock = clock
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def __enter__(self) -> _ResumeLeaseHeartbeat:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self._stop.set()
+        self._thread.join(timeout=1.0)
+
+    def _run(self) -> None:
+        interval = max(0.1, self._lease_seconds / 3.0)
+        while not self._stop.wait(interval):
+            try:
+                renewed = self._store.renew_action_resume_lease(
+                    self._action_id,
+                    lease_owner=self._lease_owner,
+                    lease_seconds=self._lease_seconds,
+                    now=float(self._clock()),
+                )
+            except Exception:  # noqa: BLE001 - 瞬时续租错误由下一周期重试
+                continue
+            if not renewed:
+                return
 
 
 class AgentMentionError(ValueError):
@@ -203,6 +250,9 @@ class MultiAgentCoordinator:
         conversation_projection: ConversationProjectionService,
         conversation_store: Any = None,
         metrics: Any = None,
+        clock: Any = time.time,
+        resume_lease_seconds: float = 60.0,
+        lease_owner_factory: Any = None,
     ) -> None:
         self._tenant_id = tenant_id
         self._tenant_selector = tenant_selector
@@ -216,6 +266,9 @@ class MultiAgentCoordinator:
         self._projection = conversation_projection
         self._store = conversation_store or conversation_projection._store
         self._metrics = metrics
+        self._clock = clock
+        self._resume_lease_seconds = resume_lease_seconds
+        self._lease_owner_factory = lease_owner_factory or (lambda: str(uuid.uuid4()))
 
     def handle(self, request: TaskRequest) -> TaskResponse:
         conversation_id = str(request.context["conversation_id"])
@@ -569,14 +622,12 @@ class MultiAgentCoordinator:
         target_agent = str(child_run.get("agent_id") or scope["agent_id"])
         self._directory.profile(target_agent)
 
-        if str(attempt["status"]) == "running":
-            return self._response_for_action(action, attempt, conversation)
-        claimed = self._store.transition_action_attempt(
+        lease_owner = str(self._lease_owner_factory())
+        claimed = self._store.claim_action_resume(
             action_id,
-            expected_action={decision},
-            action_status=decision,
-            expected_attempt={"resuming"},
-            attempt_status="running",
+            lease_owner=lease_owner,
+            lease_seconds=self._resume_lease_seconds,
+            now=float(self._clock()),
         )
         if not claimed:
             latest_action = self._store.get_action(action_id)
@@ -596,22 +647,29 @@ class MultiAgentCoordinator:
         approved_skills = skills if decision == "approved" else []
         rejected_skills = skills if decision == "rejected" else []
         try:
-            self._projection.set_stage(accepted.attempt_id, AttemptStage.EXECUTING_AGENT)
-            return self._resume_started(
-                thread_id=thread_id,
-                user_id=user_id,
-                roles=roles,
-                approved_skills=approved_skills,
-                rejected_skills=rejected_skills,
-                decision_context=stored_context,
-                child_run=child_run,
-                parent_run=parent_run,
-                parent_run_id=parent_run_id,
-                conversation_id=str(scope["conversation_id"]),
-                target_agent=target_agent,
-                accepted=accepted,
+            with _ResumeLeaseHeartbeat(
+                store=self._store,
                 action_id=action_id,
-            )
+                lease_owner=lease_owner,
+                lease_seconds=self._resume_lease_seconds,
+                clock=self._clock,
+            ):
+                self._projection.set_stage(accepted.attempt_id, AttemptStage.EXECUTING_AGENT)
+                return self._resume_started(
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    roles=roles,
+                    approved_skills=approved_skills,
+                    rejected_skills=rejected_skills,
+                    decision_context=stored_context,
+                    child_run=child_run,
+                    parent_run=parent_run,
+                    parent_run_id=parent_run_id,
+                    conversation_id=str(scope["conversation_id"]),
+                    target_agent=target_agent,
+                    accepted=accepted,
+                    action_id=action_id,
+                )
         except Exception as exc:
             action_failed = False
             try:
@@ -705,7 +763,7 @@ class MultiAgentCoordinator:
             consumed_context = dict(decision_context or {})
             consumed_context.setdefault("approved_skills", [str(item) for item in approved_skills])
             consumed_context.setdefault("rejected_skills", [str(item) for item in rejected_skills])
-            self._projection.rollover_approval(
+            next_action = self._projection.rollover_approval(
                 accepted=accepted,
                 current_action_id=action_id,
                 run_id=parent_run_id,
@@ -722,6 +780,9 @@ class MultiAgentCoordinator:
                     else None
                 ),
             )
+            approval.update({"action_id": next_action.id, "version": next_action.version})
+            child.output["approval"] = approval
+            child.governance["approval"] = approval
             self._audit.record(
                 parent_run_id,
                 "run_paused",
@@ -885,7 +946,7 @@ class MultiAgentCoordinator:
                 format_task_output_text(status=child.status, output=child.output),
             )
             skills = approval.get("skills", [])
-            self._projection.request_approval(
+            action = self._projection.request_approval(
                 accepted=accepted,
                 run_id=parent_run_id,
                 agent_id=target_agent,
@@ -898,6 +959,9 @@ class MultiAgentCoordinator:
                     else None
                 ),
             )
+            approval.update({"action_id": action.id, "version": action.version})
+            child.output["approval"] = approval
+            child.governance["approval"] = approval
             self._audit.record(
                 parent_run_id,
                 "run_paused",

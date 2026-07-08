@@ -1260,7 +1260,7 @@ function renderResult(payload, requestPayload = null, options = {}) {
   const rejected = outputStatus === "rejected";
   const approval = response.output?.governance?.approval || response.output?.approval || final.approval || {};
   pendingApproval = waitingForApproval && requestPayload
-    ? { request: { ...requestPayload }, skills: approval.skills || [], thread_id: response.output?.thread_id || "" }
+    ? { request: { ...requestPayload }, action_id: approval.action_id || "", version: approval.version || 0 }
     : null;
   const conversationMessage = final.message || response.output?.message || "";
   const rawPlan = escapeHtml(JSON.stringify(response.plan || {}, null, 2));
@@ -1376,7 +1376,7 @@ function addAssistantResponse(result, requestPayload) {
   const approval = response.output?.governance?.approval || response.output?.approval || final.approval || {};
   const label = getSelectedAgentLabel();
   if (response.output?.status === "waiting_for_approval") {
-    pendingApproval = { request: { ...requestPayload }, skills: approval.skills || [], thread_id: response.output?.thread_id || "" };
+    pendingApproval = { request: { ...requestPayload }, action_id: approval.action_id || "", version: approval.version || 0 };
     addApprovalChatMessage(result.assistant_text, approval, label);
     return;
   }
@@ -1441,8 +1441,8 @@ function finalizeActionResult(result, requestPayload, bubble, selectedAgent, str
     if (bubble) bubble.node.remove();
     pendingApproval = {
       request: { ...requestPayload },
-      skills: approval.skills || [],
-      thread_id: response.output?.thread_id || "",
+      action_id: approval.action_id || "",
+      version: approval.version || 0,
     };
     addApprovalChatMessage(
       result.assistant_text,
@@ -1722,22 +1722,11 @@ function agentFromRequestPayload(payload) {
 }
 
 function buildApprovalChatPayload(action) {
-  const originalRequest = pendingApproval?.request || collectChatPayload("");
-  const originalContext = originalRequest.context || {};
-  const context = {
-    agent: originalContext.agent || originalRequest.agent || getSelectedAgentName(),
-    message: action === "approve" ? "Approve" : "Reject",
-    approval: {
-      action,
-      thread_id: pendingApproval?.thread_id || "",
-      skills: pendingApproval?.skills || [],
-      request: originalRequest,
-    },
-  };
-  if (currentConversationId) context.conversation_id = currentConversationId;
   return {
-    user_id: originalRequest.user_id || UI_CONFIG.default_user_id || "",
-    context,
+    action_id: pendingApproval?.action_id || "",
+    decision: action === "approve" ? "approved" : "rejected",
+    expected_version: pendingApproval?.version || 0,
+    idempotency_key: window.crypto?.randomUUID?.() || `approval-${Date.now()}`,
   };
 }
 
@@ -2060,13 +2049,17 @@ async function approvePendingTask() {
   });
   setExecutionState("Approved, executing", 3);
   setAgentStatus(agentName, "running");
-  const approvedPayload = buildApprovalChatPayload("approve");
+  const approvedCommand = buildApprovalChatPayload("approve");
   const bubble = addLiveAssistantMessage(agentLabel);
   let streamed = "";
   let errored = null;
   let succeeded = false;
   try {
-    const result = await streamSse("/api/chat/stream", approvedPayload, {
+    const result = await streamSse(`/api/conversation-actions/${encodeURIComponent(approvedCommand.action_id)}/decision/stream`, {
+      decision: approvedCommand.decision,
+      expected_version: approvedCommand.expected_version,
+      idempotency_key: approvedCommand.idempotency_key,
+    }, {
       signal: requestToken.signal,
       onToken: (delta) => {
         if (!chatSessionGuard.isCurrent(requestToken)) return;
@@ -2121,13 +2114,17 @@ async function rejectPendingTask() {
   });
   setExecutionState("Rejected", 2);
   setAgentStatus(agentName, "rejected");
-  const rejectedPayload = buildApprovalChatPayload("reject");
+  const rejectedCommand = buildApprovalChatPayload("reject");
   const bubble = addLiveAssistantMessage(agentLabel);
   let streamed = "";
   let errored = null;
   let succeeded = false;
   try {
-    const result = await streamSse("/api/chat/stream", rejectedPayload, {
+    const result = await streamSse(`/api/conversation-actions/${encodeURIComponent(rejectedCommand.action_id)}/decision/stream`, {
+      decision: rejectedCommand.decision,
+      expected_version: rejectedCommand.expected_version,
+      idempotency_key: rejectedCommand.idempotency_key,
+    }, {
       signal: requestToken.signal,
       onToken: (delta) => {
         if (!chatSessionGuard.isCurrent(requestToken)) return;

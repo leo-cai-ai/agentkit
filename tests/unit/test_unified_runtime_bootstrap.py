@@ -18,6 +18,10 @@ def test_runtime_registers_only_enabled_business_agents(tmp_path) -> None:
     assert len(runtime.manifest["contexts"]["packs"]) == 15
     assert "prompt_files" not in runtime.manifest
     assert runtime.chat_service is not None
+    assert runtime.metrics is not None
+    assert runtime.chat_service._metrics is runtime.metrics
+    assert runtime.conversation_recovery._metrics is runtime.metrics
+    assert runtime.conversation_projection._metrics is runtime.metrics
 
 
 def test_runtime_exposes_unified_strategy_catalog(tmp_path) -> None:

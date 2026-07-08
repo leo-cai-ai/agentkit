@@ -472,31 +472,24 @@ def _chat_task_request(
     return replace(task, context={**task.context, "agent": "general_agent"})
 
 
-def _approval(payload: dict[str, Any]) -> tuple[str, list[str], list[str]] | None:
-    values = _extract_payload(payload)
-    raw = values.get("approval")
-    if not isinstance(raw, dict):
-        return None
-    thread_id = str(raw.get("thread_id") or "")
-    if not thread_id:
-        raise ValueError("审批恢复缺少 thread_id")
-    skills = _as_list(raw.get("skills"))
-    action = str(raw.get("action") or "approve").lower()
-    return thread_id, ([] if action == "reject" else skills), (skills if action == "reject" else [])
-
-
-def _resume_payload(payload: dict[str, Any]) -> tuple[str, list[str], list[str]]:
-    thread_id = str(payload.get("thread_id") or "")
-    if not thread_id:
-        raise ValueError("审批恢复缺少 thread_id")
-    approved = _as_list(payload.get("approved_skills"))
-    rejected = _as_list(payload.get("rejected_skills"))
-    if not approved and not rejected:
-        raise ValueError("必须提供 approved_skills 或 rejected_skills")
-    overlap = sorted(set(approved) & set(rejected))
-    if overlap:
-        raise ValueError("同一 Skill 不能同时批准和拒绝: " + ", ".join(overlap))
-    return thread_id, approved, rejected
+def _action_decision_payload(payload: dict[str, Any]) -> tuple[str, int, str]:
+    allowed = {"decision", "expected_version", "idempotency_key"}
+    unsupported = sorted(set(payload) - allowed)
+    if unsupported:
+        raise ValueError("Action 决议包含不支持字段: " + ", ".join(unsupported))
+    decision = str(payload.get("decision") or "").lower()
+    if decision not in {"approved", "rejected"}:
+        raise ValueError("decision 必须是 approved 或 rejected")
+    try:
+        expected_version = int(payload["expected_version"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("expected_version 必须是正整数") from exc
+    if expected_version < 1:
+        raise ValueError("expected_version 必须是正整数")
+    idempotency_key = str(payload.get("idempotency_key") or "").strip()
+    if not idempotency_key:
+        raise ValueError("idempotency_key 不能为空")
+    return decision, expected_version, idempotency_key
 
 
 def _run_chat(
@@ -510,6 +503,8 @@ def _run_chat(
     principal = principal if principal is not None else current_principal()
     if runtime.chat_service is None:
         raise RuntimeError("多 Agent 聊天服务未初始化")
+    if isinstance(_extract_payload(payload).get("approval"), dict):
+        raise ValueError("旧审批恢复请求已停用，请使用 durable Action 决议接口")
     task = _chat_task_request(payload, runtime=runtime, principal=principal)
     if trusted_context:
         task = replace(task, context={**task.context, **trusted_context})
@@ -525,38 +520,26 @@ def _run_chat(
             raise ValueError("会话不存在或无权访问")
         if conversation.get("status") != "active":
             raise ValueError("会话正在删除，不能继续执行")
-    approval = _approval(payload)
-    if approval is not None:
-        thread_id, approved, rejected = approval
-        response = runtime.chat_service.resume(
-            thread_id,
-            user_id=task.user_id,
-            roles=task.roles,
-            approved_skills=approved,
-            rejected_skills=rejected,
-            decision_context={"principal": principal.to_public_dict()},
-        )
-    else:
-        accepted = runtime.conversation_projection.accept_user_message(
-            tenant_id=str(runtime.tenant_config["tenant_id"]),
-            user_id=task.user_id,
-            conversation_id=conversation_id or None,
-            client_message_id=str(task.context.get("client_message_id") or uuid.uuid4()),
-            content=task.text,
-            title=task.text[:60],
-        )
-        if not accepted.created:
-            return _existing_chat_response(runtime, task, accepted)
-        task = replace(
-            task,
-            context={
-                **task.context,
-                "conversation_id": accepted.conversation_id,
-                "conversation_turn_id": accepted.turn_id,
-                "conversation_attempt_id": accepted.attempt_id,
-            },
-        )
-        response = runtime.chat_service.handle(task)
+    accepted = runtime.conversation_projection.accept_user_message(
+        tenant_id=str(runtime.tenant_config["tenant_id"]),
+        user_id=task.user_id,
+        conversation_id=conversation_id or None,
+        client_message_id=str(task.context.get("client_message_id") or uuid.uuid4()),
+        content=task.text,
+        title=task.text[:60],
+    )
+    if not accepted.created:
+        return _existing_chat_response(runtime, task, accepted)
+    task = replace(
+        task,
+        context={
+            **task.context,
+            "conversation_id": accepted.conversation_id,
+            "conversation_turn_id": accepted.turn_id,
+            "conversation_attempt_id": accepted.attempt_id,
+        },
+    )
+    response = runtime.chat_service.handle(task)
     return _web_response(response)
 
 
@@ -583,11 +566,14 @@ def _existing_chat_response(
     }.get(attempt_status, attempt_status)
     actions = list(attempt["actions"])
     latest_message = attempt["messages"][-1] if attempt["messages"] else None
+    output: dict[str, Any]
     if response_status == "waiting_for_approval" and actions:
         output = {
             "approval": {
                 "skills": list(actions[-1].get("skills") or []),
                 "preview": dict(actions[-1].get("preview") or {}),
+                "action_id": str(actions[-1]["id"]),
+                "version": int(actions[-1]["version"]),
             }
         }
     else:
@@ -625,7 +611,8 @@ def _run_task(
     return _web_response(runtime.gateway.handle(task))
 
 
-def _resume(
+def _decide_action(
+    action_id: str,
     payload: dict[str, Any],
     *,
     runtime: AgentKitRuntime | None = None,
@@ -633,12 +620,26 @@ def _resume(
 ) -> dict[str, Any]:
     runtime = runtime if runtime is not None else get_runtime()
     principal = principal if principal is not None else current_principal()
-    thread_id, approved, rejected = _resume_payload(payload)
-    response = runtime.gateway.resume(
-        thread_id,
-        approved_skills=approved,
-        rejected_skills=rejected,
-        decision_context={"principal": principal.to_public_dict()},
+    if runtime.chat_service is None:
+        raise RuntimeError("多 Agent 聊天服务未初始化")
+    decision, expected_version, idempotency_key = _action_decision_payload(payload)
+    ui = get_ui_config(runtime.tenant_config)
+    roles, role_source = _trusted_business_roles(
+        tenant_config=runtime.tenant_config,
+        ui=ui,
+        principal=principal,
+    )
+    response = runtime.chat_service.decide_action(
+        action_id,
+        decision=decision,
+        decided_by=_effective_user_id({}, ui, principal=principal),
+        decision_context={
+            "principal": principal.to_public_dict(),
+            "roles": roles,
+            "business_roles_source": role_source,
+        },
+        idempotency_key=idempotency_key,
+        expected_version=expected_version,
     )
     return _web_response(response)
 
@@ -710,20 +711,39 @@ def api_tasks_stream():
 @app.post("/api/tasks/approve")
 @require_permission(TASK_APPROVE)
 def api_tasks_resume():
-    try:
-        return jsonify(_resume(request.get_json(silent=True) or {}))
-    except (KeyError, RuntimeError, ValueError) as exc:
-        return jsonify({"error": str(exc)}), 400
+    return jsonify({"error": "旧浏览器审批恢复接口已停用"}), 410
 
 
 @app.post("/api/tasks/resume/stream")
 @app.post("/api/tasks/approve/stream")
 @require_permission(TASK_APPROVE)
 def api_tasks_resume_stream():
+    return jsonify({"error": "旧浏览器审批恢复接口已停用"}), 410
+
+
+@app.post("/api/conversation-actions/<action_id>/decision")
+@require_permission(TASK_APPROVE)
+def api_conversation_action_decision(action_id: str):
+    try:
+        return jsonify(_decide_action(action_id, request.get_json(silent=True) or {}))
+    except (KeyError, RuntimeError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/conversation-actions/<action_id>/decision/stream")
+@require_permission(TASK_APPROVE)
+def api_conversation_action_decision_stream(action_id: str):
     payload = request.get_json(silent=True) or {}
     runtime = get_runtime()
     principal = current_principal()
-    return _sse(lambda: _resume(payload, runtime=runtime, principal=principal))
+    return _sse(
+        lambda: _decide_action(
+            action_id,
+            payload,
+            runtime=runtime,
+            principal=principal,
+        )
+    )
 
 
 @app.get("/api/conversations")
