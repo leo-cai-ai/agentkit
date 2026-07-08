@@ -404,29 +404,6 @@ function getCsrfToken() {
   return document.querySelector('meta[name="csrf-token"]')?.content || "";
 }
 
-async function postChat(payload, { signal } = {}) {
-  const response = await fetch("/api/chat", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-CSRF-Token": getCsrfToken(),
-    },
-    body: JSON.stringify(payload),
-    signal,
-  });
-  if (!response.ok) {
-    let message = `Request failed with ${response.status}`;
-    try {
-      const data = await response.json();
-      message = data.error || message;
-    } catch {
-      /* ignore */
-    }
-    throw new Error(message);
-  }
-  return response.json();
-}
-
 function parseSseFrame(frame) {
   let event = "message";
   const dataLines = [];
@@ -446,7 +423,7 @@ function parseSseFrame(frame) {
 // Stream an SSE endpoint. Returns the parsed `final` payload (or null). Tokens
 // are delivered to handlers.onToken as they arrive; handlers.onError captures a
 // server-side error frame. Throws when the response is not a usable event
-// stream so callers can fall back to the blocking JSON endpoint.
+// stream; callers recover the durable command through Timeline GET only.
 async function streamSse(url, payload, handlers = {}) {
   const response = await fetch(url, {
     method: "POST",
@@ -749,6 +726,30 @@ function messagesFromTimeline(timeline) {
   return messages;
 }
 
+function applyConversationTimeline(timeline, operation = "") {
+  const execution = executionFromTimeline(timeline, operation);
+  renderConversationExecution(execution);
+  const latestTurn = timeline.turns?.at(-1);
+  const latestAttempt = latestTurn?.attempts?.at(-1);
+  currentRetryCommand = execution.retryable && latestTurn && latestAttempt
+    ? { turnId: latestTurn.id, attemptId: latestAttempt.id }
+    : null;
+  const messages = messagesFromTimeline(timeline);
+  if (!messages.length) {
+    showConversationNotice(emptyConversationNotice(execution));
+    return;
+  }
+  const thread = document.getElementById("chat-thread");
+  if (thread) thread.innerHTML = "";
+  for (const msg of messages) {
+    addChatMessage(
+      msg.role === "user" ? "user" : "assistant",
+      msg.content,
+      msg.role === "user" ? "你" : agentLabel(msg.agent_id || "general_agent"),
+    );
+  }
+}
+
 async function loadConversationTimeline(
   conversationId,
   { operation = "", preserveWhileLoading = false } = {},
@@ -771,27 +772,7 @@ async function loadConversationTimeline(
       !chatSessionGuard.isCurrent(requestToken) ||
       currentConversationId !== requestedConversationId
     ) return;
-    const execution = executionFromTimeline(data, operation);
-    renderConversationExecution(execution);
-    const latestTurn = data.turns?.at(-1);
-    const latestAttempt = latestTurn?.attempts?.at(-1);
-    currentRetryCommand = execution.retryable && latestTurn && latestAttempt
-      ? { turnId: latestTurn.id, attemptId: latestAttempt.id }
-      : null;
-    const messages = messagesFromTimeline(data);
-    if (!messages.length) {
-      showConversationNotice(emptyConversationNotice(execution));
-      return;
-    }
-    const thread = document.getElementById("chat-thread");
-    if (thread) thread.innerHTML = "";
-    for (const msg of messages) {
-      addChatMessage(
-        msg.role === "user" ? "user" : "assistant",
-        msg.content,
-        msg.role === "user" ? "你" : agentLabel(msg.agent_id || "general_agent"),
-      );
-    }
+    applyConversationTimeline(data, operation);
   } catch (error) {
     if (error.name === "AbortError") return;
     if (
@@ -1795,7 +1776,10 @@ function buildApprovalChatPayload(action) {
 
 async function runUnifiedChatTurn(message, selectedAgent) {
   const isNewConversation = !currentConversationId;
-  const requestPayload = collectChatPayload(message);
+  const clientMessageId = window.crypto?.randomUUID?.() || `chat-${Date.now()}`;
+  const requestPayload = collectChatPayload(message, {
+    client_message_id: clientMessageId,
+  });
   const requestToken = chatSessionGuard.begin(currentConversationId);
   const bubble = addLiveAssistantMessage(getSelectedAgentLabel());
   let streamed = "";
@@ -1848,30 +1832,6 @@ async function runUnifiedChatTurn(message, selectedAgent) {
     if (isNewConversation) await loadConversations(selectedAgent);
   } catch (error) {
     if (error.name === "AbortError" || !chatSessionGuard.isCurrent(requestToken)) return;
-    if (!streamed && !errored) {
-      try {
-        const result = await postChat(requestPayload, { signal: requestToken.signal });
-        if (!chatSessionGuard.isCurrent(requestToken)) return;
-        if (result.response) {
-          currentConversationId = result.conversation_id || currentConversationId;
-          finalizeActionResult(result, requestPayload, bubble, selectedAgent, "");
-          if (isNewConversation) await loadConversations(selectedAgent);
-        } else {
-          currentConversationId = result.conversation_id || currentConversationId;
-          finalizeAssistantBubble(bubble, result.assistant_text || "");
-          setExecutionState("Completed", 5, true);
-          setAgentStatus(selectedAgent, "completed");
-          if (isNewConversation) await loadConversations(selectedAgent);
-        }
-        return;
-      } catch (fallbackError) {
-        if (
-          fallbackError.name === "AbortError" ||
-          !chatSessionGuard.isCurrent(requestToken)
-        ) return;
-        error = fallbackError;
-      }
-    }
     if (bubble) bubble.p.textContent = error.message;
     if (errorConversationId) {
       currentConversationId = errorConversationId;
@@ -1881,11 +1841,32 @@ async function runUnifiedChatTurn(message, selectedAgent) {
     setAgentStatus(selectedAgent, "failed");
     updateTraceFromView({ status: "failed" });
   } finally {
-    if (chatSessionGuard.isCurrent(requestToken) && currentConversationId) {
-      await loadConversationTimeline(currentConversationId, {
-        preserveWhileLoading: true,
-      });
+    if (chatSessionGuard.isCurrent(requestToken)) {
+      if (currentConversationId) {
+        await loadConversationTimeline(currentConversationId, {
+          preserveWhileLoading: true,
+        });
+      } else {
+        await loadConversationTimelineForClientMessage(clientMessageId);
+      }
     }
+  }
+}
+
+async function loadConversationTimelineForClientMessage(clientMessageId) {
+  try {
+    const response = await fetch(
+      `/api/conversations/timeline?client_message_id=${encodeURIComponent(clientMessageId)}`,
+    );
+    if (!response.ok) return false;
+    const timeline = await response.json();
+    currentConversationId = timeline.conversation?.id || currentConversationId;
+    if (!currentConversationId) return false;
+    applyConversationTimeline(timeline);
+    renderConversationHistory();
+    return true;
+  } catch {
+    return false;
   }
 }
 

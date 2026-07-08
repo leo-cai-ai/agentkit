@@ -35,6 +35,26 @@ class StreamCancelled(RuntimeError):
     """Raised inside the producer when the SSE consumer has gone away."""
 
 
+class _ObservedTokenSink:
+    """同时驱动 transport 与可选 durable observer，并暴露 force-flush。"""
+
+    def __init__(
+        self,
+        emit: Callable[[str], None],
+        observer: Callable[[str], None] | None,
+    ) -> None:
+        self._emit = emit
+        self._observer = observer
+
+    def __call__(self, chunk: str) -> None:
+        self._emit(chunk)
+
+    def flush(self) -> None:
+        flush = getattr(self._observer, "flush", None)
+        if callable(flush):
+            flush()
+
+
 def sse_frame(event: str, data: Any) -> str:
     """Render a single SSE frame (``event:`` + ``data:`` + blank line)."""
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
@@ -85,7 +105,7 @@ def stream_response(
 
     def worker() -> None:
         try:
-            with llm_client.stream_sink(emit):
+            with llm_client.stream_sink(_ObservedTokenSink(emit, token_observer)):
                 result = produce()
             put_event(("final", result))
         except StreamCancelled:

@@ -106,12 +106,12 @@ class _StreamingProjectionObserver:
                 self._record_failure(exc)
 
     def flush(self) -> None:
-        """终态前尽力刷新；coordinator 会以同一 Message 完成原子封口。"""
+        """终态前强制刷新；Store 仍拒绝更新非 streaming Message。"""
         with self._lock:
             if self._message_id is None:
                 return
             try:
-                self._runtime.conversation_projection.checkpoint_streaming_output(
+                self._runtime.conversation_projection.flush_streaming_output(
                     self._message_id,
                     content=self._content,
                 )
@@ -1021,6 +1021,25 @@ def api_conversations():
         user_id=user_id,
     )
     return jsonify({"conversations": rows})
+
+
+@app.get("/api/conversations/timeline")
+@require_permission(CHAT_USE)
+def api_conversation_timeline_by_client_message():
+    client_message_id = str(request.args.get("client_message_id") or "").strip()
+    if not client_message_id:
+        return jsonify({"error": "client_message_id 不能为空"}), 400
+    runtime = get_runtime()
+    tenant_id, user_id = _request_scope(runtime, current_principal())
+    try:
+        timeline = runtime.conversation_projection.timeline_for_client_message(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            client_message_id=client_message_id,
+        )
+    except KeyError:
+        return jsonify({"error": "会话不存在"}), 404
+    return jsonify(timeline.to_dict())
 
 
 @app.get("/api/conversations/<conversation_id>/timeline")

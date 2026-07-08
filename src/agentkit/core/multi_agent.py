@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from agentkit.core import llm_client
 from agentkit.core.metrics import record_scoped_metric
 from agentkit.runtime.conversation_context import ConversationContextService
 from agentkit.runtime.conversation_persistence import ConversationPersistenceService
@@ -1110,6 +1111,8 @@ class MultiAgentCoordinator:
         if approval_action_id is None:
             self._projection.set_stage(accepted.attempt_id, AttemptStage.FINALIZING)
         content = format_task_output_text(status=status, output=output)
+        # 必须先强制落下短 token，再由同一事务边界封口 Message/Attempt。
+        llm_client.flush_stream_sink()
         if approval_action_id is not None:
             self._projection.project_approval_output(
                 accepted=accepted,
@@ -1151,6 +1154,8 @@ class MultiAgentCoordinator:
         fail_attempt: bool = True,
     ) -> None:
         """异常退出时保证 General 父运行进入失败终态。"""
+        # SSE wrapper 的 finally 晚于本方法；在 fail_attempt 封口前先保存 partial。
+        llm_client.flush_stream_sink()
         try:
             current = self._audit.get_run(run_id)
         except Exception:  # noqa: BLE001 - 清理失败不得遮蔽原始业务异常

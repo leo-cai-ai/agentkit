@@ -266,6 +266,26 @@ def test_streaming_checkpoint_is_time_or_size_gated(tmp_path) -> None:
     assert service.checkpoint_streaming_output(message_id, content="定时检查点") is True
 
 
+def test_force_flush_bypasses_gate_but_only_updates_streaming_message(tmp_path) -> None:
+    service, accepted = projection_fixture(tmp_path, clock=lambda: 100.0)
+    message_id = service.open_streaming_output(
+        accepted=accepted,
+        run_id="run-1",
+        agent_id="xhs_growth",
+    )
+
+    assert service.flush_streaming_output(message_id, content="短") is True
+    assert service._store.get_projection_message(message_id)["content"] == "短"
+    service.seal_streaming_output(
+        message_id,
+        content="短",
+        status=AttemptStatus.FAILED,
+    )
+
+    assert service.flush_streaming_output(message_id, content="不得覆盖") is False
+    assert service._store.get_projection_message(message_id)["content"] == "短"
+
+
 def test_interrupted_stream_keeps_latest_checkpoint(tmp_path) -> None:
     service, accepted = projection_fixture(tmp_path)
     message_id = service.open_streaming_output(

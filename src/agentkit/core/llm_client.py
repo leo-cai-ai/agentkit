@@ -51,6 +51,7 @@ __all__ = [
     "require_chat_json",
     "require_chat_streaming",
     "stream_sink",
+    "flush_stream_sink",
     "budget_guard",
     "enforce_budget",
     "clear_provider_cache",
@@ -72,6 +73,18 @@ def stream_sink(sink: Callable[[str], None] | None) -> Iterator[None]:
         yield
     finally:
         _stream_sink.reset(token)
+
+
+def flush_stream_sink() -> None:
+    """在 Attempt 终结前强制刷新当前 sink 的 durable partial output。"""
+    sink = _stream_sink.get()
+    flush = getattr(sink, "flush", None)
+    if not callable(flush):
+        return
+    try:
+        flush()
+    except Exception:  # noqa: BLE001 - 可观测性钩子不得遮蔽原始执行结果
+        _log.exception("stream sink force flush failed")
 
 
 @contextmanager

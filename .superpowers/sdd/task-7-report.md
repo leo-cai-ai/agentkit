@@ -32,3 +32,11 @@
 - 幂等：submit/retry duplicate 均不会重启 coordinator；accepted event 返回原稳定 ID。
 - 可观测性：新增 SSE error context、checkpoint 审计只含稳定 ID 与错误类型；Timeline/投影指标维度不含消息正文、preview、prompt 或 tool arguments。
 - 断连：durable Chat/Retry 使用 `continue_on_disconnect=True`；非 durable 流保持默认取消语义。
+
+## 审查 Finding 修复
+
+- 浏览器在提交前生成并在整个请求生命周期复用稳定 `client_message_id`；`runUnifiedChatTurn` 已彻底删除 `/api/chat` fallback POST。即使 `accepted` frame 未到便断线，也只通过 `GET /api/conversations/timeline?client_message_id=...` 恢复 durable Timeline，不会产生第二个命令。
+- 新增 `flush_streaming_output` 强制刷新 API：绕过 1 秒/512 字符 checkpoint 门限，但 Store 的 `state='streaming'` 条件仍阻止终态 Message 被覆盖。
+- 当前 LLM stream sink 暴露 force-flush hook；coordinator 在正常 `project_output` 或异常 `fail_attempt` 封口之前调用。因此 `<512 chars/<1s` 的短 partial output 在 provider 中途异常后仍保留在同一个 failed Message。
+- 审查回归测试先观察到 4 个 RED（缺少 force flush、短输出变空、client-message Timeline 返回 405、浏览器仍含 `postChat`），实现后全部转绿。
+- 修复后 focused：120 passed；最终 full：924 passed，6 skipped，0 failed（88.95s）；Ruff、Node syntax 与 `git diff --check` 均通过。

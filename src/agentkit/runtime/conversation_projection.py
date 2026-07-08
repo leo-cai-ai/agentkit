@@ -211,6 +211,14 @@ class ConversationProjectionService:
             self._checkpoints[message_id] = (now, len(content))
         return changed
 
+    def flush_streaming_output(self, message_id: int, *, content: str) -> bool:
+        """强制刷新短输出；Store 仍只允许更新 ``state=streaming`` 的 Message。"""
+        now = self._clock()
+        changed = self._store.checkpoint_attempt_message(message_id, content=content)
+        if changed:
+            self._checkpoints[message_id] = (now, len(content))
+        return changed
+
     def seal_streaming_output(
         self,
         message_id: int,

@@ -320,8 +320,8 @@ def test_xhs_approval_preview_renders_native_pagination_source_text(client) -> N
 
 def test_history_messages_render_normalized_content_not_business_json(client) -> None:
     script = client.get("/static/js/app.js").get_data(as_text=True)
-    start = script.index("async function loadConversationTimeline(")
-    end = script.index("async function refreshConversationExecution(", start)
+    start = script.index("function applyConversationTimeline(")
+    end = script.index("async function loadConversationTimeline(", start)
     body = script[start:end]
     assert "msg.content" in body
     assert "JSON.stringify(msg" not in body
@@ -449,3 +449,17 @@ def test_browser_approval_payload_uses_only_durable_action_command(client) -> No
     assert "idempotency_key" in function
     assert "thread_id" not in function
     assert "skills" not in function
+
+
+def test_chat_disconnect_never_falls_back_to_second_post_and_keeps_stable_command_id(
+    client,
+) -> None:
+    source = client.get("/static/js/app.js").get_data(as_text=True)
+    function = source.split("async function runUnifiedChatTurn", 1)[1].split(
+        "function bindChatForm", 1
+    )[0]
+
+    assert "postChat(" not in function
+    assert "client_message_id" in function
+    assert "randomUUID" in function
+    assert "loadConversationTimelineForClientMessage" in function
