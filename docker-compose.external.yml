@@ -36,6 +36,11 @@ services:
       AGENTKIT_STORAGE_BACKEND: postgres
       AGENTKIT_VECTOR_STORE_BACKEND: postgres
       AGENTKIT_APPROVAL_CHECKPOINTER: postgres
+      # 容器使用镜像内置 Chromium；忽略宿主机 Chrome/Edge 的路径与 Channel。
+      AGENTKIT_WEB_SEARCH_HEADLESS: "true"
+      AGENTKIT_WEB_SEARCH_BROWSER_CHANNEL: ""
+      AGENTKIT_WEB_SEARCH_EXECUTABLE_PATH: ""
+      PLAYWRIGHT_DOWNLOAD_HOST: "https://registry.npmmirror.com/-/binary/playwright"
       # Read-only root FS: keep every runtime write inside the writable tmpfs
       # (/tmp) — no bytecode/cache/HOME writes into /opt/venv or ~/.cache.
       PYTHONDONTWRITEBYTECODE: "1"
