@@ -4,6 +4,7 @@ import threading
 
 import pytest
 
+from agentkit.core.contracts import ApprovalCheckpoint, ApprovalCheckpointStatus
 from agentkit.core.memory.store import ConversationConflictError, ConversationStore
 from agentkit.core.multi_agent import _ResumeLeaseHeartbeat
 from agentkit.runtime.conversation_recovery import ConversationRecoveryService
@@ -53,8 +54,14 @@ class FakeRecoveryCoordinator:
         self.checkpoint_exists = checkpoint_exists
         self.resumed_threads: list[str] = []
 
-    def pending_approval(self, thread_id: str) -> bool:
-        return self.checkpoint_exists
+    def approval_checkpoint(self, thread_id: str) -> ApprovalCheckpoint:
+        del thread_id
+        status = (
+            ApprovalCheckpointStatus.PENDING
+            if self.checkpoint_exists
+            else ApprovalCheckpointStatus.MISSING
+        )
+        return ApprovalCheckpoint(status)
 
     def resume_action(self, action_id: str):
         action = self.store.get_action(action_id)
@@ -76,8 +83,9 @@ class LeaseRecoveryCoordinator:
         self.owner = owner
         self.resumed: list[str] = []
 
-    def pending_approval(self, thread_id: str) -> bool:
-        return True
+    def approval_checkpoint(self, thread_id: str) -> ApprovalCheckpoint:
+        del thread_id
+        return ApprovalCheckpoint(ApprovalCheckpointStatus.PENDING)
 
     def resume_action(self, action_id: str):
         claimed = self.store.claim_action_resume(

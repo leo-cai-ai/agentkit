@@ -13,7 +13,7 @@ from agentkit.runtime.conversation_persistence import ConversationPersistenceSer
 
 from .artifacts import ArtifactStore
 from .audit import InMemoryAuditLog, PostgresAuditLog, SQLiteAuditLog
-from .contracts import TaskRequest, TaskResponse
+from .contracts import ApprovalCheckpoint, TaskRequest, TaskResponse
 from .execution.batch import BatchStrategy
 from .execution.direct import DirectStrategy
 from .execution.models import AutonomyBudget
@@ -187,9 +187,9 @@ class AgentGateway:
             decision_context=decision_context,
         )
 
-    def pending_approval(self, thread_id: str) -> bool:
-        """返回 Checkpoint 是否仍可审批恢复，不重建任何会话内容。"""
-        return self._agent_graph.pending_approval(thread_id)
+    def approval_checkpoint(self, thread_id: str) -> ApprovalCheckpoint:
+        """只读返回审批 Checkpoint 三态及已完成响应。"""
+        return self._agent_graph.approval_checkpoint(thread_id)
 
     @property
     def agents(self) -> AgentRegistry:

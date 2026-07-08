@@ -872,6 +872,25 @@ def test_accept_turn_checks_existing_conversation_status_before_duplicate_key(tm
         _accept(store, conversation_id=accepted.conversation_id)
 
 
+def test_accept_turn_duplicate_key_rejects_foreign_conversation_agent(tmp_path) -> None:
+    store = ConversationStore(tmp_path / "conversation.sqlite")
+    accepted = _accept(store, client_message_id="shared-client-key")
+
+    with pytest.raises(ConversationConflictError, match="agent"):
+        store.accept_turn(
+            tenant_id="tenant-a",
+            agent="xhs_growth",
+            user_id="u1",
+            conversation_id=None,
+            title="业务 Agent",
+            client_message_id="shared-client-key",
+            user_content="不能命中 General 会话",
+            user_token_estimate=8,
+        )
+
+    assert store.get_conversation(accepted.conversation_id)["agent"] == "general_agent"
+
+
 def test_delete_conversation_removes_projection_but_keeps_audit(tmp_path) -> None:
     store = ConversationStore(tmp_path / "conversation.sqlite")
     accepted = _accept(store, client_message_id="client-delete")

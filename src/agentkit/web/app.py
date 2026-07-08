@@ -31,6 +31,7 @@ from agentkit.core.identity import (
     TASK_RUN,
     Principal,
 )
+from agentkit.core.memory.store import ConversationConflictError
 from agentkit.core.response_text import (
     format_task_output_text,
     normalize_persisted_assistant_text,
@@ -906,6 +907,8 @@ def _sse(
 def api_chat():
     try:
         return jsonify(_run_chat(request.get_json(silent=True) or {}))
+    except ConversationConflictError as exc:
+        return jsonify({"error": str(exc)}), 409
     except (KeyError, RuntimeError, ValueError) as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -922,6 +925,8 @@ def api_chat_stream():
             runtime=runtime,
             principal=principal,
         )
+    except ConversationConflictError as exc:
+        return jsonify({"error": str(exc)}), 409
     except (KeyError, RuntimeError, ValueError) as exc:
         return jsonify({"error": str(exc)}), 400
     observer = _StreamingProjectionObserver(runtime, command.accepted)

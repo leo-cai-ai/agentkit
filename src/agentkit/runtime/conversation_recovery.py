@@ -227,7 +227,9 @@ class ConversationRecoveryService:
                 lease_expiry = attempt.get("resume_lease_expires_at")
                 if lease_expiry is not None and float(lease_expiry) > float(self._clock()):
                     continue
-            if not self._coordinator.pending_approval(thread_id):
+            checkpoint = self._coordinator.approval_checkpoint(thread_id)
+            checkpoint_status = str(checkpoint.status)
+            if checkpoint_status == "missing":
                 if self._store.transition_action_attempt(
                     action_id,
                     expected_action={str(action["status"])},
@@ -245,6 +247,18 @@ class ConversationRecoveryService:
                         outcome="checkpoint_missing",
                     )
                     changed_ids.append(action_id)
+                continue
+
+            if checkpoint_status == "completed":
+                if decision not in _DECIDED_ACTION_STATUSES or checkpoint.response is None:
+                    continue
+                try:
+                    self._coordinator.recover_completed_action(action_id, checkpoint.response)
+                except ConversationConflictError:
+                    # 已有实例完成 fencing 或投影时，本实例只停止。
+                    continue
+                self._record_recovery_metric(attempt, outcome="checkpoint_completed")
+                changed_ids.append(action_id)
                 continue
 
             if status in {"resuming", "running"} and decision in _DECIDED_ACTION_STATUSES:

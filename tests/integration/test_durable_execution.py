@@ -98,3 +98,39 @@ def test_resume_rejects_changed_context_manifest(tmp_path) -> None:
         gateway.resume(waiting.thread_id, approved_skills=["refund.apply"])
 
     assert calls == []
+
+
+def test_sqlite_checkpoint_inspection_distinguishes_pending_completed_and_missing(
+    tmp_path,
+) -> None:
+    calls: list[str] = []
+    request = TaskRequest(
+        user_id="u1",
+        roles=[],
+        text="退款",
+        context={
+            "agent": "customer_service",
+            "skill": "refund.apply",
+            "skill_args": {"marker": "once"},
+        },
+    )
+    first = _durable_gateway(tmp_path, calls)
+    waiting = first.handle(request)
+
+    pending = first.approval_checkpoint(waiting.thread_id)
+    assert pending.status == "pending"
+    assert pending.response is None
+
+    resumed = _durable_gateway(tmp_path, calls)
+    completed_response = resumed.resume(
+        waiting.thread_id,
+        approved_skills=["refund.apply"],
+    )
+    completed = resumed.approval_checkpoint(waiting.thread_id)
+    assert completed.status == "completed"
+    assert completed.response == completed_response
+
+    missing = resumed.approval_checkpoint("missing-thread")
+    assert missing.status == "missing"
+    assert missing.response is None
+    assert calls == ["once"]

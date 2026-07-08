@@ -23,7 +23,7 @@ from agentkit.runtime.conversation_projection_models import (
 
 from .audit import TERMINAL_RUN_STATUSES
 from .context.models import ContextRenderRequest
-from .contracts import TaskRequest, TaskResponse
+from .contracts import ApprovalCheckpoint, TaskRequest, TaskResponse
 from .memory.store import ConversationConflictError
 from .registry import AgentRegistry
 from .response_text import format_task_output_text
@@ -731,8 +731,73 @@ class MultiAgentCoordinator:
                 )
             raise
 
-    def pending_approval(self, thread_id: str) -> bool:
-        return bool(self._gateway.pending_approval(thread_id))
+    def approval_checkpoint(self, thread_id: str) -> ApprovalCheckpoint:
+        return self._gateway.approval_checkpoint(thread_id)
+
+    def recover_completed_action(
+        self,
+        action_id: str,
+        response: TaskResponse,
+    ) -> TaskResponse:
+        """用已完成 Checkpoint 补齐父投影，不再次执行 Graph 或 Tool。"""
+        action, attempt, scope, conversation = self._trusted_action(action_id)
+        decision = str(action.get("decision") or action.get("status") or "")
+        if decision not in {"approved", "rejected"}:
+            raise ConversationConflictError("approval action has no durable decision")
+        if response.thread_id != str(action["thread_id"]):
+            raise ConversationConflictError("completed checkpoint thread is outside action scope")
+        child_run = self._audit.run_for_thread(
+            response.thread_id,
+            tenant_id=self._tenant_id,
+            user_id=str(conversation["user_id"]),
+        )
+        parent_run_id = str(attempt.get("run_id") or "")
+        if (
+            child_run is None
+            or str(child_run.get("run_id") or "") != response.run_id
+            or str(child_run.get("parent_run_id") or "") != parent_run_id
+        ):
+            raise ConversationConflictError("completed checkpoint run is outside action scope")
+        claim = self._store.claim_action_resume(
+            action_id,
+            lease_owner=str(self._lease_owner_factory()),
+            lease_seconds=self._resume_lease_seconds,
+            now=float(self._clock()),
+        )
+        if not claim:
+            latest_action = self._store.get_action(action_id)
+            latest_attempt = self._store.get_attempt(str(action["attempt_id"]))
+            if latest_action is None or latest_attempt is None:
+                raise KeyError(action_id)
+            return self._response_for_action(latest_action, latest_attempt, conversation)
+        accepted = self._projection.resolve_accepted(
+            conversation_id=str(scope["conversation_id"]),
+            turn_id=str(scope["turn_id"]),
+            attempt_id=str(scope["attempt_id"]),
+        )
+        self._project_terminal(
+            accepted=accepted,
+            user_id=str(conversation["user_id"]),
+            run_id=parent_run_id,
+            assistant_agent_id=str(response.agent or scope["agent_id"]),
+            status=response.status,
+            output=response.output,
+            approval_action_id=action_id,
+            lease_owner=claim.owner,
+            lease_generation=claim.generation,
+        )
+        self._audit.record(parent_run_id, "run_finished", {"status": response.status})
+        return TaskResponse(
+            status=response.status,
+            output=response.output,
+            run_id=parent_run_id,
+            thread_id=response.thread_id,
+            agent=str(response.agent or scope["agent_id"]),
+            strategy=response.strategy,
+            conversation_id=str(scope["conversation_id"]),
+            governance=dict(response.governance),
+            audit_events=self._audit.events_for(parent_run_id),
+        )
 
     def _resume_started(
         self,

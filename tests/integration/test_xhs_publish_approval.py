@@ -82,7 +82,7 @@ def test_xhs_approval_publishes_frozen_content(monkeypatch, tmp_path) -> None:
         runtime = build_runtime(db_path=tmp_path / "audit.sqlite")
         waiting = runtime.gateway.handle(_request())
         assert waiting.status == "waiting_for_approval"
-        assert runtime.gateway.pending_approval(waiting.thread_id) is True
+        assert runtime.gateway.approval_checkpoint(waiting.thread_id).status == "pending"
         assert waiting.output["approval"]["phase"] == "post_execution"
         assert waiting.output["approval"]["skills"] == ["xhs.growth.campaign"]
         assert waiting.output["approval"]["preview"]["title"] == "暑假带娃旅行避坑"
@@ -95,7 +95,9 @@ def test_xhs_approval_publishes_frozen_content(monkeypatch, tmp_path) -> None:
         assert resumed.status == "completed"
         assert resumed.output["publish"]["status"] == "published"
         assert resumed.output["publish"]["provider"] == "mock"
-        assert runtime.gateway.pending_approval(waiting.thread_id) is False
+        completed = runtime.gateway.approval_checkpoint(waiting.thread_id)
+        assert completed.status == "completed"
+        assert completed.response == resumed
         assert calls.count("article") == 1
         assert calls.count("content_review") == 1
     finally:
@@ -126,6 +128,106 @@ def test_xhs_rejection_never_executes_publish_tool(monkeypatch, tmp_path) -> Non
             for event in rejected.audit_events
         )
     finally:
+        config_mod.get_settings.cache_clear()
+
+
+def test_completed_sqlite_checkpoint_recovers_parent_projection_without_repeating_tool(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        llm_client,
+        "_get_provider",
+        lambda: FakeProvider(responder=_responder(calls)),
+    )
+    monkeypatch.setenv("AGENTKIT_RUNTIME_ENVIRONMENT", "test")
+    monkeypatch.setenv("AGENTKIT_APPROVAL_CHECKPOINTER", "sqlite")
+    monkeypatch.setenv("AGENTKIT_XHS_RESEARCH_PROVIDER", "mock")
+    monkeypatch.setenv("AGENTKIT_XHS_PUBLISHING_PROVIDER", "mock")
+    config_mod.get_settings.cache_clear()
+    db_path = tmp_path / "audit.sqlite"
+    first = build_runtime(db_path=db_path)
+    request = _request()
+    accepted = first.conversation_projection.accept_user_message(
+        tenant_id=str(first.tenant_config["tenant_id"]),
+        user_id=request.user_id,
+        conversation_id=None,
+        client_message_id="checkpoint-crash-gap",
+        content=request.text,
+        title=request.text[:60],
+    )
+    prepared = replace(
+        request,
+        context={
+            **request.context,
+            "conversation_id": accepted.conversation_id,
+            "conversation_turn_id": accepted.turn_id,
+            "conversation_attempt_id": accepted.attempt_id,
+        },
+    )
+    waiting = first.chat_service.handle(prepared)
+    timeline = first.conversation_projection.timeline(
+        conversation_id=accepted.conversation_id,
+        tenant_id=str(first.tenant_config["tenant_id"]),
+        user_id=request.user_id,
+    ).to_dict()
+    action = timeline["turns"][0]["attempts"][0]["actions"][0]
+    decided = first.conversations.decide_action(
+        action["id"],
+        decision="approved",
+        decided_by=request.user_id,
+        decision_context={"roles": request.roles},
+        idempotency_key="checkpoint-crash-approve",
+        expected_version=action["version"],
+    )
+    lease = first.conversations.claim_action_resume(
+        action["id"],
+        lease_owner="crashed-worker",
+        lease_seconds=10.0,
+        now=100.0,
+    )
+    assert lease is not None
+
+    child = first.gateway.resume(
+        waiting.thread_id,
+        approved_skills=list(decided.skills),
+        decision_context={"roles": request.roles},
+    )
+    assert child.status == "completed"
+    assert first.gateway.approval_checkpoint(waiting.thread_id).status == "completed"
+    before_events = first.gateway.audit.events_for(child.run_id)
+    before_tool_count = sum(
+        event["type"] == "tool_call_finished"
+        and event["payload"].get("tool") == "xhs.rpa.publish_note"
+        for event in before_events
+    )
+    assert before_tool_count == 1
+    assert first.conversations.get_attempt(accepted.attempt_id)["status"] == "running"
+    first.close()
+
+    recovered = build_runtime(db_path=db_path)
+    try:
+        after = recovered.conversation_projection.timeline(
+            conversation_id=accepted.conversation_id,
+            tenant_id=str(recovered.tenant_config["tenant_id"]),
+            user_id=request.user_id,
+        ).to_dict()["turns"][0]["attempts"][0]
+        after_events = recovered.gateway.audit.events_for(child.run_id)
+        after_tool_count = sum(
+            event["type"] == "tool_call_finished"
+            and event["payload"].get("tool") == "xhs.rpa.publish_note"
+            for event in after_events
+        )
+
+        assert after_tool_count == 1
+        assert after["status"] == "succeeded"
+        assert after["canonical"] is True
+        assert after["actions"][0]["status"] == "completed"
+        assert after["actions"][0]["decision"] == "approved"
+        assert after["messages"][-1]["content"]
+    finally:
+        recovered.close()
         config_mod.get_settings.cache_clear()
 
 

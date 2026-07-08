@@ -58,10 +58,11 @@ class PgConversationStore(ConversationStore):
         def find_existing(conn: Any) -> AcceptedTurn | None:
             row = conn.execute(
                 """
-                SELECT t.conversation_id, t.id, a.id, t.user_message_id
+                SELECT t.conversation_id, t.id, a.id, t.user_message_id, c.agent
                 FROM conversation_turns AS t
                 JOIN conversation_attempts AS a
                   ON a.turn_id = t.id AND a.attempt_no = 1
+                JOIN conversations AS c ON c.id = t.conversation_id
                 WHERE t.tenant_id = %s AND t.user_id = %s
                   AND t.client_message_id = %s
                 """,
@@ -69,6 +70,10 @@ class PgConversationStore(ConversationStore):
             ).fetchone()
             if row is None:
                 return None
+            if str(row[4]) != agent:
+                raise ConversationConflictError(
+                    "client_message_id belongs to another conversation agent"
+                )
             return AcceptedTurn(
                 conversation_id=str(row[0]),
                 turn_id=str(row[1]),

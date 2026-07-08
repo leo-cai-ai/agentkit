@@ -19,7 +19,15 @@ from agentkit.runtime.conversation_persistence import ConversationPersistenceSer
 from .artifacts import ArtifactStore, InMemoryArtifactStore
 from .audit import InMemoryAuditLog, PostgresAuditLog, SQLiteAuditLog
 from .context.errors import ContextHashMismatchError
-from .contracts import AgentProfile, IntentFrame, SkillDefinition, TaskRequest, TaskResponse
+from .contracts import (
+    AgentProfile,
+    ApprovalCheckpoint,
+    ApprovalCheckpointStatus,
+    IntentFrame,
+    SkillDefinition,
+    TaskRequest,
+    TaskResponse,
+)
 from .execution.models import (
     CapabilityResolution,
     StrategyRequest,
@@ -224,10 +232,20 @@ class UnifiedAgentGraph:
             return self._failure_response(thread_id, config, exc)
         return self._response_from_state(thread_id, config)
 
-    def pending_approval(self, thread_id: str) -> bool:
-        """只判断 durable Checkpoint 是否仍停在审批节点，不读取正文。"""
-        snapshot = self._graph.get_state({"configurable": {"thread_id": thread_id}})
-        return bool(snapshot.values and snapshot.next)
+    def approval_checkpoint(self, thread_id: str) -> ApprovalCheckpoint:
+        """只读区分待审批、已完成和不存在的 durable Checkpoint。"""
+        config = {"configurable": {"thread_id": thread_id}}
+        snapshot = self._graph.get_state(config)
+        if not snapshot.values:
+            return ApprovalCheckpoint(ApprovalCheckpointStatus.MISSING)
+        if snapshot.next:
+            return ApprovalCheckpoint(ApprovalCheckpointStatus.PENDING)
+        if snapshot.values.get("result") is None:
+            return ApprovalCheckpoint(ApprovalCheckpointStatus.MISSING)
+        return ApprovalCheckpoint(
+            ApprovalCheckpointStatus.COMPLETED,
+            self._response_from_state(thread_id, config),
+        )
 
     def _failure_response(
         self,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any, Literal
 
 from .execution.models import (
@@ -231,3 +232,15 @@ class TaskResponse:
             "governance": self.governance,
             "audit_events": self.audit_events,
         }
+
+
+class ApprovalCheckpointStatus(StrEnum):
+    PENDING = "pending"
+    COMPLETED = "completed"
+    MISSING = "missing"
+
+
+@dataclass(frozen=True)
+class ApprovalCheckpoint:
+    status: ApprovalCheckpointStatus
+    response: TaskResponse | None = None

@@ -157,6 +157,33 @@ def test_timeline_can_recover_by_client_message_id_when_accepted_frame_is_lost(c
     assert recovered.get_json()["turns"][0]["client_message_id"] == client_message_id
 
 
+@pytest.mark.parametrize("route", ["/api/chat", "/api/chat/stream"])
+def test_chat_duplicate_client_key_for_foreign_agent_returns_conflict(client, route) -> None:
+    from agentkit.web.app import get_runtime
+
+    token = _login(client)
+    runtime = get_runtime()
+    runtime.conversations.accept_turn(
+        tenant_id=str(runtime.tenant_config["tenant_id"]),
+        agent="xhs_growth",
+        user_id="console-admin",
+        conversation_id=None,
+        title="业务 Agent 会话",
+        client_message_id="cross-agent-duplicate",
+        user_content="业务输入",
+        user_token_estimate=4,
+    )
+
+    response = client.post(
+        route,
+        json={"message": "General 输入", "client_message_id": "cross-agent-duplicate"},
+        headers={"X-CSRF-Token": token},
+    )
+
+    assert response.status_code == 409
+    assert "agent" in response.get_json()["error"]
+
+
 def test_retry_endpoint_appends_attempt_and_keeps_first_attempt(client) -> None:
     from agentkit.web.app import get_runtime
 

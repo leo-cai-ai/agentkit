@@ -56,7 +56,7 @@ def test_rejected_side_effect_never_executes(tmp_path) -> None:
     assert calls == []
 
 
-def test_pending_approval_check_is_read_only(tmp_path) -> None:
+def test_approval_checkpoint_inspection_is_read_only(tmp_path) -> None:
     from tests.integration.test_durable_execution import _durable_gateway
 
     calls: list[str] = []
@@ -74,10 +74,10 @@ def test_pending_approval_check_is_read_only(tmp_path) -> None:
         )
     )
 
-    assert gateway.pending_approval(waiting.thread_id) is True
+    assert gateway.approval_checkpoint(waiting.thread_id).status == "pending"
     assert calls == []
 
     gateway.resume(waiting.thread_id, approved_skills=["refund.apply"])
 
-    assert gateway.pending_approval(waiting.thread_id) is False
+    assert gateway.approval_checkpoint(waiting.thread_id).status == "completed"
     assert calls == ["once"]

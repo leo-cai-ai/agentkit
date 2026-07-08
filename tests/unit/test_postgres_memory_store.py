@@ -7,6 +7,7 @@ import pytest
 
 from agentkit.core import migrations
 from agentkit.core.memory.pg_store import PgConversationStore
+from agentkit.core.memory.store import ConversationConflictError
 from agentkit.runtime.conversation_projection_models import ActionStatus, AttemptStatus
 
 
@@ -572,6 +573,34 @@ def test_postgres_accept_turn_checks_status_before_duplicate_key(monkeypatch) ->
         )
 
     assert "FROM conversations" in calls[0][0]
+
+
+def test_postgres_accept_turn_duplicate_key_rejects_foreign_agent(monkeypatch) -> None:
+    class Result:
+        def fetchone(self):
+            return ("conversation-1", "turn-1", "attempt-1", 1, "xhs_growth")
+
+    class Connection:
+        def execute(self, sql, params):
+            assert "JOIN conversations AS c" in sql
+            assert params == ("tenant-a", "u1", "client-1")
+            return Result()
+
+    store = object.__new__(PgConversationStore)
+    store._settings = None
+    monkeypatch.setattr(store, "_connect", lambda: nullcontext(Connection()))
+
+    with pytest.raises(ConversationConflictError, match="agent"):
+        store.accept_turn(
+            tenant_id="tenant-a",
+            agent="general_agent",
+            user_id="u1",
+            conversation_id=None,
+            title="General 会话",
+            client_message_id="client-1",
+            user_content="不能命中业务会话",
+            user_token_estimate=8,
+        )
 
 
 def test_postgres_projection_scope_uses_public_backend_neutral_shape(monkeypatch) -> None:
