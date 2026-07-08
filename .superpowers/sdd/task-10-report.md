@@ -43,3 +43,10 @@
 - 同步更正 Chat 审批为 durable `POST /api/conversation-actions/{action_id}/decision`；旧 `/api/tasks/resume` 与 `/api/tasks/approve` 浏览器接口标记为 410。
 - 全量活跃文档扫描不再包含 `retry_of_run_id`、旧 `/retry/stream`、`replace_turn_messages`、retry replacement 或原位替换旧契约；历史 `docs/superpowers/specs|plans` 仅保留当时设计讨论。
 - Review 验证：活跃 docs 扫描输出 `NO_ACTIVE_DOC_LEGACY_MATCHES`；Timeline/UI 接口回归 `51 passed`；Ruff `All checks passed!`；format `253 files already formatted`；修改文档的 Markdown fence 均配对。
+
+### 接口文档二次审查
+
+- 删除“缺少 `thread_id` 返回 400”和 Chat `approval` payload 的旧错误/恢复描述，改为当前 `decision`、`expected_version`、`idempotency_key`、Retry 冲突、Action scope 与 `task:approve` RBAC 错误。
+- 接口拓扑不再把已停用的 `/api/tasks/resume` 作为业务边；明确 Chat 浏览器以 Timeline Action 为权威状态。
+- 源码地图删除不存在的 `_resume`，改为实际 `_action_decision_payload`、`_require_action_scope`、`_decide_action`、`_prepare_retry_command` 及对应 Flask Action/Retry 路由。
+- 二次审查验证：Chat/Timeline/Auth/Streaming/UI 接口回归 `87 passed`；旧浏览器权威描述扫描输出 `NO_STALE_BROWSER_AUTHORITY_DESCRIPTIONS`；源码地图 11 个函数逐一确认存在；Ruff、format 与 `git diff --check` 通过。
