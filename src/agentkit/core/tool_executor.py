@@ -321,11 +321,8 @@ class ToolExecutor:
             f"{self._action_tool_idempotency_key}:{tool.name}:"
             f"{canonical_args_hash(resolved)[:16]}"
         )
-        explicit = resolved.get("_idempotency_key")
-        if explicit is not None and str(explicit) != generated:
-            raise IdempotencyConflictError(
-                "explicit idempotency key conflicts with trusted action key"
-            )
+        # The server-derived Action key is authoritative during approval resume.
+        # Legacy Skill-authored keys remain valid outside that trusted context.
         resolved["_idempotency_key"] = generated
         return resolved
 

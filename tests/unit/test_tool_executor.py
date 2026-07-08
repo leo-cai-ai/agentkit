@@ -13,7 +13,6 @@ from agentkit.core.contracts import ToolDefinition
 from agentkit.core.execution.models import ToolPolicy, ToolRisk
 from agentkit.core.idempotency import (
     IdempotencyClaim,
-    IdempotencyConflictError,
     IdempotencyError,
     IdempotencyFailedError,
     IdempotencyOutcomeUnknownError,
@@ -151,7 +150,8 @@ def test_durable_idempotency_reuses_result_across_executors(tmp_path) -> None:
     assert calls["n"] == 1
 
 
-def test_trusted_action_key_rejects_conflicting_explicit_side_effect_key() -> None:
+def test_trusted_action_key_overrides_skill_authored_side_effect_key() -> None:
+    observed: list[dict] = []
     executor = ToolExecutor(
         tenant_id="t",
         action_tool_idempotency_key="approval:action-1:command-1",
@@ -159,13 +159,17 @@ def test_trusted_action_key_rejects_conflicting_explicit_side_effect_key() -> No
         approved_side_effects={"payment.submit"},
     )
     tool = _tool(
-        lambda args: {"ok": True},
+        lambda args: observed.append(dict(args)) or {"ok": True},
         name="payment.submit",
         risk=ToolRisk.SIDE_EFFECT,
     )
 
-    with pytest.raises(IdempotencyConflictError, match="trusted action"):
-        executor.call(tool, {"amount": 10, "_idempotency_key": "skill-authored-key"})
+    assert executor.call(
+        tool,
+        {"amount": 10, "_idempotency_key": "skill-authored-key"},
+    ) == {"ok": True}
+    assert observed[0]["_idempotency_key"].startswith("approval:action-1:command-1:payment.submit:")
+    assert observed[0]["_idempotency_key"] != "skill-authored-key"
 
 
 def test_durable_timeout_marks_outcome_unknown_for_fresh_executor(tmp_path) -> None:
