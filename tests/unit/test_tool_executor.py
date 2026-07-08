@@ -10,8 +10,10 @@ import pytest
 
 from agentkit.core.audit import InMemoryAuditLog
 from agentkit.core.contracts import ToolDefinition
+from agentkit.core.execution.models import ToolPolicy, ToolRisk
 from agentkit.core.idempotency import (
     IdempotencyClaim,
+    IdempotencyConflictError,
     IdempotencyError,
     IdempotencyFailedError,
     IdempotencyOutcomeUnknownError,
@@ -147,6 +149,23 @@ def test_durable_idempotency_reuses_result_across_executors(tmp_path) -> None:
     assert first.call(tool, {"_idempotency_key": "key-1"}) == {"n": 1}
     assert second.call(tool, {"_idempotency_key": "key-1"}) == {"n": 1}
     assert calls["n"] == 1
+
+
+def test_trusted_action_key_rejects_conflicting_explicit_side_effect_key() -> None:
+    executor = ToolExecutor(
+        tenant_id="t",
+        action_tool_idempotency_key="approval:action-1:command-1",
+        tool_policy=ToolPolicy.SIDE_EFFECT,
+        approved_side_effects={"payment.submit"},
+    )
+    tool = _tool(
+        lambda args: {"ok": True},
+        name="payment.submit",
+        risk=ToolRisk.SIDE_EFFECT,
+    )
+
+    with pytest.raises(IdempotencyConflictError, match="trusted action"):
+        executor.call(tool, {"amount": 10, "_idempotency_key": "skill-authored-key"})
 
 
 def test_durable_timeout_marks_outcome_unknown_for_fresh_executor(tmp_path) -> None:

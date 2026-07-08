@@ -25,12 +25,13 @@ def test_invoke_graph_v2_returns_state_value() -> None:
     assert result == {"value": 2}
 
 
-def test_deferred_approval_injects_action_level_tool_idempotency_key(monkeypatch) -> None:
+def test_deferred_approval_routes_action_key_through_tool_boundary(monkeypatch) -> None:
     calls: list[dict] = []
+    executor_options: list[dict] = []
 
     class CapturingExecutor:
         def __init__(self, **kwargs) -> None:
-            pass
+            executor_options.append(dict(kwargs))
 
         def call(self, tool, args):
             calls.append(dict(args))
@@ -66,7 +67,9 @@ def test_deferred_approval_injects_action_level_tool_idempotency_key(monkeypatch
                 text="publish",
                 context={
                     "approved_skills": ["candidate.rank"],
-                    "approval_decision": {"tool_idempotency_key": "approval:action-1:command-1"},
+                    "approval_decision": {
+                        "action_tool_idempotency_key": "approval:action-1:command-1"
+                    },
                 },
             ),
             "run_id": "run-1",
@@ -75,9 +78,5 @@ def test_deferred_approval_injects_action_level_tool_idempotency_key(monkeypatch
     )
 
     assert projected["result"].status == "completed"
-    assert calls == [
-        {
-            "candidate_id": "candidate-1",
-            "_idempotency_key": "approval:action-1:command-1:0:notice.publish",
-        }
-    ]
+    assert calls == [{"candidate_id": "candidate-1"}]
+    assert executor_options[0]["action_tool_idempotency_key"] == ("approval:action-1:command-1")

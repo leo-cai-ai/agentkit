@@ -521,12 +521,11 @@ class MultiAgentCoordinator:
         except Exception as exc:
             action_failed = False
             try:
-                self._projection.fail_approval(
+                action_failed = self._projection.fail_approval(
                     action_id,
                     error_code=type(exc).__name__,
                     error_summary="审批恢复流程异常退出",
                 )
-                action_failed = True
             except Exception:  # noqa: BLE001 - 清理失败不得遮蔽原始业务异常
                 pass
             self._fail_parent_run(
@@ -656,7 +655,7 @@ class MultiAgentCoordinator:
             attempt_id=str(scope["attempt_id"]),
         )
         stored_context = dict(action.get("decision_context_json") or {})
-        stored_context["tool_idempotency_key"] = (
+        stored_context["action_tool_idempotency_key"] = (
             f"approval:{action_id}:{str(action.get('idempotency_key') or '')}"
         )
         roles = [str(item) for item in stored_context.get("roles", [])]
@@ -694,34 +693,48 @@ class MultiAgentCoordinator:
         except Exception as exc:
             if not self._resume_lease_is_current(action_id, claim, heartbeat):
                 raise ConversationConflictError("approval resume lease was lost") from exc
+            cleanup_succeeded: bool | None = None
             try:
-                self._projection.fail_approval(
+                cleanup_succeeded = self._projection.fail_approval(
                     action_id,
                     error_code=type(exc).__name__,
                     error_summary="审批恢复流程异常退出",
                     lease_owner=claim.owner,
                     lease_generation=claim.generation,
                 )
-                self._audit.record(
-                    parent_run_id,
-                    "conversation_action_invalidated",
-                    {
-                        "conversation_id": str(scope["conversation_id"]),
-                        "turn_id": str(scope["turn_id"]),
-                        "attempt_id": str(scope["attempt_id"]),
-                        "action_id": action_id,
-                        "agent_id": str(scope["agent_id"]),
-                        "status": "invalidated",
-                    },
-                )
-            except Exception:  # noqa: BLE001 - 清理失败不得遮蔽原始恢复异常
+            except Exception:  # noqa: BLE001 - cleanup failure must preserve original error
                 pass
-            self._fail_parent_run(
-                parent_run_id,
-                accepted.attempt_id,
-                exc,
-                fail_attempt=False,
-            )
+            if cleanup_succeeded is False:
+                latest_action = self._store.get_action(action_id)
+                latest_attempt = self._store.get_attempt(accepted.attempt_id)
+                if latest_action is not None and latest_attempt is not None:
+                    return self._response_for_action(
+                        latest_action,
+                        latest_attempt,
+                        conversation,
+                    )
+            if cleanup_succeeded:
+                try:
+                    self._audit.record(
+                        parent_run_id,
+                        "conversation_action_invalidated",
+                        {
+                            "conversation_id": str(scope["conversation_id"]),
+                            "turn_id": str(scope["turn_id"]),
+                            "attempt_id": str(scope["attempt_id"]),
+                            "action_id": action_id,
+                            "agent_id": str(scope["agent_id"]),
+                            "status": "invalidated",
+                        },
+                    )
+                except Exception:  # noqa: BLE001 - audit failure must preserve original error
+                    pass
+                self._fail_parent_run(
+                    parent_run_id,
+                    accepted.attempt_id,
+                    exc,
+                    fail_attempt=False,
+                )
             raise
 
     def pending_approval(self, thread_id: str) -> bool:

@@ -16,22 +16,27 @@ from agentkit.core.contracts import (
     RagContextPolicy,
     SkillDefinition,
     TaskRequest,
+    ToolDefinition,
 )
 from agentkit.core.execution.direct import DirectStrategy
 from agentkit.core.execution.models import (
     AgentExecutionPolicy,
     AutonomyBudget,
     AutonomyLimits,
+    CapabilityResolution,
+    ComplexityAssessment,
     ExecutionStrategyName,
     OrchestrationMode,
     ReasoningStrategy,
     SkillExecutionPolicy,
     ToolPolicy,
+    ToolRisk,
 )
 from agentkit.core.execution.registry import StrategyRegistry
-from agentkit.core.execution.selector import StrategySelector
+from agentkit.core.execution.selector import StrategySelection, StrategySelector
 from agentkit.core.execution.workflow import WorkflowStrategy
 from agentkit.core.gateway import AgentGateway
+from agentkit.core.idempotency import build_idempotency_store
 from agentkit.core.memory.store import ConversationStore
 from agentkit.core.registry import AgentRegistry, SkillRegistry, ToolRegistry
 from agentkit.runtime.conversation_context import ConversationContextService
@@ -368,3 +373,117 @@ def test_side_effect_resume_keeps_run_and_does_not_repeat_planning(tmp_path) -> 
     assert calls == ["once"]
     events = [item["type"] for item in resumed.audit_events]
     assert events.count("capability_resolved") == 1
+
+
+def test_pre_execution_approval_takeover_uses_one_stable_tool_side_effect(
+    tmp_path,
+) -> None:
+    effects: list[str] = []
+    agents, skills, tools = AgentRegistry(), SkillRegistry(), ToolRegistry()
+    agents.register(_agent("customer_service", ["refund.apply"]))
+    tools.register(
+        ToolDefinition(
+            name="refund.submit",
+            domain="test",
+            description="submit refund",
+            risk=ToolRisk.SIDE_EFFECT,
+            handler=lambda args: effects.append(args["marker"]) or {"refund": "R-1"},
+        )
+    )
+    skills.register(
+        SkillDefinition(
+            name="refund.apply",
+            domain="test",
+            description="refund.apply",
+            input_schema={
+                "type": "object",
+                "required": ["marker"],
+                "properties": {"marker": {"type": "string"}},
+            },
+            output_schema={"type": "object"},
+            permissions=[],
+            execution=SkillExecutionPolicy(
+                ReasoningStrategy.DIRECT,
+                OrchestrationMode.SINGLE,
+                ToolPolicy.SIDE_EFFECT,
+            ),
+            autonomy=AutonomyLimits(),
+            tools=["refund.submit"],
+            handler=lambda ctx, args: ctx.call_tool("refund.submit", {"marker": args["marker"]}),
+        )
+    )
+    audit = InMemoryAuditLog()
+    gateway = AgentGateway(
+        tenant_id="t1",
+        tenant_selector="company_alpha",
+        tenant_config={},
+        agents=agents,
+        skills=skills,
+        tools=tools,
+        audit=audit,
+        context_invoker=SimpleNamespace(manifest_hash="sha256:test"),
+        checkpointer=MemorySaver(),
+        selector=StrategySelector(
+            skills=skills,
+            global_budget=AutonomyBudget(20, 20, 10, 10, 2, 50000, 600),
+        ),
+        strategies=StrategyRegistry([DirectStrategy(), WorkflowStrategy()]),
+        intent_resolver=_intent,
+        artifact_store_factory=lambda run_id: InMemoryArtifactStore(),
+        idempotency_store=build_idempotency_store(
+            backend="sqlite",
+            tenant_id="t1",
+            sqlite_path=tmp_path / "tool-idempotency.sqlite",
+        ),
+    )
+    request = TaskRequest(
+        user_id="u1",
+        roles=[],
+        text="退款",
+        context={
+            "approved_skills": ["refund.apply"],
+            "approval_decision": {"action_tool_idempotency_key": "approval:action-1:command-1"},
+        },
+    )
+    resolution = CapabilityResolution(
+        response_mode="skill",
+        primary_skill="refund.apply",
+        candidate_skills=("refund.apply",),
+        reason="approved",
+        confidence="high",
+        complexity=ComplexityAssessment(has_side_effects=True),
+    )
+    selection = StrategySelection(
+        strategy=ExecutionStrategyName.DIRECT,
+        orchestration=OrchestrationMode.SINGLE,
+        tool_policy=ToolPolicy.SIDE_EFFECT,
+        budget=AutonomyBudget(20, 20, 10, 10, 2, 50000, 600),
+        reason="approved",
+        llm_used=False,
+    )
+    graph = gateway._agent_graph
+    outputs = []
+    for worker in ("old", "new"):
+        run_id = audit.start_run(
+            tenant_id="t1",
+            user_id="u1",
+            text="退款",
+            agent_id="customer_service",
+        )
+        outputs.append(
+            graph._execute_strategy(
+                {
+                    "selection": selection,
+                    "request": request,
+                    "run_id": run_id,
+                    "agent": _agent("customer_service", ["refund.apply"]),
+                    "resolution": resolution,
+                    "intent": SimpleNamespace(goal=f"{worker} takeover"),
+                    "arguments": {"marker": "once"},
+                }
+            )["result"]
+        )
+
+    assert [result.status for result in outputs] == ["completed", "completed"]
+    assert [result.output for result in outputs] == [{"refund": "R-1"}, {"refund": "R-1"}]
+    assert effects == ["once"]

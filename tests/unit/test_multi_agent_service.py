@@ -607,6 +607,71 @@ def test_action_resume_failure_emits_safe_invalidation_audit(tmp_path) -> None:
     assert "发布录用通知" not in repr(invalidated)
 
 
+def test_takeover_during_fenced_failure_cleanup_does_not_fail_parent_run(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    service, gateway, audit, _, _, projection = _projection_service(
+        tmp_path,
+        child_status="waiting_for_approval",
+        child_output={"approval": {"skills": ["candidate.rank"], "preview": {}}},
+    )
+    waiting = service.handle(
+        _prepared_request(
+            projection,
+            message="@招聘 发布录用通知",
+            client_message_id="client-cleanup-takeover",
+        )
+    )
+    attempt_view = _timeline(projection, waiting.conversation_id).turns[0]["attempts"][0]
+    action = attempt_view["actions"][0]
+    store = projection._store
+    store.decide_action(
+        action["id"],
+        decision="approved",
+        decided_by="u1",
+        decision_context={"roles": ["recruiter"]},
+        idempotency_key="cleanup-takeover",
+        expected_version=action["version"],
+    )
+    base = time.time()
+    service._clock = lambda: base
+    service._resume_lease_seconds = 10.0
+    service._lease_owner_factory = lambda: "old-worker"
+
+    def fail_resume(thread_id: str, **kwargs):
+        raise RuntimeError("old worker failed")
+
+    gateway.resume = fail_resume
+    original_fail = projection.fail_approval
+
+    def takeover_then_fail(action_id: str, **kwargs) -> bool:
+        takeover = store.claim_action_resume(
+            action_id,
+            lease_owner="new-worker",
+            lease_seconds=10.0,
+            now=base + 11.0,
+        )
+        assert takeover is not None
+        assert takeover.generation == 2
+        return original_fail(action_id, **kwargs)
+
+    monkeypatch.setattr(projection, "fail_approval", takeover_then_fail)
+
+    response = service.resume_action(action["id"])
+
+    assert response.status == "running"
+    refreshed = store.get_attempt(attempt_view["id"])
+    assert refreshed["status"] == "running"
+    assert refreshed["resume_lease_owner"] == "new-worker"
+    assert store.get_action(action["id"])["status"] == "approved"
+    assert audit.get_run(waiting.run_id)["status"] == "waiting_for_approval"
+    assert not any(
+        event["type"] in {"run_failed", "conversation_action_invalidated"}
+        for event in audit.events_for(waiting.run_id)
+    )
+
+
 def test_action_resume_claims_durable_lease_before_gateway(
     tmp_path,
     monkeypatch,
@@ -703,7 +768,7 @@ def test_expired_resume_takeover_fences_old_worker_and_reuses_tool_key(tmp_path)
     def controlled_resume(thread_id: str, **kwargs) -> TaskResponse:
         with call_lock:
             call_number = len(tool_keys)
-            tool_keys.append(kwargs["decision_context"]["tool_idempotency_key"])
+            tool_keys.append(kwargs["decision_context"]["action_tool_idempotency_key"])
         if call_number == 0:
             old_entered.set()
             assert release_old.wait(timeout=5.0)

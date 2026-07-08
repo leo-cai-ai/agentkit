@@ -43,6 +43,7 @@ from .idempotency import (
     IdempotencyInProgressError,
     IdempotencyOutcomeUnknownError,
     IdempotencyStore,
+    canonical_args_hash,
     key_digest,
 )
 from .log_context import current_run_id
@@ -129,6 +130,7 @@ class ToolExecutor:
         allowed_tools: set[str] | None = None,
         tool_policy: ToolPolicy = ToolPolicy.GOVERNED,
         approved_side_effects: set[str] | None = None,
+        action_tool_idempotency_key: str = "",
     ) -> None:
         self._tenant_id = tenant_id
         self._audit = audit
@@ -144,8 +146,10 @@ class ToolExecutor:
         self._allowed_tools = None if allowed_tools is None else set(allowed_tools)
         self._tool_policy = tool_policy
         self._approved_side_effects = set(approved_side_effects or ())
+        self._action_tool_idempotency_key = str(action_tool_idempotency_key or "")
 
     def call(self, tool: ToolDefinition, args: dict[str, Any]) -> dict[str, Any]:
+        args = self._apply_action_idempotency(tool, args)
         self._validate_access(tool, args)
         run_id = self._run_id or current_run_id()
         idempotency_store = self._idempotency_store
@@ -304,6 +308,26 @@ class ToolExecutor:
 
         # Unreachable: the loop always returns or raises.
         raise ToolExecutionError(f"tool '{tool.name}' produced no result: {last_exc}")
+
+    def _apply_action_idempotency(
+        self,
+        tool: ToolDefinition,
+        args: dict[str, Any],
+    ) -> dict[str, Any]:
+        if tool.risk is not ToolRisk.SIDE_EFFECT or not self._action_tool_idempotency_key:
+            return args
+        resolved = dict(args)
+        generated = (
+            f"{self._action_tool_idempotency_key}:{tool.name}:"
+            f"{canonical_args_hash(resolved)[:16]}"
+        )
+        explicit = resolved.get("_idempotency_key")
+        if explicit is not None and str(explicit) != generated:
+            raise IdempotencyConflictError(
+                "explicit idempotency key conflicts with trusted action key"
+            )
+        resolved["_idempotency_key"] = generated
+        return resolved
 
     def _invoke(
         self,

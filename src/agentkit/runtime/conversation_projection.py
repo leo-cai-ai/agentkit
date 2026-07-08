@@ -516,7 +516,7 @@ class ConversationProjectionService:
         error_summary: str,
         lease_owner: str | None = None,
         lease_generation: int | None = None,
-    ) -> None:
+    ) -> bool:
         """恢复异常时原子失效 Action，并把仍活动的 Attempt 置为失败。"""
         changed = self._store.transition_action_attempt(
             action_id,
@@ -529,8 +529,7 @@ class ConversationProjectionService:
             lease_owner=lease_owner,
             lease_generation=lease_generation,
         )
-        if not changed:
-            raise ValueError("approval action cannot transition to failed")
+        return changed
 
     def retry_attempt(
         self,

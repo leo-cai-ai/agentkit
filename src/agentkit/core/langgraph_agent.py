@@ -528,6 +528,7 @@ class UnifiedAgentGraph:
             tool_policy=selection.tool_policy,
             approved_side_effects=approved_tools,
             idempotency_store=self._idempotency_store,
+            action_tool_idempotency_key=_action_tool_idempotency_key(request),
         )
         execution_context = ExecutionContext(
             tenant_id=self._tenant_id,
@@ -604,20 +605,13 @@ class UnifiedAgentGraph:
             tool_policy=ToolPolicy.SIDE_EFFECT,
             approved_side_effects=tool_names,
             idempotency_store=self._idempotency_store,
+            action_tool_idempotency_key=_action_tool_idempotency_key(request),
         )
         completed_output = dict(result.output)
         completed_output.pop("deferred_action", None)
-        approval_decision = request.context.get("approval_decision", {})
-        idempotency_base = (
-            str(approval_decision.get("tool_idempotency_key") or "")
-            if isinstance(approval_decision, dict)
-            else ""
-        )
-        for index, item in enumerate(calls):
+        for item in calls:
             tool_name = str(item.get("tool_name") or "")
             tool_args = dict(item.get("args") or item.get("arguments") or {})
-            if idempotency_base:
-                tool_args["_idempotency_key"] = f"{idempotency_base}:{index}:{tool_name}"
             output = invoker.call(
                 self._tools.get(tool_name),
                 tool_args,
@@ -696,6 +690,13 @@ def _granted_permissions(tenant_config: dict[str, Any], roles: list[str]) -> set
     for role in roles:
         granted.update(role_permissions.get(role, []))
     return granted
+
+
+def _action_tool_idempotency_key(request: TaskRequest) -> str:
+    decision = request.context.get("approval_decision", {})
+    if not isinstance(decision, dict):
+        return ""
+    return str(decision.get("action_tool_idempotency_key") or "")
 
 
 __all__ = ["UnifiedAgentGraph", "UnifiedAgentState"]
