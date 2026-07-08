@@ -501,6 +501,45 @@ class MultiAgentCoordinator:
             "status": child.status,
         }
         if child.status == "waiting_for_approval":
+            self._projection.set_stage(
+                accepted.attempt_id,
+                AttemptStage.PREPARING_APPROVAL,
+            )
+            approval = child.output.get("approval", {})
+            if not isinstance(approval, dict):
+                approval = {}
+            governance_approval = child.governance.get("approval", {})
+            if not isinstance(governance_approval, dict):
+                governance_approval = {}
+            approval = {**governance_approval, **approval}
+            preview = approval.get("preview", {})
+            preview = dict(preview) if isinstance(preview, dict) else {}
+            preview.setdefault(
+                "content",
+                format_task_output_text(status=child.status, output=child.output),
+            )
+            skills = approval.get("skills", [])
+            consumed_decision = "approved" if approved_skills or not rejected_skills else "rejected"
+            consumed_context = dict(decision_context or {})
+            consumed_context.setdefault("approved_skills", [str(item) for item in approved_skills])
+            consumed_context.setdefault("rejected_skills", [str(item) for item in rejected_skills])
+            self._projection.rollover_approval(
+                accepted=accepted,
+                current_action_id=action_id,
+                run_id=parent_run_id,
+                decision=consumed_decision,
+                decided_by=user_id,
+                decision_context=consumed_context,
+                agent_id=target_agent,
+                thread_id=child.thread_id,
+                skills=[str(item) for item in skills] if isinstance(skills, list) else [],
+                preview=preview,
+                preview_artifact_id=(
+                    str(approval["preview_artifact_id"])
+                    if approval.get("preview_artifact_id")
+                    else None
+                ),
+            )
             self._audit.record(
                 parent_run_id,
                 "run_paused",
@@ -859,9 +898,7 @@ class MultiAgentCoordinator:
             for attempt in turn["attempts"]:
                 if any(action.get("thread_id") == thread_id for action in attempt["actions"]):
                     action = next(
-                        item
-                        for item in attempt["actions"]
-                        if item.get("thread_id") == thread_id
+                        item for item in attempt["actions"] if item.get("thread_id") == thread_id
                     )
                     return (
                         self._projection.resolve_accepted(

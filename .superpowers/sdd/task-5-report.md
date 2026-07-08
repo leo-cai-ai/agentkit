@@ -52,3 +52,13 @@ Task 4 public API 只能用含 `user_message_id` 的 `AcceptedTurn` 投影输出
 ## Follow-up Boundary
 
 Task 6 仍负责 durable `decide_action` / `resume_action` 命令、Checkpoint 恢复协调与重启 reconciliation；本 Task 未提前实现这些命令。
+
+## Follow-up Review Fixes (2026-07-09)
+
+- 新增原子 `rollover_approval_request`：resume 再次返回 `waiting_for_approval` 时，在同一 SQLite 事务或 PostgreSQL `FOR UPDATE` 事务中记录旧 Action 的消费决策并关闭它、封口旧输出、追加可见 revision、保存新 preview/skills、创建唯一 pending Action，并把 Attempt 恢复为 `waiting_for_approval / awaiting_user_decision`。
+- `client_message_id` 统一从规范化后的 `TaskRequest.context` 读取，因此顶层与嵌套 context 形式共享同一幂等边界，不会启动第二个 Run。
+- 完全删除 SQLite/PostgreSQL 的旧 `replace_turn_messages` 生产 API、对应实现与旧行为测试。
+- TDD RED：rollover primitive 缺失、旧 Action 未记录 decision、嵌套 context 重复提交创建第二个 Turn；实现后定向 `6 passed`。
+- Focused：`116 passed in 29.69s`。
+- Full：`879 passed, 6 skipped in 81.63s`；六项 skip 仍为可选 `customer_band` provider 未安装。
+- Static：scoped Ruff check、Ruff format check、`git diff --check` 全部通过。

@@ -541,7 +541,7 @@ def _run_chat(
             tenant_id=str(runtime.tenant_config["tenant_id"]),
             user_id=task.user_id,
             conversation_id=conversation_id or None,
-            client_message_id=str(payload.get("client_message_id") or uuid.uuid4()),
+            client_message_id=str(task.context.get("client_message_id") or uuid.uuid4()),
             content=task.text,
             title=task.text[:60],
         )

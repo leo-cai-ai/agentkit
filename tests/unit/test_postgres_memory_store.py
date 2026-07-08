@@ -85,47 +85,6 @@ def test_postgres_transition_conversation_status_uses_conditional_update(
     assert params[2:] == ("conversation-a", "active", "deletion_pending")
 
 
-def test_postgres_replace_turn_messages_is_atomic_and_invalidates_summary(
-    monkeypatch,
-) -> None:
-    calls: list[tuple[str, tuple[object, ...]]] = []
-
-    class Result:
-        def __init__(self, rows=()) -> None:
-            self._rows = rows
-
-        def fetchall(self):
-            return list(self._rows)
-
-    class Connection:
-        def execute(self, sql, params):
-            calls.append((sql, params))
-            if "SELECT id, role FROM messages" in sql:
-                return Result(((11, "user"), (12, "assistant")))
-            return Result()
-
-    store = object.__new__(PgConversationStore)
-    store._settings = None
-    monkeypatch.setattr(store, "_connect", lambda: nullcontext(Connection()))
-
-    replaced = store.replace_turn_messages(
-        conversation_id="conversation-a",
-        previous_run_id="run-old",
-        run_id="run-new",
-        user_content="原始问题",
-        user_token_estimate=4,
-        assistant_content="最新结果",
-        assistant_token_estimate=8,
-        assistant_agent_id="xhs_growth",
-    )
-
-    assert replaced is True
-    assert "FOR UPDATE" in calls[0][0]
-    assert calls[0][1] == ("conversation-a", "run-old")
-    assert any("DELETE FROM conversation_summaries" in sql for sql, _ in calls)
-    assert all("?" not in sql for sql, _ in calls)
-
-
 def test_postgres_retry_locks_turn_and_returns_idempotent_attempt(monkeypatch) -> None:
     calls: list[tuple[str, tuple[object, ...]]] = []
 
@@ -748,6 +707,69 @@ def test_postgres_finalize_approval_output_locks_action_and_updates_atomically(
     assert any("state = 'streaming'" in sql for sql, _ in calls)
     assert any("UPDATE conversation_actions" in sql for sql, _ in calls)
     assert any("canonical_attempt_id = %s" in sql for sql, _ in calls)
+    assert all("?" not in sql for sql, _ in calls)
+
+
+def test_postgres_rollover_approval_locks_old_action_and_creates_new_pending_action(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class Result:
+        rowcount = 1
+
+        def __init__(self, row=None) -> None:
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class Connection:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+            if "FROM conversation_actions AS current_action" in sql:
+                return Result(
+                    (
+                        "attempt-1",
+                        "turn-1",
+                        "conversation-1",
+                        "pending",
+                        "resuming",
+                        None,
+                    )
+                )
+            if "ORDER BY id DESC LIMIT 1" in sql:
+                return Result((9,))
+            if "INSERT INTO messages" in sql:
+                return Result((10,))
+            return Result()
+
+    store = object.__new__(PgConversationStore)
+    store._settings = None
+    monkeypatch.setattr(store, "_connect", lambda: nullcontext(Connection()))
+
+    message_id, action = store.rollover_approval_request(
+        "action-old",
+        decision="approved",
+        decided_by="u1",
+        decision_context={"source": "test"},
+        agent_id="xhs_growth",
+        visible_content="第二版审核稿",
+        thread_id="thread-2",
+        skills=["publish.review"],
+        preview={"title": "第二版"},
+        preview_artifact_id=None,
+        now=100.0,
+    )
+
+    assert message_id == 10
+    assert action.status is ActionStatus.PENDING
+    assert action.thread_id == "thread-2"
+    assert "FOR UPDATE" in calls[0][0]
+    assert any("UPDATE conversation_actions" in sql for sql, _ in calls)
+    assert any("decision_context_json" in sql and "approved" in params for sql, params in calls)
+    assert any("INSERT INTO conversation_actions" in sql for sql, _ in calls)
+    assert any("awaiting_user_decision" in repr(params) for _, params in calls)
     assert all("?" not in sql for sql, _ in calls)
 
 

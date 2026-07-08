@@ -352,6 +352,68 @@ class ConversationProjectionService:
         )
         return action
 
+    def rollover_approval(
+        self,
+        *,
+        accepted: AcceptedTurn,
+        current_action_id: str,
+        run_id: str,
+        decision: str,
+        decided_by: str,
+        decision_context: dict[str, Any],
+        agent_id: str,
+        thread_id: str,
+        skills: list[str],
+        preview: dict[str, Any],
+        preview_artifact_id: str | None = None,
+    ) -> ApprovalAction:
+        """原子关闭已消费审批，并持久化下一轮 pending 审批。"""
+        self._validate_accepted(accepted, run_id=run_id)
+        visible_content = str(preview.get("content") or preview.get("summary") or "")
+        message_id, action = self._store.rollover_approval_request(
+            current_action_id,
+            decision=decision,
+            decided_by=decided_by,
+            decision_context=decision_context,
+            agent_id=agent_id,
+            visible_content=visible_content,
+            thread_id=thread_id,
+            skills=skills,
+            preview=preview,
+            preview_artifact_id=preview_artifact_id,
+        )
+        self._audit_event(
+            run_id,
+            "conversation_action_completed",
+            conversation_id=accepted.conversation_id,
+            turn_id=accepted.turn_id,
+            attempt_id=accepted.attempt_id,
+            action_id=current_action_id,
+            agent_id=agent_id,
+            status="completed",
+        )
+        self._audit_event(
+            run_id,
+            "conversation_message_sealed",
+            conversation_id=accepted.conversation_id,
+            turn_id=accepted.turn_id,
+            attempt_id=accepted.attempt_id,
+            message_id=message_id,
+            agent_id=agent_id,
+            status="sealed",
+        )
+        self._audit_event(
+            run_id,
+            "conversation_action_created",
+            conversation_id=accepted.conversation_id,
+            turn_id=accepted.turn_id,
+            attempt_id=accepted.attempt_id,
+            action_id=action.id,
+            agent_id=agent_id,
+            status=action.status.value,
+        )
+        return action
+
     def fail_attempt(self, attempt_id: str, *, error_code: str, error_summary: str) -> None:
         attempt = self._require_attempt(attempt_id)
         streaming = self._output_message(attempt_id, state="streaming")

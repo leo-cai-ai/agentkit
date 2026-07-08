@@ -521,13 +521,50 @@ def test_duplicate_client_message_does_not_start_or_fail_another_run(client) -> 
         user_id="console-admin",
     )
     assert timeline.turns[0]["attempts"][0]["status"] == "running"
-    assert len(
-        runtime.gateway.audit.runs_for_conversation(
-            conversation_id=accepted.conversation_id,
-            tenant_id=tenant_id,
-            user_id="console-admin",
+    assert (
+        len(
+            runtime.gateway.audit.runs_for_conversation(
+                conversation_id=accepted.conversation_id,
+                tenant_id=tenant_id,
+                user_id="console-admin",
+            )
         )
-    ) == 1
+        == 1
+    )
+
+
+def test_nested_context_client_message_id_is_idempotent(client) -> None:
+    from agentkit.web.app import get_runtime
+
+    token = _login(client)
+    runtime = get_runtime()
+    first = client.post(
+        "/api/chat",
+        json={"message": "你好", "context": {"client_message_id": "nested-client"}},
+        headers={"X-CSRF-Token": token},
+    )
+    conversation_id = first.get_json()["conversation_id"]
+
+    second = client.post(
+        "/api/chat",
+        json={
+            "message": "你好",
+            "context": {
+                "client_message_id": "nested-client",
+                "conversation_id": conversation_id,
+            },
+        },
+        headers={"X-CSRF-Token": token},
+    )
+
+    assert first.status_code == second.status_code == 200
+    timeline = runtime.conversation_projection.timeline(
+        conversation_id=conversation_id,
+        tenant_id=str(runtime.tenant_config["tenant_id"]),
+        user_id="console-admin",
+    )
+    assert len(timeline.turns) == 1
+    assert second.get_json()["run_id"] == first.get_json()["run_id"]
 
 
 def test_reconciled_conversation_requires_termination_endpoint(client) -> None:

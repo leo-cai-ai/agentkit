@@ -467,6 +467,73 @@ def test_resume_projects_final_output_without_second_user_message(tmp_path) -> N
     assert attempt["actions"][0]["status"] == "completed"
 
 
+def test_resume_waiting_again_atomically_rolls_over_durable_approval(tmp_path) -> None:
+    service, gateway, audit, _, _, projection = _projection_service(
+        tmp_path,
+        child_status="waiting_for_approval",
+        child_output={
+            "approval": {
+                "skills": ["draft.review"],
+                "preview": {"title": "第一版"},
+            }
+        },
+    )
+    request = _prepared_request(
+        projection,
+        message="@招聘 发布录用通知",
+        client_message_id="client-resume-waiting",
+    )
+    first = service.handle(request)
+    child_run = first.governance["delegation"]["child_run_id"]
+
+    def wait_again(thread_id: str, **kwargs) -> TaskResponse:
+        audit.record(child_run, "run_resumed", {"thread_id": thread_id})
+        audit.record(
+            child_run,
+            "run_paused",
+            {"status": "waiting_for_approval", "thread_id": "child-thread-2"},
+        )
+        return TaskResponse(
+            status="waiting_for_approval",
+            output={
+                "approval": {
+                    "skills": ["publish.review"],
+                    "preview": {"title": "第二版"},
+                }
+            },
+            run_id=child_run,
+            thread_id="child-thread-2",
+            agent="hr_recruiter",
+            strategy="workflow",
+            conversation_id="",
+            governance={"approval": {"skills": ["publish.review"]}},
+            audit_events=audit.events_for(child_run),
+        )
+
+    gateway.resume = wait_again
+
+    second = service.resume(
+        first.thread_id,
+        user_id="u1",
+        roles=["recruiter"],
+        approved_skills=["draft.review"],
+    )
+
+    refreshed = _timeline(projection, second.conversation_id)
+    attempt = refreshed.turns[0]["attempts"][0]
+    assert second.status == "waiting_for_approval"
+    assert (attempt["status"], attempt["stage"]) == (
+        "waiting_for_approval",
+        "awaiting_user_decision",
+    )
+    assert [item["status"] for item in attempt["actions"]] == ["completed", "pending"]
+    assert attempt["actions"][0]["decision"] == "approved"
+    pending = [item for item in attempt["actions"] if item["status"] == "pending"]
+    assert len(pending) == 1
+    assert pending[0]["preview"]["title"] == "第二版"
+    assert attempt["messages"][-1]["content"]
+
+
 def test_resume_failure_fails_existing_attempt(tmp_path) -> None:
     service, gateway, audit, _, _, projection = _projection_service(
         tmp_path,

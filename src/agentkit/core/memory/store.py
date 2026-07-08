@@ -751,10 +751,7 @@ class ConversationStore:
                 """,
                 (scope["attempt_id"],),
             ).fetchone()
-            if (
-                scope["action_status"] == "completed"
-                and scope["attempt_status"] == attempt_status
-            ):
+            if scope["action_status"] == "completed" and scope["attempt_status"] == attempt_status:
                 terminal_output = conn.execute(
                     f"""
                     SELECT id, state FROM messages
@@ -890,6 +887,196 @@ class ConversationStore:
                 tuple(turn_params),
             )
         return message_id, True, scope
+
+    def rollover_approval_request(
+        self,
+        current_action_id: str,
+        *,
+        decision: str,
+        decided_by: str,
+        decision_context: dict[str, Any],
+        agent_id: str,
+        visible_content: str,
+        thread_id: str,
+        skills: list[str],
+        preview: dict[str, Any],
+        preview_artifact_id: str | None,
+        now: float | None = None,
+    ) -> tuple[int, ApprovalAction]:
+        """原子关闭已消费 Action，并持久化下一轮审批 revision 与 pending Action。"""
+        if decision not in {"approved", "rejected"}:
+            raise ValueError("decision must be approved or rejected")
+        resolved_now = round(time.time() if now is None else now, 3)
+        placeholder = self._projection_placeholder
+        new_action_id = str(uuid.uuid4())
+        with self._connect() as conn:
+            self._begin_projection_write(conn)
+            row = conn.execute(
+                f"""
+                SELECT attempt.id, attempt.turn_id, turn.conversation_id,
+                       current_action.status, attempt.status, current_action.decision
+                FROM conversation_actions AS current_action
+                JOIN conversation_attempts AS attempt
+                  ON attempt.id = current_action.attempt_id
+                JOIN conversation_turns AS turn ON turn.id = attempt.turn_id
+                WHERE current_action.id = {placeholder}{self._projection_lock_suffix}
+                """,
+                (current_action_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(current_action_id)
+            (
+                attempt_id,
+                turn_id,
+                conversation_id,
+                action_status,
+                attempt_status,
+                current_decision,
+            ) = row
+            if str(action_status) not in {"pending", "approved", "rejected"}:
+                raise ConversationConflictError("approval action is not active")
+            if str(attempt_status) not in _NON_TERMINAL_ATTEMPT_STATUSES:
+                raise ConversationConflictError("approval attempt is not active")
+            if current_decision is not None and str(current_decision) != decision:
+                raise ConversationConflictError("approval action has another decision")
+
+            streaming = conn.execute(
+                f"""
+                SELECT id FROM messages
+                WHERE attempt_id = {placeholder} AND state = 'streaming'
+                  AND visibility = 'user'
+                ORDER BY id DESC LIMIT 1{self._projection_lock_suffix}
+                """,
+                (attempt_id,),
+            ).fetchone()
+            if streaming is not None:
+                sealed = conn.execute(
+                    f"""
+                    UPDATE messages SET state = 'sealed', agent_id = {placeholder},
+                        updated_at = {placeholder}
+                    WHERE id = {placeholder} AND state = 'streaming'
+                    """,
+                    (agent_id, resolved_now, int(streaming[0])),
+                )
+                if sealed.rowcount != 1:
+                    raise ConversationConflictError("streaming approval output seal failed")
+
+            previous = conn.execute(
+                f"""
+                SELECT id FROM messages
+                WHERE attempt_id = {placeholder} AND role = 'assistant'
+                  AND visibility = 'user'
+                ORDER BY id DESC LIMIT 1{self._projection_lock_suffix}
+                """,
+                (attempt_id,),
+            ).fetchone()
+            cursor = conn.execute(
+                f"""
+                INSERT INTO messages (
+                    conversation_id, role, content, agent_id, created_at, turn_id,
+                    attempt_id, kind, state, artifact_id, supersedes_message_id,
+                    updated_at
+                ) VALUES (
+                    {placeholder}, 'assistant', {placeholder}, {placeholder},
+                    {placeholder}, {placeholder}, {placeholder}, 'assistant_revision',
+                    'sealed', {placeholder}, {placeholder}, {placeholder}
+                ){self._projection_returning_id}
+                """,
+                (
+                    conversation_id,
+                    visible_content,
+                    agent_id,
+                    resolved_now,
+                    turn_id,
+                    attempt_id,
+                    preview_artifact_id,
+                    int(previous[0]) if previous is not None else None,
+                    resolved_now,
+                ),
+            )
+            if self._projection_returning_id:
+                inserted = cursor.fetchone()
+                if inserted is None:
+                    raise ConversationConflictError("approval revision insert failed")
+                message_id = int(inserted[0])
+            else:
+                message_id = int(cursor.lastrowid or 0)
+
+            closed = conn.execute(
+                f"""
+                UPDATE conversation_actions
+                SET status = 'completed', decision = COALESCE(decision, {placeholder}),
+                    decided_by = COALESCE(decided_by, {placeholder}),
+                    decision_context_json = CASE
+                        WHEN decision IS NULL THEN {placeholder}
+                        ELSE decision_context_json
+                    END,
+                    decided_at = COALESCE(decided_at, {placeholder}),
+                    version = version + 1, completed_at = {placeholder}
+                WHERE id = {placeholder} AND status IN ('pending', 'approved', 'rejected')
+                  AND (decision IS NULL OR decision = {placeholder})
+                """,
+                (
+                    decision,
+                    decided_by,
+                    _canonical_json(decision_context),
+                    resolved_now,
+                    resolved_now,
+                    current_action_id,
+                    decision,
+                ),
+            )
+            if closed.rowcount != 1:
+                raise ConversationConflictError("approval action close failed")
+            conn.execute(
+                f"""
+                INSERT INTO conversation_actions (
+                    id, conversation_id, turn_id, attempt_id, status, thread_id,
+                    skills_json, preview_artifact_id, preview_json, created_at
+                ) VALUES (
+                    {placeholder}, {placeholder}, {placeholder}, {placeholder},
+                    'pending', {placeholder}, {placeholder}, {placeholder},
+                    {placeholder}, {placeholder}
+                )
+                """,
+                (
+                    new_action_id,
+                    conversation_id,
+                    turn_id,
+                    attempt_id,
+                    thread_id,
+                    _canonical_json(skills),
+                    preview_artifact_id,
+                    _canonical_json(preview),
+                    resolved_now,
+                ),
+            )
+            waiting = conn.execute(
+                f"""
+                UPDATE conversation_attempts
+                SET status = {placeholder}, stage = {placeholder}, agent_id = {placeholder},
+                    version = version + 1
+                WHERE id = {placeholder}
+                  AND status IN ('queued', 'running', 'waiting_for_approval', 'resuming')
+                """,
+                (
+                    AttemptStatus.WAITING_FOR_APPROVAL.value,
+                    AttemptStage.AWAITING_USER_DECISION.value,
+                    agent_id,
+                    attempt_id,
+                ),
+            )
+            if waiting.rowcount != 1:
+                raise ConversationConflictError("approval attempt rollover failed")
+        return message_id, ApprovalAction(
+            id=new_action_id,
+            attempt_id=str(attempt_id),
+            status=ActionStatus.PENDING,
+            version=1,
+            thread_id=thread_id,
+            skills=tuple(skills),
+            preview=dict(preview),
+        )
 
     def get_attempt_scope(self, attempt_id: str) -> dict[str, Any] | None:
         """返回审计与指标所需的安全 Attempt 作用域。"""
@@ -1672,71 +1859,6 @@ class ConversationStore:
                 (now, conversation_id),
             )
             return int(cursor.lastrowid or 0)
-
-    def replace_turn_messages(
-        self,
-        *,
-        conversation_id: str,
-        previous_run_id: str,
-        run_id: str,
-        user_content: str,
-        user_token_estimate: int,
-        assistant_content: str,
-        assistant_token_estimate: int,
-        assistant_agent_id: str,
-    ) -> bool:
-        """仅当旧 Run 恰好对应一组问答时原子替换该逻辑轮次。"""
-        now = round(time.time(), 3)
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT id, role FROM messages
-                WHERE conversation_id = ? AND run_id = ?
-                ORDER BY id ASC
-                """,
-                (conversation_id, previous_run_id),
-            ).fetchall()
-            by_role = {str(row["role"]): int(row["id"]) for row in rows}
-            if len(rows) != 2 or set(by_role) != {"user", "assistant"}:
-                return False
-            conn.execute(
-                """
-                UPDATE messages
-                SET content = ?, token_estimate = ?, run_id = ?, agent_id = NULL
-                WHERE id = ? AND conversation_id = ?
-                """,
-                (
-                    user_content,
-                    user_token_estimate,
-                    run_id,
-                    by_role["user"],
-                    conversation_id,
-                ),
-            )
-            conn.execute(
-                """
-                UPDATE messages
-                SET content = ?, token_estimate = ?, run_id = ?, agent_id = ?
-                WHERE id = ? AND conversation_id = ?
-                """,
-                (
-                    assistant_content,
-                    assistant_token_estimate,
-                    run_id,
-                    assistant_agent_id,
-                    by_role["assistant"],
-                    conversation_id,
-                ),
-            )
-            conn.execute(
-                "DELETE FROM conversation_summaries WHERE conversation_id = ?",
-                (conversation_id,),
-            )
-            conn.execute(
-                "UPDATE conversations SET updated_at = ? WHERE id = ?",
-                (now, conversation_id),
-            )
-        return True
 
     def recent_messages(self, *, conversation_id: str, limit: int) -> list[dict[str, Any]]:
         """Return up to the last ``limit`` messages in chronological order."""

@@ -16,6 +16,7 @@ _PROJECTION_READ_API = (
     "get_attempt_output",
     "finalize_attempt_output",
     "finalize_approval_output",
+    "rollover_approval_request",
     "get_attempt_scope",
     "timeline_turns",
     "find_conversation_by_client_message",
@@ -509,6 +510,100 @@ def test_finalize_approval_output_appends_after_sealed_pre_approval_draft(tmp_pa
         "审核修订稿",
         "审批后完成",
     ]
+
+
+def test_rollover_approval_atomically_closes_old_action_and_persists_new_preview(
+    tmp_path,
+) -> None:
+    store, accepted = accepted_store(tmp_path)
+    store.bind_attempt_run(accepted.attempt_id, run_id="run-1", agent_id="xhs_growth")
+    _, old_action = store.persist_approval_request(
+        conversation_id=accepted.conversation_id,
+        turn_id=accepted.turn_id,
+        attempt_id=accepted.attempt_id,
+        agent_id="xhs_growth",
+        visible_content="第一版审核稿",
+        thread_id="thread-1",
+        skills=["draft.review"],
+        preview={"title": "第一版"},
+        preview_artifact_id=None,
+    )
+
+    _, new_action = store.rollover_approval_request(
+        old_action.id,
+        decision="approved",
+        decided_by="u1",
+        decision_context={"source": "test"},
+        agent_id="xhs_growth",
+        visible_content="第二版审核稿",
+        thread_id="thread-2",
+        skills=["publish.review"],
+        preview={"title": "第二版"},
+        preview_artifact_id=None,
+    )
+
+    attempt = store.timeline_turns(accepted.conversation_id)[0]["attempts"][0]
+    assert [(item["id"], item["status"]) for item in attempt["actions"]] == [
+        (old_action.id, "completed"),
+        (new_action.id, "pending"),
+    ]
+    consumed = store.get_action(old_action.id)
+    assert consumed is not None
+    assert consumed["decision"] == "approved"
+    assert consumed["decided_by"] == "u1"
+    assert consumed["decision_context_json"] == {"source": "test"}
+    assert consumed["decided_at"] is not None
+    assert attempt["actions"][-1]["preview"] == {"title": "第二版"}
+    assert (attempt["status"], attempt["stage"]) == (
+        "waiting_for_approval",
+        "awaiting_user_decision",
+    )
+    assert [item["content"] for item in attempt["messages"]][-1] == "第二版审核稿"
+
+
+def test_rollover_approval_rolls_back_old_action_when_new_action_insert_fails(
+    tmp_path,
+) -> None:
+    store, accepted = accepted_store(tmp_path)
+    store.bind_attempt_run(accepted.attempt_id, run_id="run-1", agent_id="xhs_growth")
+    _, old_action = store.persist_approval_request(
+        conversation_id=accepted.conversation_id,
+        turn_id=accepted.turn_id,
+        attempt_id=accepted.attempt_id,
+        agent_id="xhs_growth",
+        visible_content="第一版审核稿",
+        thread_id="thread-1",
+        skills=[],
+        preview={"title": "第一版"},
+        preview_artifact_id=None,
+    )
+    before = store.messages_for_attempt(accepted.attempt_id)
+    with store._connect() as conn:
+        conn.execute(
+            """
+            CREATE TRIGGER reject_new_approval
+            BEFORE INSERT ON conversation_actions
+            BEGIN SELECT RAISE(ABORT, 'injected rollover failure'); END
+            """
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected rollover failure"):
+        store.rollover_approval_request(
+            old_action.id,
+            decision="approved",
+            decided_by="u1",
+            decision_context={"source": "test"},
+            agent_id="xhs_growth",
+            visible_content="不得部分提交",
+            thread_id="thread-2",
+            skills=[],
+            preview={"title": "第二版"},
+            preview_artifact_id=None,
+        )
+
+    assert store.get_action(old_action.id)["status"] == "pending"
+    assert store.messages_for_attempt(accepted.attempt_id) == before
+    assert store.get_attempt(accepted.attempt_id)["status"] == "waiting_for_approval"
 
 
 def test_accept_turn_is_idempotent_and_persists_input_before_run(tmp_path) -> None:
