@@ -82,6 +82,14 @@ _SQLITE_MIGRATIONS: dict[int, tuple[str, ...]] = {
     3: (),
     4: (
         """
+        CREATE INDEX IF NOT EXISTS idx_conversations_scope
+        ON conversations(tenant_id, agent, user_id, updated_at DESC)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_messages_conv
+        ON messages(conversation_id, id)
+        """,
+        """
         CREATE TABLE IF NOT EXISTS conversation_turns (
             id TEXT PRIMARY KEY,
             conversation_id TEXT NOT NULL,
@@ -295,6 +303,14 @@ _POSTGRES_MIGRATIONS: dict[int, tuple[str, ...]] = {
             metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
             updated_at DOUBLE PRECISION NOT NULL DEFAULT 0
         )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_conversations_scope
+        ON conversations(tenant_id, agent, user_id, updated_at DESC)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_messages_conv
+        ON messages(conversation_id, id)
         """,
         "ALTER TABLE messages ADD COLUMN IF NOT EXISTS turn_id TEXT",
         "ALTER TABLE messages ADD COLUMN IF NOT EXISTS attempt_id TEXT",

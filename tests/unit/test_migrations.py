@@ -58,9 +58,20 @@ def test_sqlite_v4_upgrades_existing_v3_conversation_schema(tmp_path) -> None:
             for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
         message_columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
+        messages = conn.execute(
+            """
+            SELECT role, content, kind, state, created_at, updated_at
+            FROM messages
+            ORDER BY id
+            """
+        ).fetchall()
 
     assert PROJECTION_TABLES <= tables
     assert MESSAGE_PROJECTION_COLUMNS <= message_columns
+    assert messages == [
+        ("user", "旧用户问题", "user_input", "sealed", 11.0, 11.0),
+        ("assistant", "旧助手回答", "assistant_output", "sealed", 12.0, 12.0),
+    ]
 
 
 def test_sqlite_store_schema_matches_v4_migration(tmp_path) -> None:
@@ -79,22 +90,38 @@ def test_sqlite_store_schema_matches_v4_migration(tmp_path) -> None:
             ]
             assert direct_columns == migrated_columns
 
-        projection_indexes = {
+        migrated_indexes = {
             row[0]
             for row in migrated.execute(
-                "SELECT name FROM sqlite_master WHERE type='index' AND sql IS NOT NULL"
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'index'
+                  AND sql IS NOT NULL
+                  AND tbl_name IN (
+                      'conversations', 'messages', 'conversation_turns',
+                      'conversation_attempts', 'conversation_actions'
+                  )
+                """
             )
-            if row[0].startswith(("idx_conversation_", "idx_messages_one_streaming"))
         }
         direct_indexes = {
             row[0]
             for row in direct.execute(
-                "SELECT name FROM sqlite_master WHERE type='index' AND sql IS NOT NULL"
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'index'
+                  AND sql IS NOT NULL
+                  AND tbl_name IN (
+                      'conversations', 'messages', 'conversation_turns',
+                      'conversation_attempts', 'conversation_actions'
+                  )
+                """
             )
-            if row[0].startswith(("idx_conversation_", "idx_messages_one_streaming"))
         }
 
-    assert direct_indexes == projection_indexes
+    assert direct_indexes == migrated_indexes
 
 
 def test_sqlite_migrations_bootstrap_and_record_version(tmp_path) -> None:
@@ -509,5 +536,16 @@ def _create_existing_v3_conversation_schema(db_path) -> None:
                 created_at REAL NOT NULL,
                 FOREIGN KEY(conversation_id) REFERENCES conversations(id)
             );
+            INSERT INTO conversations (
+                id, tenant_id, agent, user_id, title, status, created_at, updated_at
+            ) VALUES (
+                'conversation-old', 'tenant-a', 'general_agent', 'user-a',
+                '旧会话', 'active', 10.0, 12.0
+            );
+            INSERT INTO messages (
+                conversation_id, role, content, token_estimate, created_at
+            ) VALUES
+                ('conversation-old', 'user', '旧用户问题', 4, 11.0),
+                ('conversation-old', 'assistant', '旧助手回答', 6, 12.0);
             """
         )

@@ -19,6 +19,8 @@ def test_postgres_v4_migration_uses_projection_contract() -> None:
     assert "decision_context_json JSONB NOT NULL DEFAULT '{}'::jsonb" in sql
     assert "UPDATE messages SET kind = 'user_input'" in sql
     assert "UPDATE messages SET updated_at = created_at" in sql
+    assert "CREATE INDEX IF NOT EXISTS idx_conversations_scope" in sql
+    assert "CREATE INDEX IF NOT EXISTS idx_messages_conv" in sql
     assert "CREATE UNIQUE INDEX idx_conversation_attempts_one_active" in sql
     assert "CREATE UNIQUE INDEX idx_messages_one_streaming_per_attempt" in sql
 
@@ -43,6 +45,8 @@ def test_postgres_store_initializes_latest_projection_schema(monkeypatch) -> Non
     assert "ALTER TABLE messages ADD COLUMN IF NOT EXISTS metadata_json JSONB" in sql
     assert "UPDATE messages SET kind = 'user_input'" in sql
     assert "UPDATE messages SET updated_at = created_at" in sql
+    assert "CREATE INDEX IF NOT EXISTS idx_conversations_scope" in sql
+    assert "CREATE INDEX IF NOT EXISTS idx_messages_conv" in sql
     assert "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_one_streaming_per_attempt" in sql
 
 
