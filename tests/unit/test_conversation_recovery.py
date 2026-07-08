@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from agentkit.core.memory.store import ConversationStore
+import pytest
+
+from agentkit.core.memory.store import ConversationConflictError, ConversationStore
+from agentkit.core.multi_agent import _ResumeLeaseHeartbeat
 from agentkit.runtime.conversation_recovery import ConversationRecoveryService
 
 
@@ -182,29 +185,157 @@ def test_resume_lease_claim_allows_one_owner_then_expired_takeover(tmp_path) -> 
         approved=True,
     )
 
-    assert store.claim_action_resume(
+    first = store.claim_action_resume(
         action.id,
         lease_owner="owner-1",
         lease_seconds=10.0,
         now=100.0,
     )
+    assert first.owner == "owner-1"
+    assert first.generation == 1
     assert not store.claim_action_resume(
         action.id,
         lease_owner="owner-2",
         lease_seconds=10.0,
         now=105.0,
     )
-    assert store.claim_action_resume(
+    second = store.claim_action_resume(
         action.id,
         lease_owner="owner-2",
         lease_seconds=10.0,
         now=111.0,
     )
+    assert second.owner == "owner-2"
+    assert second.generation == 2
 
     attempt = store.get_attempt(action.attempt_id)
     assert attempt["status"] == "running"
     assert attempt["resume_lease_owner"] == "owner-2"
     assert attempt["resume_lease_expires_at"] == 121.0
+    assert attempt["resume_lease_generation"] == 2
+
+
+def test_heartbeat_marks_lost_when_generation_renewal_is_rejected() -> None:
+    class LostStore:
+        def renew_action_resume_lease(self, *args, **kwargs) -> bool:
+            return False
+
+    heartbeat = _ResumeLeaseHeartbeat(
+        store=LostStore(),
+        action_id="action-1",
+        lease_owner="owner-1",
+        lease_generation=3,
+        lease_seconds=10.0,
+        clock=lambda: 105.0,
+    )
+
+    assert heartbeat.lost is False
+    heartbeat._renew_once()
+    assert heartbeat.lost is True
+
+
+def test_old_generation_cannot_finalize_after_expired_takeover(tmp_path) -> None:
+    store, _, _, action, _ = recovery_fixture(
+        tmp_path,
+        checkpoint_exists=True,
+        approved=True,
+    )
+    before = store.messages_for_attempt(action.attempt_id)
+    old = store.claim_action_resume(
+        action.id,
+        lease_owner="old",
+        lease_seconds=10.0,
+        now=100.0,
+    )
+    new = store.claim_action_resume(
+        action.id,
+        lease_owner="new",
+        lease_seconds=10.0,
+        now=111.0,
+    )
+
+    with pytest.raises(ConversationConflictError, match="lease"):
+        store.finalize_approval_output(
+            action.id,
+            run_id="run-1",
+            agent_id="xhs_growth",
+            content="旧 worker 结果",
+            message_state="sealed",
+            attempt_status="succeeded",
+            artifact_id=None,
+            token_estimate=4,
+            lease_owner=old.owner,
+            lease_generation=old.generation,
+            now=112.0,
+        )
+
+    assert store.messages_for_attempt(action.attempt_id) == before
+    _, changed, _ = store.finalize_approval_output(
+        action.id,
+        run_id="run-1",
+        agent_id="xhs_growth",
+        content="新 worker 结果",
+        message_state="sealed",
+        attempt_status="succeeded",
+        artifact_id=None,
+        token_estimate=4,
+        lease_owner=new.owner,
+        lease_generation=new.generation,
+        now=112.0,
+    )
+    assert changed is True
+
+
+def test_old_generation_cannot_fail_or_rollover_after_takeover(tmp_path) -> None:
+    store, _, _, action, _ = recovery_fixture(
+        tmp_path,
+        checkpoint_exists=True,
+        approved=True,
+    )
+    old = store.claim_action_resume(
+        action.id,
+        lease_owner="old",
+        lease_seconds=10.0,
+        now=100.0,
+    )
+    new = store.claim_action_resume(
+        action.id,
+        lease_owner="new",
+        lease_seconds=10.0,
+        now=111.0,
+    )
+
+    assert not store.transition_action_attempt(
+        action.id,
+        expected_action={"approved"},
+        action_status="invalidated",
+        expected_attempt={"running"},
+        attempt_status="failed",
+        lease_owner=old.owner,
+        lease_generation=old.generation,
+    )
+    with pytest.raises(ConversationConflictError, match="lease"):
+        store.rollover_approval_request(
+            action.id,
+            decision="approved",
+            decided_by="u1",
+            decision_context={},
+            agent_id="xhs_growth",
+            visible_content="下一轮",
+            thread_id="thread-2",
+            skills=["xhs.growth.campaign"],
+            preview={"content": "下一轮"},
+            preview_artifact_id=None,
+            lease_owner=old.owner,
+            lease_generation=old.generation,
+            now=112.0,
+        )
+    assert store.owns_action_resume_lease(
+        action.id,
+        lease_owner=new.owner,
+        lease_generation=new.generation,
+        now=112.0,
+    )
 
 
 def test_recovery_skips_active_lease_then_one_worker_takes_expired_crash(tmp_path) -> None:

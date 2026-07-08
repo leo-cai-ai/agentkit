@@ -125,6 +125,7 @@ _SQLITE_MIGRATIONS: dict[int, tuple[str, ...]] = {
             finished_at REAL,
             resume_lease_owner TEXT,
             resume_lease_expires_at REAL,
+            resume_lease_generation INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY(turn_id) REFERENCES conversation_turns(id),
             FOREIGN KEY(retry_of_attempt_id) REFERENCES conversation_attempts(id)
         )
@@ -381,7 +382,8 @@ _POSTGRES_MIGRATIONS: dict[int, tuple[str, ...]] = {
             started_at DOUBLE PRECISION NOT NULL,
             finished_at DOUBLE PRECISION,
             resume_lease_owner TEXT,
-            resume_lease_expires_at DOUBLE PRECISION
+            resume_lease_expires_at DOUBLE PRECISION,
+            resume_lease_generation BIGINT NOT NULL DEFAULT 0
         )
         """,
         """

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import copy
+import threading
+import time
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -657,6 +660,100 @@ def test_action_resume_claims_durable_lease_before_gateway(
     assert claims[0]["lease_seconds"] > 0
     assert observed_lease[0][0] == claims[0]["lease_owner"]
     assert observed_lease[0][1] > claims[0]["now"]
+
+
+def test_expired_resume_takeover_fences_old_worker_and_reuses_tool_key(tmp_path) -> None:
+    old_service, gateway, _, _, _, projection = _projection_service(
+        tmp_path,
+        child_status="waiting_for_approval",
+        child_output={"approval": {"skills": ["candidate.rank"], "preview": {}}},
+    )
+    waiting = old_service.handle(
+        _prepared_request(
+            projection,
+            message="@招聘 发布录用通知",
+            client_message_id="client-action-takeover",
+        )
+    )
+    attempt_view = _timeline(projection, waiting.conversation_id).turns[0]["attempts"][0]
+    action = attempt_view["actions"][0]
+    store = projection._store
+    store.decide_action(
+        action["id"],
+        decision="approved",
+        decided_by="u1",
+        decision_context={"roles": ["recruiter"]},
+        idempotency_key="takeover-command",
+        expected_version=action["version"],
+    )
+
+    base = time.time()
+    old_service._clock = lambda: base
+    old_service._resume_lease_seconds = 10.0
+    old_service._lease_owner_factory = lambda: "old-worker"
+    new_service = copy.copy(old_service)
+    new_service._clock = lambda: base + 11.0
+    new_service._lease_owner_factory = lambda: "new-worker"
+
+    old_entered = threading.Event()
+    release_old = threading.Event()
+    call_lock = threading.Lock()
+    tool_keys: list[str] = []
+
+    def controlled_resume(thread_id: str, **kwargs) -> TaskResponse:
+        with call_lock:
+            call_number = len(tool_keys)
+            tool_keys.append(kwargs["decision_context"]["tool_idempotency_key"])
+        if call_number == 0:
+            old_entered.set()
+            assert release_old.wait(timeout=5.0)
+        child = gateway.audit.run_for_thread(thread_id, tenant_id="tenant-a", user_id="u1")
+        return TaskResponse(
+            status="completed",
+            output={"message": "新 worker 唯一结果"},
+            run_id=child["run_id"],
+            thread_id=thread_id,
+            agent=child["agent_id"],
+            strategy="workflow",
+            conversation_id="",
+            governance={"strategy": "workflow"},
+            audit_events=[],
+        )
+
+    gateway.resume = controlled_resume
+    old_errors: list[BaseException] = []
+
+    def run_old() -> None:
+        try:
+            old_service.resume_action(action["id"])
+        except BaseException as exc:  # noqa: BLE001 - thread transports the assertion value
+            old_errors.append(exc)
+
+    old_thread = threading.Thread(target=run_old)
+    old_thread.start()
+    assert old_entered.wait(timeout=5.0)
+    resumed = new_service.resume_action(action["id"])
+    release_old.set()
+    old_thread.join(timeout=5.0)
+
+    assert resumed.status == "completed"
+    assert not old_thread.is_alive()
+    assert len(old_errors) == 1
+    assert isinstance(old_errors[0], ConversationConflictError)
+    assert tool_keys == [
+        f"approval:{action['id']}:takeover-command",
+        f"approval:{action['id']}:takeover-command",
+    ]
+    refreshed = store.get_attempt(attempt_view["id"])
+    assert refreshed["status"] == "succeeded"
+    assert refreshed["resume_lease_generation"] == 2
+    outputs = [
+        message
+        for message in store.messages_for_attempt(attempt_view["id"])
+        if message["kind"] == "assistant_output"
+    ]
+    assert len(outputs) == 1
+    assert outputs[0]["content"] == "新 worker 唯一结果"
 
 
 def test_resume_waiting_again_atomically_rolls_over_durable_approval(tmp_path) -> None:

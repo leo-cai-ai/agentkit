@@ -39,15 +39,18 @@ class _ResumeLeaseHeartbeat:
         store: Any,
         action_id: str,
         lease_owner: str,
+        lease_generation: int,
         lease_seconds: float,
         clock: Any,
     ) -> None:
         self._store = store
         self._action_id = action_id
         self._lease_owner = lease_owner
+        self._lease_generation = lease_generation
         self._lease_seconds = lease_seconds
         self._clock = clock
         self._stop = threading.Event()
+        self._lost = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
     def __enter__(self) -> _ResumeLeaseHeartbeat:
@@ -58,19 +61,30 @@ class _ResumeLeaseHeartbeat:
         self._stop.set()
         self._thread.join(timeout=1.0)
 
+    @property
+    def lost(self) -> bool:
+        return self._lost.is_set()
+
+    def _renew_once(self) -> bool:
+        try:
+            renewed = self._store.renew_action_resume_lease(
+                self._action_id,
+                lease_owner=self._lease_owner,
+                lease_generation=self._lease_generation,
+                lease_seconds=self._lease_seconds,
+                now=float(self._clock()),
+            )
+        except Exception:  # noqa: BLE001 - 瞬时续租错误由下一周期重试
+            return True
+        if not renewed:
+            self._lost.set()
+            return False
+        return True
+
     def _run(self) -> None:
         interval = max(0.1, self._lease_seconds / 3.0)
         while not self._stop.wait(interval):
-            try:
-                renewed = self._store.renew_action_resume_lease(
-                    self._action_id,
-                    lease_owner=self._lease_owner,
-                    lease_seconds=self._lease_seconds,
-                    now=float(self._clock()),
-                )
-            except Exception:  # noqa: BLE001 - 瞬时续租错误由下一周期重试
-                continue
-            if not renewed:
+            if not self._renew_once():
                 return
 
 
@@ -623,13 +637,13 @@ class MultiAgentCoordinator:
         self._directory.profile(target_agent)
 
         lease_owner = str(self._lease_owner_factory())
-        claimed = self._store.claim_action_resume(
+        claim = self._store.claim_action_resume(
             action_id,
             lease_owner=lease_owner,
             lease_seconds=self._resume_lease_seconds,
             now=float(self._clock()),
         )
-        if not claimed:
+        if not claim:
             latest_action = self._store.get_action(action_id)
             latest_attempt = self._store.get_attempt(str(action["attempt_id"]))
             if latest_action is None or latest_attempt is None:
@@ -642,19 +656,24 @@ class MultiAgentCoordinator:
             attempt_id=str(scope["attempt_id"]),
         )
         stored_context = dict(action.get("decision_context_json") or {})
+        stored_context["tool_idempotency_key"] = (
+            f"approval:{action_id}:{str(action.get('idempotency_key') or '')}"
+        )
         roles = [str(item) for item in stored_context.get("roles", [])]
         skills = [str(item) for item in action.get("skills_json", [])]
         approved_skills = skills if decision == "approved" else []
         rejected_skills = skills if decision == "rejected" else []
+        heartbeat = _ResumeLeaseHeartbeat(
+            store=self._store,
+            action_id=action_id,
+            lease_owner=claim.owner,
+            lease_generation=claim.generation,
+            lease_seconds=self._resume_lease_seconds,
+            clock=self._clock,
+        )
         try:
-            with _ResumeLeaseHeartbeat(
-                store=self._store,
-                action_id=action_id,
-                lease_owner=lease_owner,
-                lease_seconds=self._resume_lease_seconds,
-                clock=self._clock,
-            ):
-                self._projection.set_stage(accepted.attempt_id, AttemptStage.EXECUTING_AGENT)
+            with heartbeat:
+                self._require_resume_lease(action_id, claim, heartbeat)
                 return self._resume_started(
                     thread_id=thread_id,
                     user_id=user_id,
@@ -669,16 +688,20 @@ class MultiAgentCoordinator:
                     target_agent=target_agent,
                     accepted=accepted,
                     action_id=action_id,
+                    lease_claim=claim,
+                    heartbeat=heartbeat,
                 )
         except Exception as exc:
-            action_failed = False
+            if not self._resume_lease_is_current(action_id, claim, heartbeat):
+                raise ConversationConflictError("approval resume lease was lost") from exc
             try:
                 self._projection.fail_approval(
                     action_id,
                     error_code=type(exc).__name__,
                     error_summary="审批恢复流程异常退出",
+                    lease_owner=claim.owner,
+                    lease_generation=claim.generation,
                 )
-                action_failed = True
                 self._audit.record(
                     parent_run_id,
                     "conversation_action_invalidated",
@@ -697,7 +720,7 @@ class MultiAgentCoordinator:
                 parent_run_id,
                 accepted.attempt_id,
                 exc,
-                fail_attempt=not action_failed,
+                fail_attempt=False,
             )
             raise
 
@@ -720,13 +743,19 @@ class MultiAgentCoordinator:
         target_agent: str,
         accepted: AcceptedTurn,
         action_id: str,
+        lease_claim: Any = None,
+        heartbeat: _ResumeLeaseHeartbeat | None = None,
     ) -> TaskResponse:
+        if lease_claim is not None and heartbeat is not None:
+            self._require_resume_lease(action_id, lease_claim, heartbeat)
         child = self._gateway.resume(
             thread_id,
             approved_skills=approved_skills,
             rejected_skills=rejected_skills,
             decision_context=decision_context,
         )
+        if lease_claim is not None and heartbeat is not None:
+            self._require_resume_lease(action_id, lease_claim, heartbeat)
         self._audit.record(
             parent_run_id,
             "run_resumed",
@@ -741,10 +770,6 @@ class MultiAgentCoordinator:
             "status": child.status,
         }
         if child.status == "waiting_for_approval":
-            self._projection.set_stage(
-                accepted.attempt_id,
-                AttemptStage.PREPARING_APPROVAL,
-            )
             approval = child.output.get("approval", {})
             if not isinstance(approval, dict):
                 approval = {}
@@ -779,6 +804,8 @@ class MultiAgentCoordinator:
                     if approval.get("preview_artifact_id")
                     else None
                 ),
+                lease_owner=lease_claim.owner if lease_claim is not None else None,
+                lease_generation=lease_claim.generation if lease_claim is not None else None,
             )
             approval.update({"action_id": next_action.id, "version": next_action.version})
             child.output["approval"] = approval
@@ -797,6 +824,8 @@ class MultiAgentCoordinator:
                 status=child.status,
                 output=child.output,
                 approval_action_id=action_id,
+                lease_owner=lease_claim.owner if lease_claim is not None else None,
+                lease_generation=lease_claim.generation if lease_claim is not None else None,
             )
             self._audit.record(
                 parent_run_id,
@@ -818,6 +847,32 @@ class MultiAgentCoordinator:
             },
             audit_events=self._audit.events_for(parent_run_id),
         )
+
+    def _resume_lease_is_current(
+        self,
+        action_id: str,
+        claim: Any,
+        heartbeat: _ResumeLeaseHeartbeat,
+    ) -> bool:
+        if heartbeat.lost:
+            return False
+        return bool(
+            self._store.owns_action_resume_lease(
+                action_id,
+                lease_owner=claim.owner,
+                lease_generation=claim.generation,
+                now=float(self._clock()),
+            )
+        )
+
+    def _require_resume_lease(
+        self,
+        action_id: str,
+        claim: Any,
+        heartbeat: _ResumeLeaseHeartbeat,
+    ) -> None:
+        if not self._resume_lease_is_current(action_id, claim, heartbeat):
+            raise ConversationConflictError("approval resume lease was lost")
 
     def _route(self, *, request, run_id, general, context) -> dict[str, Any]:
         result = self._context_invoker.invoke_json(
@@ -1035,9 +1090,12 @@ class MultiAgentCoordinator:
         status: str,
         output: dict[str, Any],
         approval_action_id: str | None = None,
+        lease_owner: str | None = None,
+        lease_generation: int | None = None,
     ) -> None:
         terminal_status = self._attempt_status(status)
-        self._projection.set_stage(accepted.attempt_id, AttemptStage.FINALIZING)
+        if approval_action_id is None:
+            self._projection.set_stage(accepted.attempt_id, AttemptStage.FINALIZING)
         content = format_task_output_text(status=status, output=output)
         if approval_action_id is not None:
             self._projection.project_approval_output(
@@ -1047,6 +1105,8 @@ class MultiAgentCoordinator:
                 agent_id=assistant_agent_id,
                 content=content,
                 status=terminal_status,
+                lease_owner=lease_owner,
+                lease_generation=lease_generation,
             )
         else:
             self._projection.project_output(

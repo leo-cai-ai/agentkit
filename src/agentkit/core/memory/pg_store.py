@@ -24,6 +24,7 @@ from .store import (
     _TERMINAL_MESSAGE_STATES,
     ConversationConflictError,
     ConversationStore,
+    ResumeLeaseClaim,
     _approval_action_from_row,
     _canonical_json,
     _pack_embedding,
@@ -676,6 +677,8 @@ class PgConversationStore(ConversationStore):
         attempt_status: str,
         error_code: str = "",
         error_summary: str = "",
+        lease_owner: str | None = None,
+        lease_generation: int | None = None,
     ) -> bool:
         if not expected_action or not expected_attempt:
             return False
@@ -686,6 +689,16 @@ class PgConversationStore(ConversationStore):
         now = round(time.time(), 3)
         completed_at = now if action_status in {"completed", "invalidated"} else None
         finished_at = now if attempt_status in _TERMINAL_ATTEMPT_STATUSES else None
+        lease_clause = ""
+        lease_params: tuple[Any, ...] = ()
+        if lease_owner is not None or lease_generation is not None:
+            if lease_owner is None or lease_generation is None:
+                raise ValueError("lease owner and generation must be provided together")
+            lease_clause = (
+                " AND ca.resume_lease_owner = %s AND ca.resume_lease_generation = %s"
+                " AND ca.resume_lease_expires_at > %s"
+            )
+            lease_params = (lease_owner, lease_generation, now)
         with self._connect() as conn:
             current = conn.execute(
                 f"""
@@ -693,10 +706,10 @@ class PgConversationStore(ConversationStore):
                 FROM conversation_actions AS a
                 JOIN conversation_attempts AS ca ON ca.id = a.attempt_id
                 WHERE a.id = %s AND a.status IN ({action_slots})
-                  AND ca.status IN ({attempt_slots})
+                  AND ca.status IN ({attempt_slots}){lease_clause}
                 FOR UPDATE OF a, ca
                 """,
-                (action_id, *action_values, *attempt_values),
+                (action_id, *action_values, *attempt_values, *lease_params),
             ).fetchone()
             if current is None:
                 return False
@@ -738,7 +751,7 @@ class PgConversationStore(ConversationStore):
         lease_owner: str,
         lease_seconds: float,
         now: float | None = None,
-    ) -> bool:
+    ) -> ResumeLeaseClaim | None:
         """抢占审批恢复租约；PostgreSQL 通过行锁串行化多实例竞争。"""
         if not lease_owner or lease_seconds <= 0:
             raise ValueError("resume lease owner and duration are required")
@@ -747,7 +760,8 @@ class PgConversationStore(ConversationStore):
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT action.attempt_id, attempt.status, attempt.resume_lease_expires_at
+                SELECT action.attempt_id, attempt.status, attempt.resume_lease_expires_at,
+                       attempt.resume_lease_generation
                 FROM conversation_actions AS action
                 JOIN conversation_attempts AS attempt ON attempt.id = action.attempt_id
                 WHERE action.id = %s AND action.status IN ('approved', 'rejected')
@@ -757,29 +771,34 @@ class PgConversationStore(ConversationStore):
                 (action_id,),
             ).fetchone()
             if row is None:
-                return False
+                return None
             status = str(row[1])
             lease_expiry = float(row[2]) if row[2] is not None else None
             if status != "resuming" and not (
                 status == "running" and (lease_expiry is None or lease_expiry <= resolved_now)
             ):
-                return False
+                return None
+            generation = int(row[3]) + 1
             changed = conn.execute(
                 """
                 UPDATE conversation_attempts
                 SET status = 'running', resume_lease_owner = %s,
-                    resume_lease_expires_at = %s, version = version + 1
+                    resume_lease_expires_at = %s, resume_lease_generation = %s,
+                    version = version + 1
                 WHERE id = %s
                 """,
-                (lease_owner, expires_at, str(row[0])),
+                (lease_owner, expires_at, generation, str(row[0])),
             )
-        return changed.rowcount == 1
+        if changed.rowcount != 1:
+            return None
+        return ResumeLeaseClaim(lease_owner, generation, expires_at)
 
     def renew_action_resume_lease(
         self,
         action_id: str,
         *,
         lease_owner: str,
+        lease_generation: int,
         lease_seconds: float,
         now: float | None = None,
     ) -> bool:
@@ -794,11 +813,35 @@ class PgConversationStore(ConversationStore):
                 SET resume_lease_expires_at = %s, version = version + 1
                 WHERE id = (SELECT attempt_id FROM conversation_actions WHERE id = %s)
                   AND status = 'running' AND resume_lease_owner = %s
+                  AND resume_lease_generation = %s
                   AND resume_lease_expires_at > %s
                 """,
-                (expires_at, action_id, lease_owner, resolved_now),
+                (expires_at, action_id, lease_owner, lease_generation, resolved_now),
             )
         return changed.rowcount == 1
+
+    def owns_action_resume_lease(
+        self,
+        action_id: str,
+        *,
+        lease_owner: str,
+        lease_generation: int,
+        now: float | None = None,
+    ) -> bool:
+        resolved_now = round(time.time() if now is None else now, 3)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1 FROM conversation_actions AS action
+                JOIN conversation_attempts AS attempt ON attempt.id = action.attempt_id
+                WHERE action.id = %s AND attempt.status = 'running'
+                  AND attempt.resume_lease_owner = %s
+                  AND attempt.resume_lease_generation = %s
+                  AND attempt.resume_lease_expires_at > %s
+                """,
+                (action_id, lease_owner, lease_generation, resolved_now),
+            ).fetchone()
+        return row is not None
 
     def create_retry_attempt(
         self,
@@ -1399,7 +1442,8 @@ class PgConversationStore(ConversationStore):
                     started_at DOUBLE PRECISION NOT NULL,
                     finished_at DOUBLE PRECISION,
                     resume_lease_owner TEXT,
-                    resume_lease_expires_at DOUBLE PRECISION
+                    resume_lease_expires_at DOUBLE PRECISION,
+                    resume_lease_generation BIGINT NOT NULL DEFAULT 0
                 )
                 """
             )

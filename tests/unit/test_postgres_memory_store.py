@@ -27,6 +27,7 @@ def test_postgres_v4_migration_uses_projection_contract() -> None:
     assert "CREATE INDEX IF NOT EXISTS idx_messages_conv" in sql
     assert "CREATE UNIQUE INDEX idx_conversation_attempts_one_active" in sql
     assert "CREATE INDEX idx_conversation_attempts_resume_lease" in sql
+    assert "resume_lease_generation BIGINT NOT NULL DEFAULT 0" in sql
     assert "CREATE UNIQUE INDEX idx_messages_one_streaming_per_attempt" in sql
 
 
@@ -42,6 +43,8 @@ def test_postgres_store_initializes_latest_projection_schema(monkeypatch) -> Non
     monkeypatch.setattr(store, "_connect", lambda: nullcontext(Connection()))
 
     store._init_schema()
+
+    assert "resume_lease_generation BIGINT NOT NULL DEFAULT 0" in "\n".join(statements)
 
     sql = "\n".join(statements)
     assert "CREATE TABLE IF NOT EXISTS conversation_turns" in sql
@@ -396,12 +399,17 @@ def test_postgres_joint_action_attempt_transition_clears_terminal_attempt(
         "action-1",
         expected_action={"approved"},
         action_status="completed",
-        expected_attempt={"resuming"},
+        expected_attempt={"running"},
         attempt_status="succeeded",
+        lease_owner="worker-1",
+        lease_generation=4,
     )
 
     assert changed is True
     assert "FOR UPDATE OF a, ca" in calls[0][0]
+    assert "ca.resume_lease_owner = %s" in calls[0][0]
+    assert "ca.resume_lease_generation = %s" in calls[0][0]
+    assert ("worker-1", 4) == calls[0][1][-3:-1]
     assert any("UPDATE conversation_turns" in sql for sql, _ in calls)
     assert all("?" not in sql for sql, _ in calls)
 
@@ -677,6 +685,9 @@ def test_postgres_finalize_approval_output_locks_action_and_updates_atomically(
                         "xhs_growth",
                         "pending",
                         "waiting_for_approval",
+                        None,
+                        0,
+                        None,
                     )
                 )
             if "kind = 'assistant_output'" in sql:
@@ -736,6 +747,9 @@ def test_postgres_rollover_approval_locks_old_action_and_creates_new_pending_act
                         "conversation-1",
                         "pending",
                         "resuming",
+                        None,
+                        None,
+                        0,
                         None,
                         100.0,
                     )
@@ -958,21 +972,50 @@ def test_postgres_resume_lease_claim_locks_action_and_attempt(monkeypatch) -> No
         def execute(self, sql, params):
             calls.append((sql, params))
             if "FOR UPDATE OF action, attempt" in sql:
-                return Result(("attempt-1", "resuming", None))
+                return Result(("attempt-1", "resuming", None, 0))
             return Result()
 
     store = object.__new__(PgConversationStore)
     store._settings = None
     monkeypatch.setattr(store, "_connect", lambda: nullcontext(Connection()))
 
-    assert store.claim_action_resume(
+    claim = store.claim_action_resume(
         "action-1",
         lease_owner="owner-1",
         lease_seconds=10.0,
         now=100.0,
     )
+    assert claim is not None
+    assert claim.owner == "owner-1"
+    assert claim.generation == 1
 
     assert "FOR UPDATE" in calls[0][0]
     assert "resume_lease_owner" in calls[1][0]
-    assert calls[1][1] == ("owner-1", 110.0, "attempt-1")
+    assert calls[1][1] == ("owner-1", 110.0, 1, "attempt-1")
     assert all("?" not in sql for sql, _ in calls)
+
+
+def test_postgres_resume_lease_renewal_matches_owner_and_generation(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class Result:
+        rowcount = 1
+
+    class Connection:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+            return Result()
+
+    store = object.__new__(PgConversationStore)
+    store._settings = None
+    monkeypatch.setattr(store, "_connect", lambda: nullcontext(Connection()))
+
+    assert store.renew_action_resume_lease(
+        "action-1",
+        lease_owner="owner-1",
+        lease_generation=7,
+        lease_seconds=10.0,
+        now=100.0,
+    )
+    assert "resume_lease_generation = %s" in calls[0][0]
+    assert calls[0][1] == (110.0, "action-1", "owner-1", 7, 100.0)

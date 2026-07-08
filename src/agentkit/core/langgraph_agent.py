@@ -607,11 +607,20 @@ class UnifiedAgentGraph:
         )
         completed_output = dict(result.output)
         completed_output.pop("deferred_action", None)
-        for item in calls:
+        approval_decision = request.context.get("approval_decision", {})
+        idempotency_base = (
+            str(approval_decision.get("tool_idempotency_key") or "")
+            if isinstance(approval_decision, dict)
+            else ""
+        )
+        for index, item in enumerate(calls):
             tool_name = str(item.get("tool_name") or "")
+            tool_args = dict(item.get("args") or item.get("arguments") or {})
+            if idempotency_base:
+                tool_args["_idempotency_key"] = f"{idempotency_base}:{index}:{tool_name}"
             output = invoker.call(
                 self._tools.get(tool_name),
-                dict(item.get("args") or item.get("arguments") or {}),
+                tool_args,
             )
             completed_output[str(item.get("result_key") or tool_name)] = output
         return {"result": StrategyResult(status="completed", output=completed_output)}

@@ -366,6 +366,8 @@ class ConversationProjectionService:
         skills: list[str],
         preview: dict[str, Any],
         preview_artifact_id: str | None = None,
+        lease_owner: str | None = None,
+        lease_generation: int | None = None,
     ) -> ApprovalAction:
         """原子关闭已消费审批，并持久化下一轮 pending 审批。"""
         self._validate_accepted(accepted, run_id=run_id)
@@ -381,6 +383,8 @@ class ConversationProjectionService:
             skills=skills,
             preview=preview,
             preview_artifact_id=preview_artifact_id,
+            lease_owner=lease_owner,
+            lease_generation=lease_generation,
         )
         self._audit_event(
             run_id,
@@ -458,6 +462,8 @@ class ConversationProjectionService:
         content: str,
         status: AttemptStatus,
         artifact_id: str | None = None,
+        lease_owner: str | None = None,
+        lease_generation: int | None = None,
     ) -> int:
         """单事务封口审批输出、Action 与 Attempt。"""
         if status not in _TERMINAL_STATUSES:
@@ -476,6 +482,8 @@ class ConversationProjectionService:
             attempt_status=status.value,
             artifact_id=artifact_id,
             token_estimate=self._tokenizer.estimate(content),
+            lease_owner=lease_owner,
+            lease_generation=lease_generation,
         )
         if changed:
             self._audit_event(
@@ -506,6 +514,8 @@ class ConversationProjectionService:
         *,
         error_code: str,
         error_summary: str,
+        lease_owner: str | None = None,
+        lease_generation: int | None = None,
     ) -> None:
         """恢复异常时原子失效 Action，并把仍活动的 Attempt 置为失败。"""
         changed = self._store.transition_action_attempt(
@@ -516,6 +526,8 @@ class ConversationProjectionService:
             attempt_status=AttemptStatus.FAILED.value,
             error_code=error_code,
             error_summary=error_summary,
+            lease_owner=lease_owner,
+            lease_generation=lease_generation,
         )
         if not changed:
             raise ValueError("approval action cannot transition to failed")

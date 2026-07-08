@@ -16,6 +16,7 @@ import time
 import uuid
 from array import array
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,13 @@ _TERMINAL_MESSAGE_STATES = {"sealed", "failed", "interrupted"}
 
 class ConversationConflictError(RuntimeError):
     """会话投影的比较并交换条件不再成立。"""
+
+
+@dataclass(frozen=True)
+class ResumeLeaseClaim:
+    owner: str
+    generation: int
+    expires_at: float
 
 
 def _canonical_json(value: Any) -> str:
@@ -713,6 +721,8 @@ class ConversationStore:
         error_code: str = "",
         error_summary: str = "",
         now: float | None = None,
+        lease_owner: str | None = None,
+        lease_generation: int | None = None,
     ) -> tuple[int, bool, dict[str, Any]]:
         """原子封口审批输出、Action、Attempt，并在成功时设置 canonical。"""
         if message_state not in _TERMINAL_MESSAGE_STATES:
@@ -730,6 +740,9 @@ class ConversationStore:
             "agent_id",
             "action_status",
             "attempt_status",
+            "lease_owner",
+            "lease_generation",
+            "lease_expires_at",
         )
         with self._connect() as conn:
             self._begin_projection_write(conn)
@@ -738,7 +751,8 @@ class ConversationStore:
                 SELECT attempt.id, attempt.turn_id, turn.conversation_id,
                        turn.tenant_id, attempt.run_id,
                        COALESCE(attempt.agent_id, conversation.agent),
-                       action.status, attempt.status
+                       action.status, attempt.status, attempt.resume_lease_owner,
+                       attempt.resume_lease_generation, attempt.resume_lease_expires_at
                 FROM conversation_actions AS action
                 JOIN conversation_attempts AS attempt ON attempt.id = action.attempt_id
                 JOIN conversation_turns AS turn ON turn.id = attempt.turn_id
@@ -752,6 +766,15 @@ class ConversationStore:
             scope = _projection_row(columns, row)
             if str(scope["run_id"] or "") != run_id:
                 raise ConversationConflictError("approval attempt is bound to another run")
+            if lease_owner is not None or lease_generation is not None:
+                if (
+                    lease_owner is None
+                    or lease_generation is None
+                    or str(scope["lease_owner"] or "") != lease_owner
+                    or int(scope["lease_generation"] or 0) != lease_generation
+                    or float(scope["lease_expires_at"] or 0.0) <= resolved_now
+                ):
+                    raise ConversationConflictError("approval resume lease fencing failed")
 
             output = conn.execute(
                 f"""
@@ -914,6 +937,8 @@ class ConversationStore:
         preview: dict[str, Any],
         preview_artifact_id: str | None,
         now: float | None = None,
+        lease_owner: str | None = None,
+        lease_generation: int | None = None,
     ) -> tuple[int, ApprovalAction]:
         """原子关闭已消费 Action，并持久化下一轮审批 revision 与 pending Action。"""
         if decision not in {"approved", "rejected"}:
@@ -927,6 +952,8 @@ class ConversationStore:
                 f"""
                 SELECT attempt.id, attempt.turn_id, turn.conversation_id,
                        current_action.status, attempt.status, current_action.decision,
+                       attempt.resume_lease_owner, attempt.resume_lease_generation,
+                       attempt.resume_lease_expires_at,
                        (
                            SELECT MAX(existing.created_at)
                            FROM conversation_actions AS existing
@@ -949,8 +976,20 @@ class ConversationStore:
                 action_status,
                 attempt_status,
                 current_decision,
+                current_lease_owner,
+                current_lease_generation,
+                current_lease_expires_at,
                 max_action_created_at,
             ) = row
+            if lease_owner is not None or lease_generation is not None:
+                if (
+                    lease_owner is None
+                    or lease_generation is None
+                    or str(current_lease_owner or "") != lease_owner
+                    or int(current_lease_generation or 0) != lease_generation
+                    or float(current_lease_expires_at or 0.0) <= resolved_now
+                ):
+                    raise ConversationConflictError("approval resume lease fencing failed")
             if str(action_status) not in {"pending", "approved", "rejected"}:
                 raise ConversationConflictError("approval action is not active")
             if str(attempt_status) not in _NON_TERMINAL_ATTEMPT_STATUSES:
@@ -1551,6 +1590,8 @@ class ConversationStore:
         attempt_status: str,
         error_code: str = "",
         error_summary: str = "",
+        lease_owner: str | None = None,
+        lease_generation: int | None = None,
     ) -> bool:
         if not expected_action or not expected_attempt:
             return False
@@ -1561,6 +1602,16 @@ class ConversationStore:
         now = round(time.time(), 3)
         completed_at = now if action_status in {"completed", "invalidated"} else None
         finished_at = now if attempt_status in _TERMINAL_ATTEMPT_STATUSES else None
+        lease_clause = ""
+        lease_params: tuple[Any, ...] = ()
+        if lease_owner is not None or lease_generation is not None:
+            if lease_owner is None or lease_generation is None:
+                raise ValueError("lease owner and generation must be provided together")
+            lease_clause = (
+                " AND resume_lease_owner = ? AND resume_lease_generation = ?"
+                " AND resume_lease_expires_at > ?"
+            )
+            lease_params = (lease_owner, lease_generation, now)
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             action = conn.execute(
@@ -1582,7 +1633,7 @@ class ConversationStore:
                     resume_lease_owner = NULL, resume_lease_expires_at = NULL,
                     finished_at = CASE WHEN ? IS NULL THEN finished_at ELSE ? END
                 WHERE id = (SELECT attempt_id FROM conversation_actions WHERE id = ?)
-                  AND status IN ({attempt_slots})
+                  AND status IN ({attempt_slots}){lease_clause}
                 """,
                 (
                     attempt_status,
@@ -1592,6 +1643,7 @@ class ConversationStore:
                     finished_at,
                     action_id,
                     *attempt_values,
+                    *lease_params,
                 ),
             )
             if attempt.rowcount != 1:
@@ -1617,7 +1669,7 @@ class ConversationStore:
         lease_owner: str,
         lease_seconds: float,
         now: float | None = None,
-    ) -> bool:
+    ) -> ResumeLeaseClaim | None:
         """抢占审批恢复租约；仅 resuming 或租约已过期的 running 可成功。"""
         if not lease_owner or lease_seconds <= 0:
             raise ValueError("resume lease owner and duration are required")
@@ -1627,7 +1679,8 @@ class ConversationStore:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 """
-                SELECT action.attempt_id, attempt.status, attempt.resume_lease_expires_at
+                SELECT action.attempt_id, attempt.status, attempt.resume_lease_expires_at,
+                       attempt.resume_lease_generation
                 FROM conversation_actions AS action
                 JOIN conversation_attempts AS attempt ON attempt.id = action.attempt_id
                 WHERE action.id = ? AND action.status IN ('approved', 'rejected')
@@ -1636,29 +1689,33 @@ class ConversationStore:
                 (action_id,),
             ).fetchone()
             if row is None:
-                return False
+                return None
             status = str(row[1])
             lease_expiry = float(row[2]) if row[2] is not None else None
             if status != "resuming" and not (
                 status == "running" and (lease_expiry is None or lease_expiry <= resolved_now)
             ):
-                return False
+                return None
+            generation = int(row[3]) + 1
             changed = conn.execute(
                 """
                 UPDATE conversation_attempts
                 SET status = 'running', resume_lease_owner = ?, resume_lease_expires_at = ?,
-                    version = version + 1
+                    resume_lease_generation = ?, version = version + 1
                 WHERE id = ?
                 """,
-                (lease_owner, expires_at, str(row[0])),
+                (lease_owner, expires_at, generation, str(row[0])),
             )
-        return changed.rowcount == 1
+        if changed.rowcount != 1:
+            return None
+        return ResumeLeaseClaim(lease_owner, generation, expires_at)
 
     def renew_action_resume_lease(
         self,
         action_id: str,
         *,
         lease_owner: str,
+        lease_generation: int,
         lease_seconds: float,
         now: float | None = None,
     ) -> bool:
@@ -1674,11 +1731,35 @@ class ConversationStore:
                 SET resume_lease_expires_at = ?, version = version + 1
                 WHERE id = (SELECT attempt_id FROM conversation_actions WHERE id = ?)
                   AND status = 'running' AND resume_lease_owner = ?
+                  AND resume_lease_generation = ?
                   AND resume_lease_expires_at > ?
                 """,
-                (expires_at, action_id, lease_owner, resolved_now),
+                (expires_at, action_id, lease_owner, lease_generation, resolved_now),
             )
         return changed.rowcount == 1
+
+    def owns_action_resume_lease(
+        self,
+        action_id: str,
+        *,
+        lease_owner: str,
+        lease_generation: int,
+        now: float | None = None,
+    ) -> bool:
+        resolved_now = round(time.time() if now is None else now, 3)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1 FROM conversation_actions AS action
+                JOIN conversation_attempts AS attempt ON attempt.id = action.attempt_id
+                WHERE action.id = ? AND attempt.status = 'running'
+                  AND attempt.resume_lease_owner = ?
+                  AND attempt.resume_lease_generation = ?
+                  AND attempt.resume_lease_expires_at > ?
+                """,
+                (action_id, lease_owner, lease_generation, resolved_now),
+            ).fetchone()
+        return row is not None
 
     def create_retry_attempt(
         self,
@@ -2229,6 +2310,7 @@ class ConversationStore:
                     finished_at REAL,
                     resume_lease_owner TEXT,
                     resume_lease_expires_at REAL,
+                    resume_lease_generation INTEGER NOT NULL DEFAULT 0,
                     FOREIGN KEY(turn_id) REFERENCES conversation_turns(id),
                     FOREIGN KEY(retry_of_attempt_id) REFERENCES conversation_attempts(id)
                 )

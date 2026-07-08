@@ -59,3 +59,13 @@
 - 新增 `RuntimeMetricsRecorder`，将低基数指标写入 `agentkit.metrics` structured log；bootstrap 创建单一实例并注入 Projection、Coordinator、Recovery，同时暴露在 Runtime。
 - Review RED：Web `6 failed`；lease schema/claim `4 failed`，production claim `1 failed`，stage 更新清 lease `1 failed`；metrics import collection error。逐项修复后 review focused 为 `156 passed`。
 - Review full（lease-preserve/index 最终改动后）：`901 passed, 6 skipped in 99.59s`。
+
+## Final Review Fix: Generation-Fenced Resume Ownership
+
+- Added monotonic `resume_lease_generation` to the existing v4 SQLite/PostgreSQL projection schema and both latest-schema bootstraps; the reserved v5 migration remains untouched.
+- Resume claims now return an immutable owner/generation/expiry token. Renew and ownership checks match both owner and generation, and the heartbeat records permanent lease loss when renewal is rejected.
+- Coordinator checks the token immediately before and after Gateway resume. Terminal output, approval rollover, and failure projection validate owner, generation, and non-expired lease inside the same transaction that changes Action/Attempt/Message state.
+- A stale worker that returns after an expired-lease takeover skips cleanup and cannot invalidate, complete, roll over, or append output to the newer worker's projection.
+- The persisted Action command creates a stable `tool_idempotency_key` that is independent of lease generation. Gateway resume context carries it and deferred side-effect tool calls receive a deterministic per-call `_idempotency_key`.
+- Deterministic takeover coverage pauses worker A in Gateway, advances the lease, lets worker B claim generation 2 and commit, then releases A. The test verifies A is fenced, B produces exactly one terminal output, heartbeat loss is observable, and both generations see the same action-level tool key.
+- Final fencing-focused verification: `76 passed` (recovery, coordinator, PostgreSQL, migrations, and deferred-tool key injection). Scoped Ruff passed; `git diff --check` passed. Targeted mypy reaches the repository's pre-existing `conversation_persistence.py:229` optional-reader error, with no new fencing-file diagnostics.
