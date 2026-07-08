@@ -39,3 +39,36 @@
 - 静态检查 v5 diff：没有 `SET content`，没有新增 conversation_actions 或 preview 写入。
 - PostgreSQL v5 保持在现有 `pg_advisory_xact_lock` 保护的 migration runner 内。
 - 未发现 Critical 或 Important 问题；可交由上游集成。
+
+## 重复 legacy run 修复补充
+
+### 根因与修复
+
+- 根因：SQLite 的 `INSERT OR IGNORE` 会在 run_id 唯一冲突时吞掉 Attempt
+  插入，但旧实现仍把预计算 attempt_id 写入消息；PostgreSQL 则会留下没有
+  Attempt 的 Turn。
+- SQLite 在 Attempt 插入前检查 candidate run 是否已被占用。首个映射保留
+  原 run_id；后续重复 pair 或已被 native Attempt 占用的 pair 使用相同稳定规则
+  生成 deterministic legacy Attempt，但其 run_id 为 NULL，并在 error_summary
+  记录 duplicate legacy run。Attempt 使用普通 INSERT，成功后才绑定消息。
+- PostgreSQL 使用 set-based candidate ranking，并同时检查迁移前已存在的 Attempt。
+  唯一冲突仅允许 deterministic attempt id 的幂等冲突，不再吞掉 run_id 冲突。
+- 两个后端都不改写 messages.content 或 messages.run_id。
+
+### PostgreSQL 验证增强
+
+- v5 SQL 由显式 `_postgres_adopt_legacy_conversations` helper 执行，仍处于
+  runner 的 advisory transaction lock 内。
+- fake connection contract 覆盖 advisory lock 参数、v5 未应用时的完整语句执行、
+  schema_migrations v5 参数，以及 v5 已应用时的跳过分支。
+- 新增真实 PostgreSQL integration test，使用独立随机 schema；仅在
+  `AGENTKIT_TEST_POSTGRES_DSN` 存在时运行，否则明确 skip。本环境未配置该变量。
+
+### 补充 TDD 与验证证据
+
+- targeted RED：5 failed，1 skipped。失败分别证明 SQLite 丢失 Attempt，以及
+  PostgreSQL 尚无独立可执行 v5 contract。
+- targeted GREEN：5 passed，1 skipped in 0.50s。
+- 最终 focused：52 passed，1 skipped in 4.96s。
+- 最终 full：944 passed，7 skipped in 94.71s。
+- Ruff 与 `git diff --check`：通过。

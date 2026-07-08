@@ -5,10 +5,11 @@ from __future__ import annotations
 import logging
 import sqlite3
 import threading
+from contextlib import nullcontext
 
 import pytest
 
-from agentkit.core import migrations
+from agentkit.core import migrations, pg
 from agentkit.core.audit import SQLiteAuditLog
 from agentkit.core.memory.store import ConversationStore
 from agentkit.core.migrations import run_sqlite_migrations
@@ -606,8 +607,92 @@ def test_sqlite_v5_backfill_is_idempotent(tmp_path) -> None:
     } == before
 
 
+def test_sqlite_v5_duplicate_run_across_pairs_keeps_every_turn_projected(tmp_path) -> None:
+    db_path, _ = _two_pair_legacy_conversation_database(tmp_path)
+    before = [
+        (row["content"], row["run_id"])
+        for row in _read_rows(db_path, "messages")
+    ]
+
+    assert run_sqlite_migrations(db_path) == [5]
+
+    attempts = _read_rows(db_path, "conversation_attempts")
+    assert [(row["run_id"], row["status"]) for row in attempts] == [
+        ("run-shared", "succeeded"),
+        (None, "succeeded"),
+    ]
+    assert attempts[1]["id"].startswith("legacy-attempt:")
+    assert "duplicate legacy run" in attempts[1]["error_summary"]
+    assert [
+        (row["content"], row["run_id"])
+        for row in _read_rows(db_path, "messages")
+    ] == before
+    _assert_projection_references_exist(db_path)
+
+    snapshot = {
+        table: _read_rows(db_path, table)
+        for table in ("messages", "conversation_turns", "conversation_attempts")
+    }
+    assert run_sqlite_migrations(db_path) == []
+    assert {
+        table: _read_rows(db_path, table)
+        for table in ("messages", "conversation_turns", "conversation_attempts")
+    } == snapshot
+
+
+def test_sqlite_v5_existing_attempt_owns_run_and_legacy_pair_uses_synthetic(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "occupied-run.sqlite"
+    store = ConversationStore(db_path)
+    accepted = store.accept_turn(
+        tenant_id="tenant-a",
+        agent="general_agent",
+        user_id="u1",
+        conversation_id=None,
+        title="混合会话",
+        client_message_id="native-client",
+        user_content="原生问题",
+        user_token_estimate=4,
+    )
+    store.bind_attempt_run(
+        accepted.attempt_id,
+        run_id="run-occupied",
+        agent_id="general_agent",
+    )
+    store.add_message(
+        conversation_id=accepted.conversation_id,
+        role="user",
+        content="旧问题",
+        run_id="run-occupied",
+    )
+    store.add_message(
+        conversation_id=accepted.conversation_id,
+        role="assistant",
+        content="旧结果",
+        run_id="run-occupied",
+        agent_id="general_agent",
+    )
+    _mark_as_v4_database(db_path)
+
+    assert run_sqlite_migrations(db_path) == [5]
+
+    legacy_attempts = [
+        row
+        for row in _read_rows(db_path, "conversation_attempts")
+        if row["source"] == "legacy_imported"
+    ]
+    assert len(legacy_attempts) == 1
+    assert legacy_attempts[0]["run_id"] is None
+    assert "duplicate legacy run" in legacy_attempts[0]["error_summary"]
+    assert [
+        row["run_id"] for row in _read_rows(db_path, "messages")[-2:]
+    ] == ["run-occupied", "run-occupied"]
+    _assert_projection_references_exist(db_path)
+
+
 def test_postgres_v5_uses_set_based_legacy_adoption_without_content_updates() -> None:
-    statements = migrations._POSTGRES_MIGRATIONS[5]
+    statements = migrations._POSTGRES_V5_STATEMENTS
     normalized = [" ".join(statement.lower().split()) for statement in statements]
 
     assert any(
@@ -619,6 +704,33 @@ def test_postgres_v5_uses_set_based_legacy_adoption_without_content_updates() ->
     assert any("row_number() over" in statement for statement in normalized)
     assert any("on conflict" in statement for statement in normalized)
     assert not any("update messages set content" in statement for statement in normalized)
+
+
+def test_postgres_v5_runner_executes_contract_under_advisory_lock(monkeypatch) -> None:
+    connection = _FakePostgresMigrationConnection(applied_versions=(1, 2, 3, 4))
+    monkeypatch.setattr(pg, "connection", lambda _settings: nullcontext(connection))
+
+    assert migrations.run_postgres_migrations(object()) == [5]
+
+    assert connection.calls[0] == (
+        "SELECT pg_advisory_xact_lock(%s)",
+        (migrations._POSTGRES_MIGRATION_LOCK_KEY,),
+    )
+    executed_sql = [sql for sql, _params in connection.calls]
+    assert [
+        sql for sql in executed_sql if sql in migrations._POSTGRES_V5_STATEMENTS
+    ] == list(migrations._POSTGRES_V5_STATEMENTS)
+    assert connection.calls[-1][1][0] == 5
+
+
+def test_postgres_v5_runner_skips_contract_when_already_applied(monkeypatch) -> None:
+    connection = _FakePostgresMigrationConnection(applied_versions=(1, 2, 3, 4, 5))
+    monkeypatch.setattr(pg, "connection", lambda _settings: nullcontext(connection))
+
+    assert migrations.run_postgres_migrations(object()) == []
+
+    executed_sql = [sql for sql, _params in connection.calls]
+    assert not any(sql in migrations._POSTGRES_V5_STATEMENTS for sql in executed_sql)
 
 
 def _legacy_conversation_database(tmp_path):
@@ -649,6 +761,32 @@ def _legacy_conversation_database(tmp_path):
         content="问题二",
         run_id=None,
     )
+    _mark_as_v4_database(db_path)
+    return db_path, conversation_id
+
+
+def _two_pair_legacy_conversation_database(tmp_path):
+    db_path = tmp_path / "duplicate-run.sqlite"
+    store = ConversationStore(db_path)
+    conversation_id = store.create_conversation(
+        tenant_id="tenant-a",
+        agent="general_agent",
+        user_id="u1",
+        title="重复运行",
+    )
+    for role, content in (
+        ("user", "问题一"),
+        ("assistant", "结果一"),
+        ("user", "问题二"),
+        ("assistant", "结果二"),
+    ):
+        store.add_message(
+            conversation_id=conversation_id,
+            role=role,
+            content=content,
+            run_id="run-shared",
+            agent_id="general_agent" if role == "assistant" else None,
+        )
     _mark_as_v4_database(db_path)
     return db_path, conversation_id
 
@@ -687,6 +825,52 @@ def _read_rows(db_path, table):
 
 def _read_message_contents(db_path):
     return [row["content"] for row in _read_rows(db_path, "messages")]
+
+
+def _assert_projection_references_exist(db_path) -> None:
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        missing = conn.execute(
+            """
+            SELECT messages.id
+            FROM messages
+            LEFT JOIN conversation_turns AS turns ON turns.id = messages.turn_id
+            LEFT JOIN conversation_attempts AS attempts ON attempts.id = messages.attempt_id
+            WHERE messages.turn_id IS NULL
+               OR messages.attempt_id IS NULL
+               OR turns.id IS NULL
+               OR attempts.id IS NULL
+            """
+        ).fetchall()
+    assert missing == []
+
+
+class _FakePostgresMigrationResult:
+    def __init__(self, *, row=None, rows=()) -> None:
+        self._row = row
+        self._rows = tuple(rows)
+
+    def fetchone(self):
+        return self._row
+
+    def __iter__(self):
+        return iter(self._rows)
+
+
+class _FakePostgresMigrationConnection:
+    def __init__(self, *, applied_versions) -> None:
+        self.applied_versions = tuple(applied_versions)
+        self.calls = []
+
+    def execute(self, sql, params=None):
+        self.calls.append((sql, params))
+        if "to_regclass" in sql:
+            return _FakePostgresMigrationResult(row=("schema_migrations",))
+        if "SELECT version FROM schema_migrations" in sql:
+            return _FakePostgresMigrationResult(
+                rows=((version,) for version in self.applied_versions)
+            )
+        return _FakePostgresMigrationResult()
 
 
 def _create_legacy_v1_artifact_schema(db_path) -> None:

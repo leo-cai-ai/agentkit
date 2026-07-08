@@ -556,6 +556,38 @@ _POSTGRES_MIGRATIONS: dict[int, tuple[str, ...]] = {
                     PARTITION BY messages.conversation_id ORDER BY messages.id
                 ) AS next_turn_id
             FROM messages
+        ),
+        attempt_candidates AS (
+            SELECT
+                users.*,
+                turns.id AS legacy_turn_id,
+                conversations.agent AS conversation_agent,
+                COALESCE(
+                    NULLIF(users.run_id, ''),
+                    CASE
+                        WHEN users.next_role = 'assistant'
+                         AND users.next_turn_id IS NULL
+                        THEN NULLIF(users.next_run_id, '')
+                    END
+                ) AS candidate_run_id
+            FROM ordered_messages AS users
+            JOIN conversations ON conversations.id = users.conversation_id
+            JOIN conversation_turns AS turns
+              ON turns.id = 'legacy-turn:' || users.conversation_id || ':' || users.id
+            WHERE users.role = 'user'
+              AND NOT EXISTS (
+                  SELECT 1 FROM conversation_attempts AS existing
+                  WHERE existing.turn_id = turns.id
+              )
+        ),
+        ranked_candidates AS (
+            SELECT
+                attempt_candidates.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY candidate_run_id
+                    ORDER BY created_at, id
+                ) AS candidate_run_rank
+            FROM attempt_candidates
         )
         INSERT INTO conversation_attempts (
             id, turn_id, run_id, attempt_no, retry_of_attempt_id,
@@ -563,52 +595,61 @@ _POSTGRES_MIGRATIONS: dict[int, tuple[str, ...]] = {
             error_code, error_summary, version, started_at, finished_at
         )
         SELECT
-            'legacy-attempt:' || users.conversation_id || ':' || users.id,
-            turns.id,
-            COALESCE(
-                NULLIF(users.run_id, ''),
-                CASE
-                    WHEN users.next_role = 'assistant' AND users.next_turn_id IS NULL
-                    THEN NULLIF(users.next_run_id, '')
-                END
-            ),
+            'legacy-attempt:' || candidates.conversation_id || ':' || candidates.id,
+            candidates.legacy_turn_id,
+            CASE
+                WHEN candidates.candidate_run_id IS NOT NULL
+                 AND candidates.candidate_run_rank = 1
+                 AND NOT EXISTS (
+                     SELECT 1 FROM conversation_attempts AS occupied
+                     WHERE occupied.run_id = candidates.candidate_run_id
+                 )
+                THEN candidates.candidate_run_id
+                ELSE NULL
+            END,
             1,
             NULL,
             NULL,
             'legacy_imported',
             COALESCE(
                 CASE
-                    WHEN users.next_role = 'assistant' AND users.next_turn_id IS NULL
-                    THEN users.next_agent_id
+                    WHEN candidates.next_role = 'assistant'
+                     AND candidates.next_turn_id IS NULL
+                    THEN candidates.next_agent_id
                 END,
-                users.agent_id,
-                conversations.agent
+                candidates.agent_id,
+                candidates.conversation_agent
             ),
             CASE
-                WHEN users.next_role = 'assistant' AND users.next_turn_id IS NULL
+                WHEN candidates.next_role = 'assistant'
+                 AND candidates.next_turn_id IS NULL
                 THEN 'succeeded'
                 ELSE 'interrupted'
             END,
             'finalizing',
             '',
-            '',
-            1,
-            users.created_at,
             CASE
-                WHEN users.next_role = 'assistant' AND users.next_turn_id IS NULL
-                THEN users.next_created_at
-                ELSE users.created_at
+                WHEN candidates.candidate_run_id IS NOT NULL
+                 AND (
+                     candidates.candidate_run_rank > 1
+                     OR EXISTS (
+                         SELECT 1 FROM conversation_attempts AS occupied
+                         WHERE occupied.run_id = candidates.candidate_run_id
+                     )
+                 )
+                THEN 'duplicate legacy run: ' || candidates.candidate_run_id
+                ELSE ''
+            END,
+            1,
+            candidates.created_at,
+            CASE
+                WHEN candidates.next_role = 'assistant'
+                 AND candidates.next_turn_id IS NULL
+                THEN candidates.next_created_at
+                ELSE candidates.created_at
             END
-        FROM ordered_messages AS users
-        JOIN conversations ON conversations.id = users.conversation_id
-        JOIN conversation_turns AS turns
-          ON turns.id = 'legacy-turn:' || users.conversation_id || ':' || users.id
-        WHERE users.role = 'user'
-          AND NOT EXISTS (
-              SELECT 1 FROM conversation_attempts AS existing
-              WHERE existing.turn_id = turns.id
-          )
-        ON CONFLICT DO NOTHING
+        FROM ranked_candidates AS candidates
+        ON CONFLICT (id) DO NOTHING
         """,
         """
         UPDATE conversation_turns AS turns
@@ -670,6 +711,9 @@ _POSTGRES_MIGRATIONS: dict[int, tuple[str, ...]] = {
 }
 
 
+_POSTGRES_V5_STATEMENTS = _POSTGRES_MIGRATIONS[5]
+
+
 _POSTGRES_MIGRATION_LOCK_KEY = 8_168_304_691
 
 
@@ -723,8 +767,11 @@ def run_postgres_migrations(settings: Any) -> list[int]:
         for version, statements in _POSTGRES_MIGRATIONS.items():
             if version in applied:
                 continue
-            for statement in statements:
-                conn.execute(statement)
+            if version == 5:
+                _postgres_adopt_legacy_conversations(conn)
+            else:
+                for statement in statements:
+                    conn.execute(statement)
             if version == 2:
                 _postgres_add_workflow_artifact_run_fk(conn)
             elif version == 3:
@@ -906,6 +953,12 @@ def _postgres_add_multi_agent_run_columns(conn: Any) -> None:
     )
 
 
+def _postgres_adopt_legacy_conversations(conn: Any) -> None:
+    """在 advisory migration lock 的事务内执行 PostgreSQL legacy 回填。"""
+    for statement in _POSTGRES_V5_STATEMENTS:
+        conn.execute(statement)
+
+
 def _sqlite_prepare_conversation_projection(conn: sqlite3.Connection) -> None:
     """先建立会话基础表，再为已有消息表补齐投影字段。"""
     conn.execute(
@@ -1016,7 +1069,15 @@ def _sqlite_adopt_legacy_conversations(conn: sqlite3.Connection) -> None:
                 if assistant_message is not None
                 else None
             )
-            run_id = user_run_id or assistant_run_id
+            candidate_run_id = user_run_id or assistant_run_id
+            duplicate_run = candidate_run_id is not None and conn.execute(
+                "SELECT 1 FROM conversation_attempts WHERE run_id = ? LIMIT 1",
+                (candidate_run_id,),
+            ).fetchone() is not None
+            run_id = None if duplicate_run else candidate_run_id
+            error_summary = (
+                f"duplicate legacy run: {candidate_run_id}" if duplicate_run else ""
+            )
             succeeded = assistant_message is not None
             started_at = float(user_message[4])
             finished_at = float(assistant_message[4]) if succeeded else started_at
@@ -1048,12 +1109,12 @@ def _sqlite_adopt_legacy_conversations(conn: sqlite3.Connection) -> None:
             )
             conn.execute(
                 """
-                INSERT OR IGNORE INTO conversation_attempts (
+                INSERT INTO conversation_attempts (
                     id, turn_id, run_id, attempt_no, retry_of_attempt_id,
                     idempotency_key, source, agent_id, status, stage,
                     error_code, error_summary, version, started_at, finished_at
                 ) VALUES (?, ?, ?, 1, NULL, NULL, 'legacy_imported', ?, ?,
-                          'finalizing', '', '', 1, ?, ?)
+                          'finalizing', '', ?, 1, ?, ?)
                 """,
                 (
                     attempt_id,
@@ -1061,6 +1122,7 @@ def _sqlite_adopt_legacy_conversations(conn: sqlite3.Connection) -> None:
                     run_id,
                     agent_id,
                     "succeeded" if succeeded else "interrupted",
+                    error_summary,
                     started_at,
                     finished_at,
                 ),
