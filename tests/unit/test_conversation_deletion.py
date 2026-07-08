@@ -33,6 +33,9 @@ class FakeConversationStore:
             "messages": 2,
             "summaries": 1,
             "memories": 1,
+            "turns": 1,
+            "attempts": 1,
+            "actions": 0,
         }
 
     def transition_conversation_status(self, conversation_id, *, expected, status):
@@ -163,6 +166,7 @@ def test_delete_clears_external_memory_before_conversation() -> None:
     assert calls == ["external_memory", "conversation"]
     assert result.conversation_id == "c1"
     assert result.counts["conversations"] == 1
+    assert result.counts["turns"] == 1
     assert result.external_memories == 3
 
 

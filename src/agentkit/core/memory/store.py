@@ -18,6 +18,27 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from agentkit.runtime.conversation_projection_models import (
+    AcceptedTurn,
+    AttemptRef,
+    AttemptStage,
+    AttemptStatus,
+)
+
+_NON_TERMINAL_ATTEMPT_STATUSES = {
+    AttemptStatus.QUEUED.value,
+    AttemptStatus.RUNNING.value,
+    AttemptStatus.WAITING_FOR_APPROVAL.value,
+    AttemptStatus.RESUMING.value,
+}
+_TERMINAL_ATTEMPT_STATUSES = {
+    AttemptStatus.SUCCEEDED.value,
+    AttemptStatus.FAILED.value,
+    AttemptStatus.INTERRUPTED.value,
+    AttemptStatus.REJECTED.value,
+    AttemptStatus.CANCELLED.value,
+}
+
 
 def _pack_embedding(values: Sequence[float]) -> bytes:
     return array("f", [float(v) for v in values]).tobytes()
@@ -34,6 +55,330 @@ class ConversationStore:
         self._db_path = Path(db_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
+
+    def accept_turn(
+        self,
+        *,
+        tenant_id: str,
+        agent: str,
+        user_id: str,
+        conversation_id: str | None,
+        title: str,
+        client_message_id: str,
+        user_content: str,
+        user_token_estimate: int,
+    ) -> AcceptedTurn:
+        def find_existing(conn: sqlite3.Connection) -> AcceptedTurn | None:
+            row = conn.execute(
+                """
+                SELECT t.conversation_id, t.id, a.id, t.user_message_id
+                FROM conversation_turns AS t
+                JOIN conversation_attempts AS a
+                  ON a.turn_id = t.id AND a.attempt_no = 1
+                WHERE t.tenant_id = ? AND t.user_id = ? AND t.client_message_id = ?
+                """,
+                (tenant_id, user_id, client_message_id),
+            ).fetchone()
+            if row is None:
+                return None
+            return AcceptedTurn(
+                conversation_id=str(row[0]),
+                turn_id=str(row[1]),
+                attempt_id=str(row[2]),
+                user_message_id=int(row[3]),
+                created=False,
+            )
+
+        try:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                existing = find_existing(conn)
+                if existing is not None:
+                    return existing
+
+                now = round(time.time(), 3)
+                resolved_conversation_id = conversation_id or str(uuid.uuid4())
+                if conversation_id is None:
+                    conn.execute(
+                        """
+                        INSERT INTO conversations (
+                            id, tenant_id, agent, user_id, title, status, created_at,
+                            updated_at
+                        ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?)
+                        """,
+                        (
+                            resolved_conversation_id,
+                            tenant_id,
+                            agent,
+                            user_id,
+                            title,
+                            now,
+                            now,
+                        ),
+                    )
+                else:
+                    scope = conn.execute(
+                        """
+                        SELECT tenant_id, agent, user_id FROM conversations WHERE id = ?
+                        """,
+                        (conversation_id,),
+                    ).fetchone()
+                    if scope is None:
+                        raise ValueError("conversation does not exist")
+                    if tuple(scope) != (tenant_id, agent, user_id):
+                        raise ValueError("conversation scope does not match")
+
+                ordinal = int(
+                    conn.execute(
+                        """
+                        SELECT COALESCE(MAX(ordinal), 0) + 1
+                        FROM conversation_turns WHERE conversation_id = ?
+                        """,
+                        (resolved_conversation_id,),
+                    ).fetchone()[0]
+                )
+                turn_id = str(uuid.uuid4())
+                attempt_id = str(uuid.uuid4())
+                message = conn.execute(
+                    """
+                    INSERT INTO messages (
+                        conversation_id, role, content, token_estimate, created_at,
+                        turn_id, attempt_id, kind, state, updated_at
+                    ) VALUES (?, 'user', ?, ?, ?, ?, ?, 'user_input', 'sealed', ?)
+                    """,
+                    (
+                        resolved_conversation_id,
+                        user_content,
+                        user_token_estimate,
+                        now,
+                        turn_id,
+                        attempt_id,
+                        now,
+                    ),
+                )
+                user_message_id = int(message.lastrowid or 0)
+                conn.execute(
+                    """
+                    INSERT INTO conversation_turns (
+                        id, conversation_id, tenant_id, user_id, client_message_id,
+                        user_message_id, ordinal, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        turn_id,
+                        resolved_conversation_id,
+                        tenant_id,
+                        user_id,
+                        client_message_id,
+                        user_message_id,
+                        ordinal,
+                        now,
+                        now,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO conversation_attempts (
+                        id, turn_id, attempt_no, status, stage, started_at
+                    ) VALUES (?, ?, 1, ?, ?, ?)
+                    """,
+                    (
+                        attempt_id,
+                        turn_id,
+                        AttemptStatus.QUEUED.value,
+                        AttemptStage.UNDERSTANDING_REQUEST.value,
+                        now,
+                    ),
+                )
+                conn.execute(
+                    """
+                    UPDATE conversation_turns SET active_attempt_id = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (attempt_id, now, turn_id),
+                )
+                return AcceptedTurn(
+                    conversation_id=resolved_conversation_id,
+                    turn_id=turn_id,
+                    attempt_id=attempt_id,
+                    user_message_id=user_message_id,
+                    created=True,
+                )
+        except sqlite3.IntegrityError:
+            with self._connect() as conn:
+                existing = find_existing(conn)
+            if existing is not None:
+                return existing
+            raise
+
+    def bind_attempt_run(self, attempt_id: str, *, run_id: str, agent_id: str) -> None:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE conversation_attempts
+                SET run_id = ?, agent_id = ?
+                WHERE id = ? AND (run_id IS NULL OR run_id = ?)
+                """,
+                (run_id, agent_id, attempt_id, run_id),
+            )
+            if cursor.rowcount == 1:
+                return
+            row = conn.execute(
+                "SELECT run_id FROM conversation_attempts WHERE id = ?", (attempt_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(attempt_id)
+            raise ValueError("attempt is already bound to another run")
+
+    def transition_attempt(
+        self,
+        attempt_id: str,
+        *,
+        expected: set[str],
+        status: str,
+        stage: str | None = None,
+        error_code: str = "",
+        error_summary: str = "",
+    ) -> bool:
+        if not expected:
+            return False
+        expected_values = tuple(sorted(expected))
+        placeholders = ", ".join("?" for _ in expected_values)
+        now = round(time.time(), 3)
+        finished_at = now if status in _TERMINAL_ATTEMPT_STATUSES else None
+        with self._connect() as conn:
+            cursor = conn.execute(
+                f"""
+                UPDATE conversation_attempts
+                SET status = ?, stage = COALESCE(?, stage), error_code = ?,
+                    error_summary = ?, version = version + 1,
+                    finished_at = CASE WHEN ? IS NULL THEN finished_at ELSE ? END
+                WHERE id = ? AND status IN ({placeholders})
+                """,
+                (
+                    status,
+                    stage,
+                    error_code,
+                    error_summary,
+                    finished_at,
+                    finished_at,
+                    attempt_id,
+                    *expected_values,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return False
+            if status in _TERMINAL_ATTEMPT_STATUSES:
+                conn.execute(
+                    """
+                    UPDATE conversation_turns
+                    SET active_attempt_id = NULL, updated_at = ?
+                    WHERE active_attempt_id = ?
+                    """,
+                    (now, attempt_id),
+                )
+        return True
+
+    def get_attempt(self, attempt_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM conversation_attempts WHERE id = ?", (attempt_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def create_retry_attempt(
+        self,
+        *,
+        turn_id: str,
+        retry_of_attempt_id: str,
+        idempotency_key: str,
+    ) -> AttemptRef:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            duplicate = conn.execute(
+                """
+                SELECT id, attempt_no, status FROM conversation_attempts
+                WHERE turn_id = ? AND idempotency_key = ?
+                """,
+                (turn_id, idempotency_key),
+            ).fetchone()
+            if duplicate is not None:
+                return AttemptRef(
+                    turn_id=turn_id,
+                    attempt_id=str(duplicate[0]),
+                    attempt_no=int(duplicate[1]),
+                    status=AttemptStatus(str(duplicate[2])),
+                    created=False,
+                )
+            source = conn.execute(
+                """
+                SELECT status FROM conversation_attempts
+                WHERE id = ? AND turn_id = ?
+                """,
+                (retry_of_attempt_id, turn_id),
+            ).fetchone()
+            if source is None:
+                raise ValueError("retry source does not belong to turn")
+            if str(source[0]) not in _TERMINAL_ATTEMPT_STATUSES:
+                raise ValueError("retry source attempt must be terminal")
+            attempt_no = int(
+                conn.execute(
+                    """
+                    SELECT COALESCE(MAX(attempt_no), 0) + 1
+                    FROM conversation_attempts WHERE turn_id = ?
+                    """,
+                    (turn_id,),
+                ).fetchone()[0]
+            )
+            attempt_id = str(uuid.uuid4())
+            now = round(time.time(), 3)
+            conn.execute(
+                """
+                INSERT INTO conversation_attempts (
+                    id, turn_id, attempt_no, retry_of_attempt_id, idempotency_key,
+                    status, stage, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    attempt_id,
+                    turn_id,
+                    attempt_no,
+                    retry_of_attempt_id,
+                    idempotency_key,
+                    AttemptStatus.QUEUED.value,
+                    AttemptStage.UNDERSTANDING_REQUEST.value,
+                    now,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE conversation_turns SET active_attempt_id = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (attempt_id, now, turn_id),
+            )
+        return AttemptRef(
+            turn_id=turn_id,
+            attempt_id=attempt_id,
+            attempt_no=attempt_no,
+            status=AttemptStatus.QUEUED,
+            created=True,
+        )
+
+    def list_non_terminal_attempts(self, *, tenant_id: str) -> list[dict[str, Any]]:
+        placeholders = ", ".join("?" for _ in _NON_TERMINAL_ATTEMPT_STATUSES)
+        statuses = tuple(sorted(_NON_TERMINAL_ATTEMPT_STATUSES))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT a.* FROM conversation_attempts AS a
+                JOIN conversation_turns AS t ON t.id = a.turn_id
+                WHERE t.tenant_id = ? AND a.status IN ({placeholders})
+                ORDER BY a.started_at, a.id
+                """,
+                (tenant_id, *statuses),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def create_conversation(
         self,
@@ -122,6 +467,31 @@ class ConversationStore:
             ).fetchone()
             if exists is None:
                 return counts
+            projection_counts = {
+                "actions": int(
+                    conn.execute(
+                        "DELETE FROM conversation_actions WHERE conversation_id = ?",
+                        (conversation_id,),
+                    ).rowcount
+                ),
+                "attempts": int(
+                    conn.execute(
+                        """
+                        DELETE FROM conversation_attempts
+                        WHERE turn_id IN (
+                            SELECT id FROM conversation_turns WHERE conversation_id = ?
+                        )
+                        """,
+                        (conversation_id,),
+                    ).rowcount
+                ),
+                "turns": int(
+                    conn.execute(
+                        "DELETE FROM conversation_turns WHERE conversation_id = ?",
+                        (conversation_id,),
+                    ).rowcount
+                ),
+            }
             counts["summaries"] = int(
                 conn.execute(
                     "DELETE FROM conversation_summaries WHERE conversation_id = ?",
@@ -146,6 +516,8 @@ class ConversationStore:
                     (conversation_id,),
                 ).rowcount
             )
+            if any(projection_counts.values()):
+                counts.update(projection_counts)
         return counts
 
     def add_message(
@@ -403,6 +775,7 @@ class ConversationStore:
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
         return conn
 
     def _init_schema(self) -> None:
