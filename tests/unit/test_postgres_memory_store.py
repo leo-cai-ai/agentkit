@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from contextlib import nullcontext
 
 import pytest
@@ -233,6 +234,22 @@ def test_postgres_streaming_message_lifecycle_uses_conditional_updates(monkeypat
     assert all("?" not in sql for sql, _ in calls)
 
 
+@pytest.mark.parametrize("invalid_state", ["streaming", "unknown"])
+def test_postgres_seal_rejects_non_terminal_state_before_sql(
+    monkeypatch, invalid_state: str
+) -> None:
+    class Connection:
+        def execute(self, sql, params):
+            raise AssertionError("invalid state must be rejected before SQL")
+
+    store = object.__new__(PgConversationStore)
+    store._settings = None
+    monkeypatch.setattr(store, "_connect", lambda: nullcontext(Connection()))
+
+    with pytest.raises(ValueError, match="terminal"):
+        store.seal_attempt_message(31, content="错误覆盖", state=invalid_state)
+
+
 def test_postgres_approval_boundary_and_decision_are_atomic(monkeypatch) -> None:
     calls: list[tuple[str, tuple[object, ...]]] = []
 
@@ -296,9 +313,103 @@ def test_postgres_approval_boundary_and_decision_are_atomic(monkeypatch) -> None
 
     assert message_id == 41
     assert decided.status is ActionStatus.APPROVED
+    message_insert = next(sql for sql, _ in calls if "INSERT INTO messages" in sql)
+    assert "assistant_revision" in message_insert
     assert any("waiting_for_approval" in sql for sql, _ in calls)
     assert any("status = 'resuming'" in sql for sql, _ in calls)
     assert all("?" not in sql for sql, _ in calls)
+
+
+def test_postgres_approval_boundary_preserves_streaming_draft_as_revision_parent(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class Result:
+        def __init__(self, row=None, rowcount=1) -> None:
+            self._row = row
+            self.rowcount = rowcount
+
+        def fetchone(self):
+            return self._row
+
+    class Connection:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+            if "state = 'streaming'" in sql and sql.lstrip().startswith("SELECT"):
+                return Result((31,))
+            if "INSERT INTO messages" in sql:
+                return Result((41,))
+            return Result()
+
+    store = object.__new__(PgConversationStore)
+    store._settings = None
+    monkeypatch.setattr(store, "_connect", lambda: nullcontext(Connection()))
+    monkeypatch.setattr("agentkit.core.memory.pg_store.uuid.uuid4", lambda: "action-1")
+
+    message_id, _ = store.persist_approval_request(
+        conversation_id="conversation-1",
+        turn_id="turn-1",
+        attempt_id="attempt-1",
+        agent_id="xhs_growth",
+        visible_content="审核稿",
+        thread_id="thread-1",
+        skills=[],
+        preview={},
+        preview_artifact_id=None,
+    )
+
+    assert message_id == 41
+    seal_sql, seal_params = next(
+        (sql, params) for sql, params in calls if sql.lstrip().startswith("UPDATE messages")
+    )
+    assert "content =" not in seal_sql
+    assert seal_params[-1] == 31
+    revision_sql, revision_params = next(
+        (sql, params) for sql, params in calls if "INSERT INTO messages" in sql
+    )
+    assert "assistant_revision" in revision_sql
+    assert "审核稿" in revision_params
+    assert 31 in revision_params
+
+
+@pytest.mark.parametrize("non_finite", [math.nan, math.inf, -math.inf])
+def test_postgres_approval_json_rejects_non_finite_numbers(monkeypatch, non_finite: float) -> None:
+    class Result:
+        rowcount = 1
+
+        def __init__(self, row=None) -> None:
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class Connection:
+        def execute(self, sql, params):
+            if "state = 'streaming'" in sql and sql.lstrip().startswith("SELECT"):
+                return Result(None)
+            if "role = 'assistant'" in sql and sql.lstrip().startswith("SELECT"):
+                return Result(None)
+            if "INSERT INTO messages" in sql:
+                return Result((41,))
+            return Result()
+
+    store = object.__new__(PgConversationStore)
+    store._settings = None
+    monkeypatch.setattr(store, "_connect", lambda: nullcontext(Connection()))
+
+    with pytest.raises(ValueError, match="JSON"):
+        store.persist_approval_request(
+            conversation_id="conversation-1",
+            turn_id="turn-1",
+            attempt_id="attempt-1",
+            agent_id="xhs_growth",
+            visible_content="审核稿",
+            thread_id="thread-1",
+            skills=[],
+            preview={"score": non_finite},
+            preview_artifact_id=None,
+        )
 
 
 def test_postgres_joint_action_attempt_transition_clears_terminal_attempt(

@@ -21,6 +21,7 @@ from agentkit.runtime.conversation_projection_models import (
 from .store import (
     _NON_TERMINAL_ATTEMPT_STATUSES,
     _TERMINAL_ATTEMPT_STATUSES,
+    _TERMINAL_MESSAGE_STATES,
     ConversationConflictError,
     ConversationStore,
     _approval_action_from_row,
@@ -331,6 +332,8 @@ class PgConversationStore(ConversationStore):
         content: str,
         state: str = "sealed",
     ) -> bool:
+        if state not in _TERMINAL_MESSAGE_STATES:
+            raise ValueError("message state must be terminal")
         with self._connect() as conn:
             cursor = conn.execute(
                 """
@@ -362,7 +365,7 @@ class PgConversationStore(ConversationStore):
                     attempt_id, kind, state, artifact_id, supersedes_message_id,
                     metadata_json, updated_at
                 )
-                SELECT %s, 'assistant', %s, %s, %s, %s, %s, 'review_revision',
+                SELECT %s, 'assistant', %s, %s, %s, %s, %s, 'assistant_revision',
                        'sealed', %s, id, %s, %s
                 FROM messages
                 WHERE id = %s AND conversation_id = %s AND turn_id = %s
@@ -452,15 +455,16 @@ class PgConversationStore(ConversationStore):
                 """,
                 (attempt_id,),
             ).fetchone()
+            previous_id: int | None
             if streaming is not None:
-                message_id = int(streaming[0])
+                previous_id = int(streaming[0])
                 sealed = conn.execute(
                     """
                     UPDATE messages
-                    SET content = %s, state = 'sealed', agent_id = %s, updated_at = %s
+                    SET state = 'sealed', agent_id = %s, updated_at = %s
                     WHERE id = %s AND state = 'streaming'
                     """,
-                    (visible_content, agent_id, now, message_id),
+                    (agent_id, now, previous_id),
                 )
                 if sealed.rowcount != 1:
                     raise ConversationConflictError("streaming message was already sealed")
@@ -474,31 +478,30 @@ class PgConversationStore(ConversationStore):
                     (attempt_id,),
                 ).fetchone()
                 previous_id = int(previous[0]) if previous is not None else None
-                message_kind = "review_revision" if previous_id is not None else "assistant_output"
-                message = conn.execute(
-                    """
-                    INSERT INTO messages (
-                        conversation_id, role, content, agent_id, created_at, turn_id,
-                        attempt_id, kind, state, artifact_id, supersedes_message_id,
-                        updated_at
-                    ) VALUES (%s, 'assistant', %s, %s, %s, %s, %s,
-                              %s, 'sealed', %s, %s, %s)
-                    RETURNING id
-                    """,
-                    (
-                        conversation_id,
-                        visible_content,
-                        agent_id,
-                        now,
-                        turn_id,
-                        attempt_id,
-                        message_kind,
-                        preview_artifact_id,
-                        previous_id,
-                        now,
-                    ),
-                ).fetchone()
-                message_id = int(message[0])
+
+            message = conn.execute(
+                """
+                INSERT INTO messages (
+                    conversation_id, role, content, agent_id, created_at, turn_id,
+                    attempt_id, kind, state, artifact_id, supersedes_message_id,
+                    updated_at
+                ) VALUES (%s, 'assistant', %s, %s, %s, %s, %s,
+                          'assistant_revision', 'sealed', %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    conversation_id,
+                    visible_content,
+                    agent_id,
+                    now,
+                    turn_id,
+                    attempt_id,
+                    preview_artifact_id,
+                    previous_id,
+                    now,
+                ),
+            ).fetchone()
+            message_id = int(message[0])
 
             conn.execute(
                 """

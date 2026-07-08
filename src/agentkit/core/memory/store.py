@@ -41,6 +41,7 @@ _TERMINAL_ATTEMPT_STATUSES = {
     AttemptStatus.REJECTED.value,
     AttemptStatus.CANCELLED.value,
 }
+_TERMINAL_MESSAGE_STATES = {"sealed", "failed", "interrupted"}
 
 
 class ConversationConflictError(RuntimeError):
@@ -48,7 +49,13 @@ class ConversationConflictError(RuntimeError):
 
 
 def _canonical_json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
 
 
 def _approval_action_from_row(row: Any) -> ApprovalAction:
@@ -369,6 +376,8 @@ class ConversationStore:
         content: str,
         state: str = "sealed",
     ) -> bool:
+        if state not in _TERMINAL_MESSAGE_STATES:
+            raise ValueError("message state must be terminal")
         with self._connect() as conn:
             cursor = conn.execute(
                 """
@@ -400,7 +409,7 @@ class ConversationStore:
                     attempt_id, kind, state, artifact_id, supersedes_message_id,
                     metadata_json, updated_at
                 )
-                SELECT ?, 'assistant', ?, ?, ?, ?, ?, 'review_revision', 'sealed',
+                SELECT ?, 'assistant', ?, ?, ?, ?, ?, 'assistant_revision', 'sealed',
                        ?, id, ?, ?
                 FROM messages
                 WHERE id = ? AND conversation_id = ? AND turn_id = ? AND attempt_id = ?
@@ -465,15 +474,16 @@ class ConversationStore:
                 """,
                 (attempt_id,),
             ).fetchone()
+            previous_id: int | None
             if streaming is not None:
-                message_id = int(streaming[0])
+                previous_id = int(streaming[0])
                 sealed = conn.execute(
                     """
                     UPDATE messages
-                    SET content = ?, state = 'sealed', agent_id = ?, updated_at = ?
+                    SET state = 'sealed', agent_id = ?, updated_at = ?
                     WHERE id = ? AND state = 'streaming'
                     """,
-                    (visible_content, agent_id, now, message_id),
+                    (agent_id, now, previous_id),
                 )
                 if sealed.rowcount != 1:
                     raise ConversationConflictError("streaming message was already sealed")
@@ -487,29 +497,29 @@ class ConversationStore:
                     (attempt_id,),
                 ).fetchone()
                 previous_id = int(previous[0]) if previous is not None else None
-                message_kind = "review_revision" if previous_id is not None else "assistant_output"
-                cursor = conn.execute(
-                    """
-                    INSERT INTO messages (
-                        conversation_id, role, content, agent_id, created_at, turn_id,
-                        attempt_id, kind, state, artifact_id, supersedes_message_id,
-                        updated_at
-                    ) VALUES (?, 'assistant', ?, ?, ?, ?, ?, ?, 'sealed', ?, ?, ?)
-                    """,
-                    (
-                        conversation_id,
-                        visible_content,
-                        agent_id,
-                        now,
-                        turn_id,
-                        attempt_id,
-                        message_kind,
-                        preview_artifact_id,
-                        previous_id,
-                        now,
-                    ),
-                )
-                message_id = int(cursor.lastrowid or 0)
+
+            cursor = conn.execute(
+                """
+                INSERT INTO messages (
+                    conversation_id, role, content, agent_id, created_at, turn_id,
+                    attempt_id, kind, state, artifact_id, supersedes_message_id,
+                    updated_at
+                ) VALUES (?, 'assistant', ?, ?, ?, ?, ?, 'assistant_revision',
+                          'sealed', ?, ?, ?)
+                """,
+                (
+                    conversation_id,
+                    visible_content,
+                    agent_id,
+                    now,
+                    turn_id,
+                    attempt_id,
+                    preview_artifact_id,
+                    previous_id,
+                    now,
+                ),
+            )
+            message_id = int(cursor.lastrowid or 0)
 
             conn.execute(
                 """

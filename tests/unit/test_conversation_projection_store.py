@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import sqlite3
 
 import pytest
@@ -55,6 +56,7 @@ def test_review_appends_revision_and_keeps_original(tmp_path) -> None:
 
     rows = store.messages_for_attempt(accepted.attempt_id)
     assert [row["content"] for row in rows] == ["初稿", "审核后版本"]
+    assert rows[-1]["kind"] == "assistant_revision"
     assert rows[-1]["supersedes_message_id"] == original_id
     assert revision_id != original_id
 
@@ -141,10 +143,102 @@ def test_approval_boundary_seals_streaming_message_in_same_transaction(tmp_path)
         preview_artifact_id=None,
     )
 
-    assert visible_message_id == message_id
-    assert store.messages_for_attempt(accepted.attempt_id)[0]["content"] == "审核稿"
+    assert visible_message_id != message_id
+    rows = store.messages_for_attempt(accepted.attempt_id)
+    assert [(row["id"], row["content"], row["kind"]) for row in rows] == [
+        (message_id, "草稿", "assistant_output"),
+        (visible_message_id, "审核稿", "assistant_revision"),
+    ]
+    assert rows[1]["supersedes_message_id"] == message_id
     assert store.get_action(action.id)["preview_json"] == {"a": "中文", "z": 1}
     assert store.get_attempt(accepted.attempt_id)["stage"] == "awaiting_user_decision"
+
+
+def test_approval_boundary_without_draft_uses_stable_revision_kind(tmp_path) -> None:
+    store, accepted = accepted_store(tmp_path)
+
+    message_id, _ = store.persist_approval_request(
+        conversation_id=accepted.conversation_id,
+        turn_id=accepted.turn_id,
+        attempt_id=accepted.attempt_id,
+        agent_id="xhs_growth",
+        visible_content="审核稿",
+        thread_id="thread-1",
+        skills=[],
+        preview={},
+        preview_artifact_id=None,
+    )
+
+    row = store.messages_for_attempt(accepted.attempt_id)[0]
+    assert row["id"] == message_id
+    assert row["kind"] == "assistant_revision"
+    assert row["supersedes_message_id"] is None
+
+
+@pytest.mark.parametrize("terminal_state", ["sealed", "failed", "interrupted"])
+def test_seal_attempt_message_accepts_only_terminal_states(tmp_path, terminal_state: str) -> None:
+    store = ConversationStore(tmp_path / f"{terminal_state}.sqlite")
+    accepted = _accept(store)
+    message_id = store.open_attempt_message(
+        conversation_id=accepted.conversation_id,
+        turn_id=accepted.turn_id,
+        attempt_id=accepted.attempt_id,
+        role="assistant",
+        kind="assistant_output",
+        content="草稿",
+        agent_id="xhs_growth",
+    )
+
+    assert store.seal_attempt_message(message_id, content="终态内容", state=terminal_state) is True
+    assert store.checkpoint_attempt_message(message_id, content="不得覆盖") is False
+
+
+@pytest.mark.parametrize("invalid_state", ["streaming", "unknown"])
+def test_seal_attempt_message_rejects_non_terminal_state_before_write(
+    tmp_path, invalid_state: str
+) -> None:
+    store = ConversationStore(tmp_path / f"{invalid_state}.sqlite")
+    accepted = _accept(store)
+    message_id = store.open_attempt_message(
+        conversation_id=accepted.conversation_id,
+        turn_id=accepted.turn_id,
+        attempt_id=accepted.attempt_id,
+        role="assistant",
+        kind="assistant_output",
+        content="草稿",
+        agent_id="xhs_growth",
+    )
+
+    with pytest.raises(ValueError, match="terminal"):
+        store.seal_attempt_message(message_id, content="错误覆盖", state=invalid_state)
+
+    row = store.messages_for_attempt(accepted.attempt_id)[0]
+    assert (row["content"], row["state"]) == ("草稿", "streaming")
+
+
+@pytest.mark.parametrize("non_finite", [math.nan, math.inf, -math.inf])
+def test_approval_json_rejects_non_finite_numbers_and_rolls_back(
+    tmp_path, non_finite: float
+) -> None:
+    store = ConversationStore(tmp_path / f"non-finite-{repr(non_finite)}.sqlite")
+    accepted = _accept(store)
+
+    with pytest.raises(ValueError, match="JSON"):
+        store.persist_approval_request(
+            conversation_id=accepted.conversation_id,
+            turn_id=accepted.turn_id,
+            attempt_id=accepted.attempt_id,
+            agent_id="xhs_growth",
+            visible_content="审核稿",
+            thread_id="thread-1",
+            skills=[],
+            preview={"score": non_finite},
+            preview_artifact_id=None,
+        )
+
+    assert store.messages_for_attempt(accepted.attempt_id) == []
+    with store._connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM conversation_actions").fetchone()[0] == 0
 
 
 def test_different_action_decision_conflicts_and_joint_transition_rolls_back(
