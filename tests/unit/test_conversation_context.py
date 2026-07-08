@@ -36,7 +36,13 @@ class FakeKnowledgeService:
         return ["退款期限为 7 天"]
 
 
-def _agent(*, agent_id: str, rag_enabled: bool, memory_enabled: bool = True) -> AgentProfile:
+def _agent(
+    *,
+    agent_id: str,
+    rag_enabled: bool,
+    memory_enabled: bool = True,
+    window_turns: int = 6,
+) -> AgentProfile:
     return AgentProfile(
         name=agent_id,
         domain="test",
@@ -48,7 +54,7 @@ def _agent(*, agent_id: str, rag_enabled: bool, memory_enabled: bool = True) -> 
         ),
         autonomy_budget=AutonomyBudget(8, 8, 4, 4, 1, 4000, 60),
         context_policy=ContextPolicy(
-            memory=MemoryContextPolicy(memory_enabled, "agent_user", 6, 4000),
+            memory=MemoryContextPolicy(memory_enabled, "agent_user", window_turns, 4000),
             rag=RagContextPolicy(
                 rag_enabled,
                 ("customer-service-faq",) if rag_enabled else (),
@@ -243,3 +249,85 @@ def test_context_forwards_active_turn_exclusion(tmp_path) -> None:
     )
 
     assert context.recent_messages == ()
+
+
+def test_context_window_keeps_complete_latest_turn(tmp_path) -> None:
+    store = ConversationStore(tmp_path / "memory.sqlite")
+    projection = ConversationProjectionService(store=store)
+    first = projection.accept_user_message(
+        tenant_id="t1",
+        user_id="u1",
+        conversation_id=None,
+        client_message_id="window-1",
+        content="第一问",
+        title="第一问",
+    )
+    projection.bind_run(first.attempt_id, run_id="window-run-1", agent_id="general_agent")
+    projection.project_output(
+        accepted=first,
+        run_id="window-run-1",
+        agent_id="general_agent",
+        content="第一答",
+        status=AttemptStatus.SUCCEEDED,
+    )
+    second = projection.accept_user_message(
+        tenant_id="t1",
+        user_id="u1",
+        conversation_id=first.conversation_id,
+        client_message_id="window-2",
+        content="第二问",
+        title="第二问",
+    )
+    projection.bind_run(second.attempt_id, run_id="window-run-2", agent_id="general_agent")
+    projection.project_output(
+        accepted=second,
+        run_id="window-run-2",
+        agent_id="general_agent",
+        content="第二答",
+        status=AttemptStatus.SUCCEEDED,
+    )
+
+    context = ConversationContextService(store=projection).build(
+        agent=_agent(agent_id="general_agent", rag_enabled=False, window_turns=1),
+        tenant_id="t1",
+        agent_id="general_agent",
+        user_id="u1",
+        conversation_id=first.conversation_id,
+        run_id="window-run-3",
+        message="继续",
+    )
+
+    assert context.recent_messages == (
+        {"role": "user", "content": "第二问"},
+        {"role": "assistant", "content": "第二答"},
+    )
+
+
+def test_context_limit_one_never_returns_orphaned_assistant(tmp_path) -> None:
+    store = ConversationStore(tmp_path / "memory.sqlite")
+    projection = ConversationProjectionService(store=store)
+    accepted = projection.accept_user_message(
+        tenant_id="t1",
+        user_id="u1",
+        conversation_id=None,
+        client_message_id="limit-1",
+        content="完整问题",
+        title="完整问题",
+    )
+    projection.bind_run(accepted.attempt_id, run_id="limit-run", agent_id="general_agent")
+    projection.project_output(
+        accepted=accepted,
+        run_id="limit-run",
+        agent_id="general_agent",
+        content="完整回答",
+        status=AttemptStatus.SUCCEEDED,
+    )
+
+    assert projection.context_messages(
+        conversation_id=accepted.conversation_id,
+        exclude_turn_id=None,
+        limit=1,
+    ) == [
+        {"role": "user", "content": "完整问题"},
+        {"role": "assistant", "content": "完整回答"},
+    ]

@@ -506,7 +506,7 @@ class ConversationStore:
                 SELECT {', '.join(columns)} FROM messages
                 WHERE attempt_id = {self._projection_placeholder}
                   AND kind = 'assistant_output'{state_clause}
-                ORDER BY id LIMIT 1
+                ORDER BY id DESC LIMIT 1
                 """,
                 tuple(params),
             ).fetchone()
@@ -619,12 +619,19 @@ class ConversationStore:
 
     def get_attempt_scope(self, attempt_id: str) -> dict[str, Any] | None:
         """返回审计与指标所需的安全 Attempt 作用域。"""
-        columns = ("attempt_id", "turn_id", "conversation_id", "tenant_id", "agent_id")
+        columns = (
+            "attempt_id",
+            "turn_id",
+            "conversation_id",
+            "tenant_id",
+            "agent_id",
+            "user_message_id",
+        )
         with self._connect() as conn:
             row = conn.execute(
                 f"""
                 SELECT a.id, a.turn_id, t.conversation_id, t.tenant_id,
-                       COALESCE(a.agent_id, c.agent)
+                       COALESCE(a.agent_id, c.agent), t.user_message_id
                 FROM conversation_attempts AS a
                 JOIN conversation_turns AS t ON t.id = a.turn_id
                 JOIN conversations AS c ON c.id = t.conversation_id
@@ -699,53 +706,65 @@ class ConversationStore:
                 """,
                 (conversation_id,),
             ).fetchall()
-            for turn_row in turn_rows:
-                turn = _projection_row(turn_columns, turn_row)
-                attempt_rows = conn.execute(
+            result = [_projection_row(turn_columns, row) for row in turn_rows]
+            turns_by_id = {str(turn["id"]): turn for turn in result}
+            for turn in result:
+                turn["attempts"] = []
+            attempt_rows = conn.execute(
+                f"""
+                SELECT a.id, a.run_id, a.attempt_no, a.retry_of_attempt_id,
+                       a.agent_id, a.status, a.stage, a.error_code, a.error_summary,
+                       a.version, a.started_at, a.finished_at, a.turn_id
+                FROM conversation_attempts AS a
+                JOIN conversation_turns AS t ON t.id = a.turn_id
+                WHERE t.conversation_id = {placeholder}
+                ORDER BY t.ordinal, a.attempt_no
+                """,
+                (conversation_id,),
+            ).fetchall()
+            attempts_by_id: dict[str, dict[str, Any]] = {}
+            for row in attempt_rows:
+                attempt = _projection_row((*attempt_columns, "turn_id"), row)
+                turn_id = str(attempt.pop("turn_id"))
+                attempt["messages"] = []
+                attempt["actions"] = []
+                turns_by_id[turn_id]["attempts"].append(attempt)
+                attempts_by_id[str(attempt["id"])] = attempt
+            if attempts_by_id:
+                attempt_ids = tuple(attempts_by_id)
+                slots = ", ".join(placeholder for _ in attempt_ids)
+                message_rows = conn.execute(
                     f"""
-                    SELECT id, run_id, attempt_no, retry_of_attempt_id, agent_id,
-                           status, stage, error_code, error_summary, version,
-                           started_at, finished_at
-                    FROM conversation_attempts WHERE turn_id = {placeholder}
-                    ORDER BY attempt_no
+                    SELECT attempt_id, id, role, content, agent_id, kind, state,
+                           artifact_id, supersedes_message_id, created_at, updated_at
+                    FROM messages
+                    WHERE attempt_id IN ({slots}) AND kind != 'user_input'
+                      AND visibility = 'user'
+                    ORDER BY id
                     """,
-                    (turn["id"],),
+                    attempt_ids,
                 ).fetchall()
-                attempts: list[dict[str, Any]] = []
-                for attempt_row in attempt_rows:
-                    attempt = _projection_row(attempt_columns, attempt_row)
-                    message_rows = conn.execute(
-                        f"""
-                        SELECT id, role, content, agent_id, kind, state, artifact_id,
-                               supersedes_message_id, created_at, updated_at
-                        FROM messages
-                        WHERE attempt_id = {placeholder} AND kind != 'user_input'
-                          AND visibility = 'user'
-                        ORDER BY id
-                        """,
-                        (attempt["id"],),
-                    ).fetchall()
-                    action_rows = conn.execute(
-                        f"""
-                        SELECT id, status, thread_id, skills_json, preview_artifact_id,
-                               preview_json, decision, version, created_at, decided_at,
-                               completed_at
-                        FROM conversation_actions WHERE attempt_id = {placeholder}
-                        ORDER BY created_at, id
-                        """,
-                        (attempt["id"],),
-                    ).fetchall()
-                    actions = [_projection_row(action_columns, row) for row in action_rows]
-                    for action in actions:
-                        action["skills"] = _projection_json(action.pop("skills_json"), [])
-                        action["preview"] = _projection_json(action.pop("preview_json"), {})
-                    attempt["messages"] = [
-                        _projection_row(message_columns, row) for row in message_rows
-                    ]
-                    attempt["actions"] = actions
-                    attempts.append(attempt)
-                turn["attempts"] = attempts
-                result.append(turn)
+                for row in message_rows:
+                    message = _projection_row(("attempt_id", *message_columns), row)
+                    attempt_id = str(message.pop("attempt_id"))
+                    attempts_by_id[attempt_id]["messages"].append(message)
+                action_rows = conn.execute(
+                    f"""
+                    SELECT attempt_id, id, status, thread_id, skills_json,
+                           preview_artifact_id, preview_json, decision, version,
+                           created_at, decided_at, completed_at
+                    FROM conversation_actions
+                    WHERE attempt_id IN ({slots})
+                    ORDER BY created_at, id
+                    """,
+                    attempt_ids,
+                ).fetchall()
+                for row in action_rows:
+                    action = _projection_row(("attempt_id", *action_columns), row)
+                    attempt_id = str(action.pop("attempt_id"))
+                    action["skills"] = _projection_json(action.pop("skills_json"), [])
+                    action["preview"] = _projection_json(action.pop("preview_json"), {})
+                    attempts_by_id[attempt_id]["actions"].append(action)
         return result
 
     def find_conversation_by_client_message(
@@ -783,6 +802,8 @@ class ConversationStore:
         if exclude_turn_id is not None:
             exclusion = f" AND t.id != {placeholder}"
             params.append(exclude_turn_id)
+        turn_limit = max(1, (limit + 1) // 2)
+        params.append(turn_limit)
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
@@ -790,7 +811,8 @@ class ConversationStore:
                 FROM conversation_turns AS t
                 JOIN messages AS u ON u.id = t.user_message_id
                 WHERE t.conversation_id = {placeholder}{exclusion}
-                ORDER BY t.ordinal
+                ORDER BY t.ordinal DESC
+                LIMIT {placeholder}
                 """,
                 tuple(params),
             ).fetchall()
@@ -803,30 +825,44 @@ class ConversationStore:
                     (conversation_id,),
                 ).fetchone()
                 if has_projection is None:
-                    return self.recent_messages(conversation_id=conversation_id, limit=limit)
+                    legacy = self.recent_messages(
+                        conversation_id=conversation_id,
+                        limit=max(2, limit),
+                    )
+                    if legacy and legacy[0].get("role") == "assistant":
+                        legacy = legacy[1:]
+                    return legacy
                 return []
+            rows = list(reversed(rows))
+            canonical_ids = tuple(str(row[2]) for row in rows if row[2] is not None)
+            assistants: dict[str, str] = {}
+            if canonical_ids:
+                slots = ", ".join(placeholder for _ in canonical_ids)
+                assistant_rows = conn.execute(
+                    f"""
+                    SELECT m.attempt_id, m.content
+                    FROM messages AS m
+                    JOIN conversation_attempts AS a ON a.id = m.attempt_id
+                    WHERE m.attempt_id IN ({slots})
+                      AND a.status = 'succeeded'
+                      AND m.role = 'assistant'
+                      AND m.visibility = 'user'
+                      AND m.state = 'sealed'
+                    ORDER BY m.id
+                    """,
+                    canonical_ids,
+                ).fetchall()
+                for assistant_row in assistant_rows:
+                    assistants[str(assistant_row[0])] = str(assistant_row[1])
             result: list[dict[str, Any]] = []
             for row in rows:
                 result.append({"role": "user", "content": str(row[1])})
                 if row[2] is None:
                     continue
-                assistant = conn.execute(
-                    f"""
-                    SELECT m.content
-                    FROM messages AS m
-                    JOIN conversation_attempts AS a ON a.id = m.attempt_id
-                    WHERE m.attempt_id = {placeholder}
-                      AND a.status = 'succeeded'
-                      AND m.role = 'assistant'
-                      AND m.visibility = 'user'
-                      AND m.state = 'sealed'
-                    ORDER BY m.id DESC LIMIT 1
-                    """,
-                    (row[2],),
-                ).fetchone()
+                assistant = assistants.get(str(row[2]))
                 if assistant is not None:
-                    result.append({"role": "assistant", "content": str(assistant[0])})
-        return result[-limit:]
+                    result.append({"role": "assistant", "content": assistant})
+        return result
 
     def persist_approval_request(
         self,

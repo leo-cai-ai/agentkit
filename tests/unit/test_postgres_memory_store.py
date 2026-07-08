@@ -606,7 +606,14 @@ def test_postgres_projection_scope_uses_public_backend_neutral_shape(monkeypatch
 
     class Result:
         def fetchone(self):
-            return ("attempt-1", "turn-1", "conversation-1", "tenant-a", "xhs_growth")
+            return (
+                "attempt-1",
+                "turn-1",
+                "conversation-1",
+                "tenant-a",
+                "xhs_growth",
+                42,
+            )
 
     class Connection:
         def execute(self, sql, params):
@@ -625,6 +632,7 @@ def test_postgres_projection_scope_uses_public_backend_neutral_shape(monkeypatch
         "conversation_id": "conversation-1",
         "tenant_id": "tenant-a",
         "agent_id": "xhs_growth",
+        "user_message_id": 42,
     }
     assert calls[0][1] == ("attempt-1",)
     assert "%s" in calls[0][0]
@@ -678,4 +686,89 @@ def test_postgres_finalize_projection_uses_row_lock_and_sets_canonical(monkeypat
     assert scope["attempt_id"] == "attempt-1"
     assert "FOR UPDATE" in calls[0][0]
     assert any("canonical_attempt_id = %s" in sql for sql, _ in calls)
+    assert all("?" not in sql for sql, _ in calls)
+
+
+def test_postgres_timeline_projection_batches_attempt_children(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class Result:
+        def __init__(self, rows=()) -> None:
+            self._rows = rows
+
+        def fetchall(self):
+            return list(self._rows)
+
+    class Connection:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+            if "FROM conversation_turns AS t" in sql and "JOIN messages AS u" in sql:
+                return Result((("turn-1", "client-1", 1, None, None, 1.0, 2.0, "问题"),))
+            if "FROM conversation_attempts AS a" in sql:
+                return Result(
+                    (
+                        (
+                            "attempt-1",
+                            "run-1",
+                            1,
+                            None,
+                            "general_agent",
+                            "failed",
+                            "finalizing",
+                            "failed",
+                            "失败",
+                            2,
+                            1.0,
+                            2.0,
+                            "turn-1",
+                        ),
+                        (
+                            "attempt-2",
+                            "run-2",
+                            2,
+                            "attempt-1",
+                            "general_agent",
+                            "queued",
+                            "understanding_request",
+                            "",
+                            "",
+                            1,
+                            3.0,
+                            None,
+                            "turn-1",
+                        ),
+                    )
+                )
+            if "FROM messages" in sql:
+                return Result(
+                    (
+                        (
+                            "attempt-1",
+                            7,
+                            "assistant",
+                            "失败结果",
+                            "general_agent",
+                            "assistant_output",
+                            "failed",
+                            None,
+                            None,
+                            1.0,
+                            2.0,
+                        ),
+                    )
+                )
+            if "FROM conversation_actions" in sql:
+                return Result()
+            raise AssertionError(sql)
+
+    store = object.__new__(PgConversationStore)
+    store._settings = None
+    monkeypatch.setattr(store, "_connect", lambda: nullcontext(Connection()))
+
+    turns = store.timeline_turns("conversation-1")
+
+    assert [item["id"] for item in turns[0]["attempts"]] == ["attempt-1", "attempt-2"]
+    assert turns[0]["attempts"][0]["messages"][0]["content"] == "失败结果"
+    assert sum("FROM messages" in sql for sql, _ in calls) == 1
+    assert sum("FROM conversation_actions" in sql for sql, _ in calls) == 1
     assert all("?" not in sql for sql, _ in calls)

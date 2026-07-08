@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
+import pytest
+
 from agentkit.core.audit import InMemoryAuditLog
 from agentkit.core.memory.store import ConversationStore
 from agentkit.runtime.conversation_projection import ConversationProjectionService
@@ -138,7 +142,7 @@ def test_streaming_observer_and_project_output_reuse_one_message(tmp_path) -> No
     assert (output["content"], output["state"]) == ("最终结果", "sealed")
 
 
-def test_late_streaming_observer_reuses_sealed_message(tmp_path) -> None:
+def test_late_streaming_observer_rejects_terminal_attempt(tmp_path) -> None:
     service, accepted = projection_fixture(tmp_path)
     projected = service.project_output(
         accepted=accepted,
@@ -148,14 +152,80 @@ def test_late_streaming_observer_reuses_sealed_message(tmp_path) -> None:
         status=AttemptStatus.SUCCEEDED,
     )
 
-    observed = service.open_streaming_output(
+    with pytest.raises(ValueError, match="active"):
+        service.open_streaming_output(
+            accepted=accepted,
+            run_id="run-1",
+            agent_id="xhs_growth",
+        )
+
+    assert projected == 2
+    assert service._store.count_messages(accepted.conversation_id) == 2
+
+
+@pytest.mark.parametrize(
+    "terminal_status",
+    ["failed", "succeeded", "interrupted", "rejected", "cancelled"],
+)
+def test_streaming_observer_rejects_every_terminal_attempt(tmp_path, terminal_status: str) -> None:
+    service, accepted = projection_fixture(tmp_path)
+    assert service._store.transition_attempt(
+        accepted.attempt_id,
+        expected={"running"},
+        status=terminal_status,
+    )
+
+    with pytest.raises(ValueError, match="active"):
+        service.open_streaming_output(
+            accepted=accepted,
+            run_id="run-1",
+            agent_id="xhs_growth",
+        )
+
+
+def test_approval_resume_success_appends_final_output_and_sets_canonical(tmp_path) -> None:
+    service, accepted = projection_fixture(tmp_path)
+    streaming_id = service.open_streaming_output(
         accepted=accepted,
         run_id="run-1",
         agent_id="xhs_growth",
     )
+    assert service.checkpoint_streaming_output(streaming_id, content="审批前草稿" * 110)
+    action = service.request_approval(
+        accepted=accepted,
+        run_id="run-1",
+        agent_id="xhs_growth",
+        thread_id="thread-1",
+        skills=["xhs.publish"],
+        preview={"content": "审核修订稿"},
+    )
+    service._store.decide_action(
+        action.id,
+        decision="approved",
+        decided_by="u1",
+        decision_context={},
+        idempotency_key="decision-1",
+        expected_version=action.version,
+    )
 
-    assert observed == projected
-    assert service._store.count_messages(accepted.conversation_id) == 2
+    final_id = service.project_output(
+        accepted=accepted,
+        run_id="run-1",
+        agent_id="xhs_growth",
+        content="发布完成后的最终正文",
+        status=AttemptStatus.SUCCEEDED,
+    )
+
+    assert final_id != streaming_id
+    assert service._store.get_attempt(accepted.attempt_id)["status"] == "succeeded"
+    assert [
+        item["content"]
+        for item in service.context_messages(
+            conversation_id=accepted.conversation_id,
+            exclude_turn_id=None,
+            limit=10,
+        )
+    ] == ["用户问题", "发布完成后的最终正文"]
 
 
 def test_streaming_checkpoint_is_time_or_size_gated(tmp_path) -> None:
@@ -258,3 +328,32 @@ def test_timeline_for_client_message_enforces_user_scope(tmp_path) -> None:
         pass
     else:
         raise AssertionError("跨用户 client_message_id 必须不可见")
+
+
+def test_projection_rejects_forged_accepted_conversation_and_user_message(tmp_path) -> None:
+    service, first = projection_fixture(tmp_path)
+    second = service.accept_user_message(
+        tenant_id="tenant-a",
+        user_id="u1",
+        conversation_id=None,
+        client_message_id="client-2",
+        content="另一个会话",
+        title="另一个会话",
+    )
+    service.bind_run(second.attempt_id, run_id="run-2", agent_id="general_agent")
+
+    forged_conversation = replace(second, conversation_id=first.conversation_id)
+    forged_user_message = replace(second, user_message_id=first.user_message_id)
+
+    with pytest.raises(ValueError, match="accepted turn"):
+        service.open_streaming_output(
+            accepted=forged_conversation,
+            run_id="run-2",
+            agent_id="xhs_growth",
+        )
+    with pytest.raises(ValueError, match="accepted turn"):
+        service.open_streaming_output(
+            accepted=forged_user_message,
+            run_id="run-2",
+            agent_id="xhs_growth",
+        )

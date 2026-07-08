@@ -181,14 +181,15 @@ class ConversationProjectionService:
         run_id: str,
         agent_id: str,
     ) -> int:
-        self._validate_accepted(accepted, run_id=run_id)
-        existing = self._output_message(accepted.attempt_id)
+        attempt = self._validate_accepted(accepted, run_id=run_id)
+        if str(attempt["status"]) not in _ACTIVE_STATUSES:
+            raise ValueError("attempt must be active to open streaming output")
+        existing = self._output_message(accepted.attempt_id, state="streaming")
         if existing is not None:
-            if existing["state"] == "streaming":
-                self._checkpoints[int(existing["id"])] = (
-                    self._clock(),
-                    len(str(existing.get("content") or "")),
-                )
+            self._checkpoints[int(existing["id"])] = (
+                self._clock(),
+                len(str(existing.get("content") or "")),
+            )
             return int(existing["id"])
         try:
             message_id = self._store.open_attempt_message(
@@ -279,9 +280,14 @@ class ConversationProjectionService:
         status: AttemptStatus,
         artifact_id: str | None = None,
     ) -> int:
-        self._validate_accepted(accepted, run_id=run_id)
-        existing = self._output_message(accepted.attempt_id)
+        attempt = self._validate_accepted(accepted, run_id=run_id)
+        existing = self._output_message(accepted.attempt_id, state="streaming")
         if existing is None:
+            if str(attempt["status"]) not in _ACTIVE_STATUSES:
+                terminal = self._output_message(accepted.attempt_id)
+                if terminal is None:
+                    raise ValueError("terminal attempt has no projected output")
+                return int(terminal["id"])
             message_id = self.open_streaming_output(
                 accepted=accepted,
                 run_id=run_id,
@@ -499,13 +505,25 @@ class ConversationProjectionService:
             limit=limit,
         )
 
-    def _validate_accepted(self, accepted: AcceptedTurn, *, run_id: str) -> None:
+    def _validate_accepted(
+        self,
+        accepted: AcceptedTurn,
+        *,
+        run_id: str,
+    ) -> dict[str, Any]:
         attempt = self._require_attempt(accepted.attempt_id)
-        if str(attempt["turn_id"]) != accepted.turn_id:
-            raise ValueError("attempt does not belong to accepted turn")
+        scope = self._store.get_attempt_scope(accepted.attempt_id)
+        if scope is None or (
+            str(scope["attempt_id"]) != accepted.attempt_id
+            or str(scope["turn_id"]) != accepted.turn_id
+            or str(scope["conversation_id"]) != accepted.conversation_id
+            or int(scope["user_message_id"]) != accepted.user_message_id
+        ):
+            raise ValueError("accepted turn IDs do not belong to one projection scope")
         bound_run = attempt.get("run_id")
         if bound_run is not None and str(bound_run) != run_id:
             raise ValueError("attempt is bound to another run")
+        return attempt
 
     def _require_attempt(self, attempt_id: str) -> dict[str, Any]:
         attempt = self._store.get_attempt(attempt_id)

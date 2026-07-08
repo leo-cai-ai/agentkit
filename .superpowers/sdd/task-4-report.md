@@ -51,4 +51,16 @@
 ## Concerns
 
 - PostgreSQL public API 通过 mock connection 验证了返回结构、`%s` 占位符、行锁与 canonical 更新；本任务未连接真实 PostgreSQL 实例。
-- `conversation_action_decided`、`conversation_action_invalidated`、`conversation_projection_reconciled` 以及 approval-wait/SSE-disconnect/recovery-outcome 的实际触发点属于后续 Action/Recovery/Web 协调任务；本任务提供了安全 scoped metric 基础并实现当前 Service 能触发的事件与指标。
+- 本 Task 只触发当前已有 mutation 对应的安全事件与指标。`conversation_action_decided`、`conversation_action_invalidated`、`conversation_projection_reconciled` 以及 approval-wait、SSE-disconnect、recovery-outcome 的实际 mutation 属于 Task 6/7；后续必须在对应 Action/Recovery/Web 接口绑定，并对成功、失败、幂等与恢复全分支验收。本 Task 未制造无业务 mutation 的空 hook，也不声称已触发这些观测项。
+
+## Review Fixes
+
+审查后追加一个独立 TDD 修复批次：
+
+- 审批草稿与 revision 已 sealed 后，成功 resume 只复用 streaming `assistant_output`；没有 streaming 时创建新的最终 Message，终结 Attempt 并设置 canonical。回归测试覆盖 waiting → decide → resuming → succeeded 完整路径。
+- `open_streaming_output` 对 `failed`、`succeeded`、`interrupted`、`rejected`、`cancelled` 全部拒绝迟到 observer。
+- Context 先选择完整 Turn 窗口，再批量展开 user + canonical assistant；`limit=1` 仍返回完整问答，不产生孤立 assistant；`window_turns=1` 只返回最新完整 Turn。
+- `AcceptedTurn` 校验覆盖 conversation、turn、attempt、user message 的真实归属链，并拒绝跨 Conversation 伪造对象。
+- Timeline Store public primitive 改为固定批量查询：Turns、Attempts、Messages、Actions 各一次，不随 Attempt 数增长；SQLite trace 与 PostgreSQL mock query contract 均覆盖。
+
+Review RED 证据：首次运行新增 focused tests 为 `10 failed, 39 passed`，失败分别命中上述五类缺陷。修复后 review focused tests 为 `78 passed`；fresh full 为 `863 passed, 6 skipped in 63.42s`。Ruff check、Ruff format check、mypy 与 `git diff --check` 全部通过。

@@ -530,3 +530,34 @@ def test_accept_turn_rolls_back_every_projection_record_on_failure(tmp_path) -> 
         _accept(store)
 
     assert store.list_conversations(tenant_id="tenant-a", agent="general_agent", user_id="u1") == []
+
+
+def test_timeline_turns_batches_messages_and_actions_queries(tmp_path, monkeypatch) -> None:
+    store = ConversationStore(tmp_path / "conversation.sqlite")
+    accepted = _accept(store)
+    store.transition_attempt(accepted.attempt_id, expected={"queued"}, status="failed")
+    store.create_retry_attempt(
+        turn_id=accepted.turn_id,
+        retry_of_attempt_id=accepted.attempt_id,
+        idempotency_key="retry-batched",
+    )
+    statements: list[str] = []
+    original_connect = store._connect
+
+    def traced_connect():
+        conn = original_connect()
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    monkeypatch.setattr(store, "_connect", traced_connect)
+
+    turns = store.timeline_turns(accepted.conversation_id)
+
+    selects = [
+        " ".join(sql.split()).lower()
+        for sql in statements
+        if sql.lstrip().upper().startswith("SELECT")
+    ]
+    assert len(turns[0]["attempts"]) == 2
+    assert sum("from messages" in sql and "attempt_id" in sql for sql in selects) == 1
+    assert sum("from conversation_actions" in sql for sql in selects) == 1
