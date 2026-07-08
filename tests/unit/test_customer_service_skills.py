@@ -16,7 +16,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def test_repository_catalog_has_exactly_three_business_agents() -> None:
     catalog = load_catalog(REPO_ROOT)
 
-    assert set(catalog.agents) == {"customer_service", "hr_recruiter", "xhs_growth"}
+    assert set(catalog.agents) == {
+        "general_agent",
+        "customer_service",
+        "hr_recruiter",
+        "xhs_growth",
+    }
+    assert catalog.agents["general_agent"].skills == ()
 
 
 def test_customer_service_declares_four_governed_capabilities() -> None:
@@ -31,13 +37,9 @@ def test_customer_service_declares_four_governed_capabilities() -> None:
         "refund.apply",
     )
     assert catalog.capabilities["customer.answer"].execution.reasoning is ReasoningStrategy.DIRECT
+    assert catalog.capabilities["logistics.diagnose"].execution.reasoning is ReasoningStrategy.REACT
     assert (
-        catalog.capabilities["logistics.diagnose"].execution.reasoning
-        is ReasoningStrategy.REACT
-    )
-    assert (
-        catalog.capabilities["refund.apply"].execution.orchestration
-        is OrchestrationMode.WORKFLOW
+        catalog.capabilities["refund.apply"].execution.orchestration is OrchestrationMode.WORKFLOW
     )
     assert catalog.tools["commerce.order.get"].provider is ToolProvider.PYTHON
     assert catalog.tools["refund.submit"].risk is ToolRisk.SIDE_EFFECT
@@ -64,10 +66,7 @@ def test_customer_order_tool_and_refund_handler_compile() -> None:
 def test_hr_and_xhs_use_new_execution_and_context_policies() -> None:
     catalog = load_catalog(REPO_ROOT)
 
-    assert (
-        catalog.capabilities["candidate.rank"].execution.orchestration
-        is OrchestrationMode.BATCH
-    )
+    assert catalog.capabilities["candidate.rank"].execution.orchestration is OrchestrationMode.BATCH
     assert catalog.agents["xhs_growth"].context.rag.enabled is False
     assert (
         catalog.capabilities["xhs.growth.campaign"].execution.orchestration

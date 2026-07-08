@@ -100,9 +100,7 @@ class ContextRegistry:
         self._validate_contract(context_file, model)
 
         source_dir = context_file.parent.resolve()
-        system_path = _resolve_within(
-            source_dir, model.templates.system, label="System 模板"
-        )
+        system_path = _resolve_within(source_dir, model.templates.system, label="System 模板")
         user_path = _resolve_within(source_dir, model.templates.user, label="User 模板")
         system_template = _read_required_text(system_path)
         user_template = _read_required_text(user_path)
@@ -132,9 +130,7 @@ class ContextRegistry:
             try:
                 Draft202012Validator.check_schema(output_schema)
             except SchemaError as exc:
-                raise ValueError(
-                    f"{schema_path}: JSON Schema 定义无效: {exc.message}"
-                ) from exc
+                raise ValueError(f"{schema_path}: JSON Schema 定义无效: {exc.message}") from exc
 
         content_hash = _definition_hash(
             model=model,
@@ -210,9 +206,7 @@ class ContextRegistry:
         self._validate_template_syntax(template, path)
         referenced = sorted(set(_TEMPLATE_VARIABLE.findall(template)))
         if referenced:
-            raise ValueError(
-                f"{path}: System 模板不能引用动态变量: {', '.join(referenced)}"
-            )
+            raise ValueError(f"{path}: System 模板不能引用动态变量: {', '.join(referenced)}")
 
     @staticmethod
     def _validate_template_syntax(template: str, path: Path) -> None:
@@ -234,9 +228,7 @@ class ContextRegistry:
             candidate = (self._root / raw_path).resolve()
         allowed_root = (self._root / "overrides" / self._tenant_selector).resolve()
         if not candidate.is_relative_to(allowed_root):
-            raise ValueError(
-                f"Override 路径必须位于 {allowed_root}: {relative_path}"
-            )
+            raise ValueError(f"Override 路径必须位于 {allowed_root}: {relative_path}")
         if not candidate.is_dir():
             raise ValueError(f"Override 目录不存在: {relative_path}")
         files = sorted(path for path in candidate.rglob("*") if path.is_file())
@@ -262,10 +254,7 @@ class ContextRegistry:
             self._validate_template_variables(definition.model, user_template, user_path)
         override_hash = _sha256(
             _canonical_bytes(
-                {
-                    path.name: _normalize_text(path.read_text(encoding="utf-8"))
-                    for path in files
-                }
+                {path.name: _normalize_text(path.read_text(encoding="utf-8")) for path in files}
             )
         )
         return ContextDefinition(

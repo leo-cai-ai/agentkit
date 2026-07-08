@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import mimetypes
 import os
 import sys
+import time
+from pathlib import Path
 from typing import Any
 
 from agentkit.core.contracts import TaskRequest
@@ -482,20 +485,98 @@ def _parse_csv(value: str | None) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _ocr_check(image: str, *, as_json: bool) -> int:
+    """使用生产 OCR Provider 对一张本地图片执行真实验收。"""
+
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    from agentkit.config import get_settings
+    from agentkit.core.ocr import OcrProviderError
+    from agentkit.runtime.ocr import build_configured_ocr_provider
+
+    try:
+        settings = get_settings()
+        provider = build_configured_ocr_provider(settings)
+    except (OSError, ValueError) as exc:
+        return _print_ocr_check_error(type(exc).__name__, as_json=as_json)
+    if not provider.enabled:
+        payload = {
+            "status": "skipped",
+            "text": "",
+            "provider": provider.name,
+            "model": provider.model,
+            "reason": "ocr_not_configured",
+            "usage": {},
+        }
+        if as_json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print("SKIPPED: OCR provider is none")
+        return 0
+
+    image_path = Path(image)
+    if not image_path.is_file():
+        return _print_ocr_check_error("image_not_found", as_json=as_json)
+    mime_type = (mimetypes.guess_type(image_path.name)[0] or "").lower()
+    if mime_type not in {"image/png", "image/jpeg", "image/webp"}:
+        return _print_ocr_check_error("unsupported_mime_type", as_json=as_json)
+    try:
+        image_bytes = image_path.read_bytes()
+        started = time.perf_counter()
+        result = provider.analyze(
+            image_bytes,
+            mime_type=mime_type,
+            hint=image_path.name,
+        )
+        elapsed_seconds = round(time.perf_counter() - started, 3)
+    except OcrProviderError as exc:
+        return _print_ocr_check_error(exc.code, as_json=as_json)
+    except OSError:
+        return _print_ocr_check_error("image_read_failed", as_json=as_json)
+
+    result_payload: dict[str, Any] = {
+        **result.to_dict(),
+        "elapsed_seconds": elapsed_seconds,
+    }
+    if as_json:
+        print(json.dumps(result_payload, ensure_ascii=False, indent=2))
+    else:
+        print(
+            f"OCR completed: provider={result.provider}, model={result.model}, "
+            f"elapsed={elapsed_seconds:.3f}s"
+        )
+        if result.usage:
+            print("usage=" + json.dumps(dict(result.usage), ensure_ascii=False))
+        print(result.text)
+    return 0
+
+
+def _print_ocr_check_error(code: str, *, as_json: bool) -> int:
+    payload = {"status": "failed", "reason": code}
+    if as_json:
+        print(json.dumps(payload, ensure_ascii=False), file=sys.stderr)
+    else:
+        print(f"OCR check failed: {code}", file=sys.stderr)
+    return 1
+
+
 def _rag_service_for_tenant(tenant_selector: str | None):
     from agentkit.config import get_settings
     from agentkit.core.rag.service import build_knowledge_service
     from agentkit.runtime.bootstrap import build_runtime, load_tenant_config, resolve_tenant_id
+    from agentkit.runtime.ocr import build_configured_ocr_provider
 
     resolved = resolve_tenant_id(tenant_selector)
     tenant_config = load_tenant_config(resolved)
     tenant_id = str(tenant_config.get("tenant_id") or resolved)
     runtime = build_runtime(tenant_id=resolved)
+    settings = get_settings()
     service = build_knowledge_service(
-        get_settings(),
+        settings,
         tenant_id=tenant_id,
         tenant_selector=resolved,
         context_invoker=runtime.context_invoker,
+        ocr_provider=build_configured_ocr_provider(settings),
     )
     return tenant_id, service, runtime.gateway.audit
 
@@ -520,7 +601,6 @@ def _rag_ingest(
         acl_roles=_parse_csv(roles),
         metadata={"tenant_id": logical_tenant_id},
         ocr_enabled=bool(getattr(settings, "rag_ocr_enabled", False) if ocr is None else ocr),
-        ocr_languages=str(getattr(settings, "rag_ocr_languages", "eng+chi_sim")),
     )
     if as_json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -669,6 +749,16 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--skip-db", action="store_true", help="Skip storage connectivity checks.")
     doctor.add_argument("--json", action="store_true", help="Emit JSON report.")
 
+    ocr_check = sub.add_parser(
+        "ocr-check",
+        help="Run one real image through the configured shared OCR provider.",
+    )
+    ocr_check.add_argument(
+        "image",
+        help="PNG, JPEG or WebP image used for OCR verification.",
+    )
+    ocr_check.add_argument("--json", action="store_true", help="Emit JSON result.")
+
     new_tenant = sub.add_parser("new-tenant", help="Scaffold a new tenant config.")
     new_tenant.add_argument("tenant_id", help="Tenant id (becomes tenants/<id>.json).")
     new_tenant.add_argument("--force", action="store_true", help="Overwrite if it exists.")
@@ -773,6 +863,8 @@ def main() -> None:
         raise SystemExit(_init_db())
     elif args.command == "doctor":
         raise SystemExit(_doctor(tenant_id=args.tenant, skip_db=args.skip_db, as_json=args.json))
+    elif args.command == "ocr-check":
+        raise SystemExit(_ocr_check(args.image, as_json=args.json))
     elif args.command == "new-tenant":
         _new_tenant(args.tenant_id, force=args.force)
     elif args.command == "new-agent":

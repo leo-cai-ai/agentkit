@@ -1,6 +1,24 @@
 {
   "tenant_id": "AI-ABC",
-  "enabled_agents": ["hr_recruiter", "xhs_growth", "customer_service"],
+  "enabled_agents": ["general_agent", "hr_recruiter", "xhs_growth", "customer_service"],
+  "agent_directory": {
+    "general_agent": {
+      "label": "General Agent",
+      "aliases": ["通用", "助手"]
+    },
+    "hr_recruiter": {
+      "label": "招聘 Agent",
+      "aliases": ["招聘", "HR", "招聘助手"]
+    },
+    "customer_service": {
+      "label": "客服 Agent",
+      "aliases": ["客服", "售后", "客服助手"]
+    },
+    "xhs_growth": {
+      "label": "小红书 Agent",
+      "aliases": ["小红书", "XHS", "内容增长"]
+    }
+  },
   "agent_identity": {
     "name": "Javes",
     "description": "基于受治理 LangGraph Runtime 的企业 AI 工作助手"
@@ -50,6 +68,9 @@
     "publishing_media_strategy": "xhs_text_image",
     "text_image_style": "涂鸦",
     "text_image_generation_timeout_seconds": 120,
+    "media_understanding_provider": "ocr",
+    "media_understanding_max_images": 3,
+    "media_understanding_min_confidence": 0.75,
     "title_max_chars": 20,
     "body_max_chars": 1000
   },

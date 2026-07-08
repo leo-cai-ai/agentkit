@@ -1,3 +1,4 @@
+{% from "_icons.html" import icon %}
 <!doctype html>
 <html lang="en">
   <head>
@@ -10,46 +11,62 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/components.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/layout.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/pages.css') }}">
+    <script defer src="{{ url_for('static', filename='js/chat_session.js') }}"></script>
     <script defer src="{{ url_for('static', filename='js/app.js') }}"></script>
   </head>
   <body class="ak-app-page" data-page="{{ active }}">
     <a class="ak-skip-link" href="#main-content">Skip to main content</a>
 
-    <div class="ak-app-shell">
-      <aside class="sidebar ak-app-sidebar" aria-label="Application navigation">
-        <a class="brand ak-brand" href="{{ url_for('overview') }}">
-          <span class="brand-mark ak-brand-mark">EA</span>
-          <span>
-            <strong>Enterprise AI</strong>
-            <small>Workforce Console</small>
+    <div class="ak-app-shell" data-app-shell>
+      <aside class="sidebar ak-app-sidebar ak-app-rail" data-primary-rail aria-label="Application navigation">
+        <a class="brand ak-brand" href="{{ url_for('chat_console') }}" aria-label="AgentKit Chat">
+          <span class="brand-mark ak-brand-mark">AK</span>
+          <span class="ak-brand-copy">
+            <strong>AgentKit</strong>
+            <small>企业 AI 工作台</small>
           </span>
         </a>
-        <nav class="nav ak-primary-nav" aria-label="Primary navigation">
-          <a
-            class="{{ 'active' if active == 'overview' else '' }}"
-            {% if active == 'overview' %}aria-current="page"{% endif %}
-            href="{{ url_for('overview') }}"
-          >Overview</a>
+        <button
+          class="ak-mobile-nav-toggle"
+          type="button"
+          data-mobile-navigation-toggle
+          aria-controls="primary-navigation"
+          aria-expanded="false"
+        >{{ icon("menu-2", "打开导航") }}</button>
+        <nav id="primary-navigation" class="nav ak-primary-nav" aria-label="Primary navigation">
           <a
             class="{{ 'active' if active == 'chat' else '' }}"
+            data-nav-label="聊天"
+            aria-label="聊天"
             {% if active == 'chat' %}aria-current="page"{% endif %}
             href="{{ url_for('chat_console') }}"
-          >Chat</a>
+          >{{ icon("message-circle") }}<span>聊天</span></a>
+          <a
+            class="{{ 'active' if active == 'agents' else '' }}"
+            data-nav-label="Agent Network"
+            aria-label="Agent Network"
+            {% if active == 'agents' %}aria-current="page"{% endif %}
+            href="{{ url_for('agent_network') }}"
+          >{{ icon("topology-star") }}<span>Agent Network</span></a>
           <a
             class="{{ 'active' if active == 'operations' else '' }}"
+            data-nav-label="运行追踪"
+            aria-label="运行追踪"
             {% if active == 'operations' %}aria-current="page"{% endif %}
             href="{{ url_for('operations') }}"
-          >Operations</a>
+          >{{ icon("activity") }}<span>运行追踪</span></a>
           <a
             class="{{ 'active' if active == 'governance' else '' }}"
+            data-nav-label="治理"
+            aria-label="治理"
             {% if active == 'governance' %}aria-current="page"{% endif %}
             href="{{ url_for('governance') }}"
-          >Governance</a>
+          >{{ icon("shield-check") }}<span>治理</span></a>
         </nav>
-        <div class="sidebar-card ak-tenant-summary">
-          <span>Active tenant</span>
+        <button class="sidebar-card ak-tenant-summary" type="button" aria-label="当前租户 {{ tenant_id }}">
+          <span aria-hidden="true">AI</span>
           <strong>{{ tenant_id }}</strong>
-        </div>
+        </button>
       </aside>
 
       <main class="page-shell ak-app-main" id="main-content" tabindex="-1">

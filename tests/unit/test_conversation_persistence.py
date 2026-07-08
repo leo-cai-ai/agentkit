@@ -1,3 +1,5 @@
+import pytest
+
 from agentkit.core.memory.store import ConversationStore
 from agentkit.runtime.conversation_persistence import (
     ConversationPersistenceService,
@@ -11,6 +13,14 @@ class FakeMemoryWriter:
 
     def record(self, **kwargs) -> None:
         self.calls.append(kwargs)
+
+
+class RecordingAudit:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, str, dict]] = []
+
+    def record(self, run_id, event_type, payload) -> None:
+        self.events.append((run_id, event_type, payload))
 
 
 def test_persistence_writes_only_explicit_scope(tmp_path) -> None:
@@ -43,6 +53,141 @@ def test_persistence_writes_only_explicit_scope(tmp_path) -> None:
     assert memory.calls[0]["agent_id"] == "customer_service"
 
 
+def test_general_conversation_records_the_actual_reply_agent(tmp_path) -> None:
+    store = ConversationStore(tmp_path / "memory.sqlite")
+    service = ConversationPersistenceService(store=store)
+    conversation_id = service.create_conversation(
+        tenant_id="t1", agent_id="general_agent", user_id="u1"
+    )
+
+    service.record_turn(
+        tenant_id="t1",
+        agent_id="general_agent",
+        assistant_agent_id="hr_recruiter",
+        user_id="u1",
+        conversation_id=conversation_id,
+        user_message="@招聘 分析候选人",
+        assistant_message="候选人符合要求",
+        run_id="parent-run",
+        window_turns=6,
+    )
+
+    messages = store.all_messages(conversation_id)
+    assert messages[0]["agent_id"] is None
+    assert messages[1]["agent_id"] == "hr_recruiter"
+
+
+def test_retry_replaces_the_logical_turn_without_adding_messages(tmp_path) -> None:
+    store = ConversationStore(tmp_path / "memory.sqlite")
+    memory = FakeMemoryWriter()
+    service = ConversationPersistenceService(store=store, memory_writer=memory)
+    conversation_id = service.create_conversation(
+        tenant_id="t1", agent_id="general_agent", user_id="u1"
+    )
+    service.record_turn(
+        tenant_id="t1",
+        agent_id="general_agent",
+        assistant_agent_id="xhs_growth",
+        user_id="u1",
+        conversation_id=conversation_id,
+        user_message="原始问题",
+        assistant_message="旧失败结果",
+        run_id="r1",
+        outcome="not_completed",
+        window_turns=6,
+    )
+    original = store.all_messages(conversation_id)
+    original_ids = [row["id"] for row in original]
+    store.upsert_summary(
+        conversation_id=conversation_id,
+        summary_text="旧摘要",
+        covered_through_message_id=original[-1]["id"],
+    )
+
+    service.record_turn(
+        tenant_id="t1",
+        agent_id="general_agent",
+        assistant_agent_id="xhs_growth",
+        user_id="u1",
+        conversation_id=conversation_id,
+        user_message="原始问题",
+        assistant_message="新成功结果",
+        run_id="r2",
+        retry_of_run_id="r1",
+        outcome="succeeded",
+        window_turns=6,
+    )
+
+    messages = store.all_messages(conversation_id)
+    assert [row["id"] for row in messages] == original_ids
+    assert [(row["role"], row["content"], row["run_id"]) for row in messages] == [
+        ("user", "原始问题", "r2"),
+        ("assistant", "新成功结果", "r2"),
+    ]
+    assert messages[1]["agent_id"] == "xhs_growth"
+    assert store.get_summary(conversation_id) is None
+    assert [call["run_id"] for call in memory.calls] == ["r2"]
+
+
+def test_retry_without_a_unique_old_turn_appends_and_records_audit_warning(
+    tmp_path,
+) -> None:
+    store = ConversationStore(tmp_path / "memory.sqlite")
+    audit = RecordingAudit()
+    service = ConversationPersistenceService(store=store, audit=audit)
+    conversation_id = service.create_conversation(
+        tenant_id="t1", agent_id="general_agent", user_id="u1"
+    )
+
+    service.record_turn(
+        tenant_id="t1",
+        agent_id="general_agent",
+        user_id="u1",
+        conversation_id=conversation_id,
+        user_message="原始问题",
+        assistant_message="补写结果",
+        run_id="r2",
+        retry_of_run_id="missing-run",
+        outcome="not_completed",
+        window_turns=6,
+    )
+
+    assert store.count_messages(conversation_id) == 2
+    assert audit.events == [
+        (
+            "r2",
+            "conversation_retry_replace_missed",
+            {
+                "conversation_id": conversation_id,
+                "retry_of_run_id": "missing-run",
+            },
+        )
+    ]
+
+
+def test_only_succeeded_turns_are_written_to_long_term_memory(tmp_path) -> None:
+    store = ConversationStore(tmp_path / "memory.sqlite")
+    memory = FakeMemoryWriter()
+    service = ConversationPersistenceService(store=store, memory_writer=memory)
+    conversation_id = service.create_conversation(
+        tenant_id="t1", agent_id="general_agent", user_id="u1"
+    )
+
+    service.record_turn(
+        tenant_id="t1",
+        agent_id="general_agent",
+        user_id="u1",
+        conversation_id=conversation_id,
+        user_message="需要更多资料",
+        assistant_message="请补充时间范围",
+        run_id="r1",
+        outcome="action_required",
+        window_turns=6,
+    )
+
+    assert memory.calls == []
+
+
 def test_persistence_rejects_cross_user_write(tmp_path) -> None:
     store = ConversationStore(tmp_path / "memory.sqlite")
     service = ConversationPersistenceService(store=store)
@@ -65,6 +210,33 @@ def test_persistence_rejects_cross_user_write(tmp_path) -> None:
         assert "不属于当前" in str(exc)
     else:
         raise AssertionError("必须拒绝跨用户写入")
+
+
+def test_persistence_rejects_write_to_inactive_conversation(tmp_path) -> None:
+    store = ConversationStore(tmp_path / "memory.sqlite")
+    service = ConversationPersistenceService(store=store)
+    conversation_id = service.create_conversation(
+        tenant_id="t1", agent_id="general_agent", user_id="u1"
+    )
+    with store._connect() as conn:
+        conn.execute(
+            "UPDATE conversations SET status = ? WHERE id = ?",
+            ("deleting", conversation_id),
+        )
+
+    with pytest.raises(ValueError, match="会话当前不可写入"):
+        service.record_turn(
+            tenant_id="t1",
+            agent_id="general_agent",
+            user_id="u1",
+            conversation_id=conversation_id,
+            user_message="不要写入",
+            assistant_message="不会写入",
+            run_id="r1",
+            window_turns=6,
+        )
+
+    assert store.all_messages(conversation_id) == []
 
 
 class FakeExtractor:

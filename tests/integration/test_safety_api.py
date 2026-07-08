@@ -15,6 +15,18 @@ _CALLS: list[str] = []
 
 def _responder(system: str, user: str) -> str:
     _CALLS.append(system)
+    if "可选动作" in system and "delegate" in system:
+        return json.dumps(
+            {
+                "action": "answer",
+                "target_agent": None,
+                "task": "",
+                "reason": "普通交流",
+                "confidence": "high",
+            }
+        )
+    if "General Agent" in system and "直接回答" in system:
+        return "当然可以。"
     return json.dumps(
         {
             "intent_type": "business_task",
@@ -82,4 +94,4 @@ def test_benign_message_still_reaches_llm(client):
     )
     assert resp.status_code == 200
     assert resp.get_json()["response"]["status"] == "completed"
-    assert "意图分解节点" in _CALLS[0]
+    assert "可选动作" in _CALLS[0]

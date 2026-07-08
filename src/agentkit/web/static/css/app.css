@@ -1294,6 +1294,31 @@ button:disabled {
   white-space: pre-wrap;
 }
 
+.approval-card-pages {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.approval-text-image .approval-card-page {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  min-height: 120px;
+}
+
+.approval-card-page strong {
+  color: var(--accent);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.approval-card-page span {
+  white-space: pre-wrap;
+}
+
 button.secondary.danger {
   border-color: rgba(248, 113, 113, 0.45);
   background: rgba(248, 113, 113, 0.08);

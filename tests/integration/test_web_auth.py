@@ -50,9 +50,7 @@ def _contrast_ratio(foreground: str, background: str) -> float:
     def luminance(value: str) -> float:
         channels = [int(value[index : index + 2], 16) / 255 for index in (1, 3, 5)]
         linear = [
-            channel / 12.92
-            if channel <= 0.03928
-            else ((channel + 0.055) / 1.055) ** 2.4
+            channel / 12.92 if channel <= 0.03928 else ((channel + 0.055) / 1.055) ** 2.4
             for channel in channels
         ]
         return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
@@ -96,7 +94,7 @@ def test_page_stylesheets_load_in_expected_order(client):
     )
     assert "/static/css/app.css" not in login_html
     assert "/static/css/layout.css" not in login_html
-    assert 'class="login-shell"' in login_html
+    assert 'class="ak-login-shell"' in login_html
     assert 'for="access-token"' in login_html
     assert 'id="access-token"' in login_html
     assert "style=" not in login_html
@@ -193,7 +191,13 @@ def test_authenticated_shell_preserves_structure_and_accessibility(client):
         assert 'class="ak-skip-link" href="#main-content"' in html
         assert 'id="main-content" tabindex="-1"' in html
         assert 'aria-label="Primary navigation"' in html
-        assert html.count('aria-current="page"') == 1
+        primary_navigation = re.search(
+            r'<nav id="primary-navigation".*?</nav>',
+            html,
+            re.DOTALL,
+        )
+        assert primary_navigation is not None
+        assert primary_navigation.group(0).count('aria-current="page"') == 1
         assert 'class="topbar-meta"' not in html
         assert 'class="meta-chip' not in html
         assert 'class="ak-page-description"' in html
@@ -221,7 +225,7 @@ def test_authenticated_shell_preserves_structure_and_accessibility(client):
         for heading_id in labelled_panels:
             assert f'id="{heading_id}"' in html
 
-    for route in ("/", "/operations"):
+    for route in ("/overview", "/operations"):
         html = client.get(route).get_data(as_text=True)
         assert '<dl class="metric-grid ak-stat-grid"' in html
         assert html.count('class="metric-tile ak-stat-card"') == 5
@@ -235,29 +239,36 @@ def test_authenticated_shell_preserves_structure_and_accessibility(client):
         'name="message"',
         'id="execution-state"',
         'id="step-list"',
+        'id="chat-trace-drawer"',
+        "data-trace-trigger",
+        "data-trace-drawer",
         'id="result-region"',
-        "data-conversation-trigger",
-        "data-conversation-menu",
-        'aria-label="Message"',
-        'aria-controls="conversation-menu"',
-        'id="conversation-menu"',
-        'class="ak-agent-option',
-        'class="ak-agent-tooltip" role="tooltip"',
+        "data-conversation-sidebar",
+        "data-conversation-sidebar-toggle",
+        "data-conversation-sidebar-open",
+        "data-conversation-list",
+        'aria-label="消息"',
+        'aria-controls="conversation-history"',
+        'id="conversation-history"',
+        'id="agent-directory"',
+        "data-agent-mention-menu",
         'class="chat-thread ak-chat-thread"',
         'role="log"',
         'class="chat-input-row ak-chat-composer"',
         "data-chat-input",
         'class="ak-chat-composer-toolbar"',
-        'aria-label="New conversation"',
+        'aria-label="新建会话"',
     ):
         assert contract in chat_html
     assert "agent-status-panel" not in chat_html
+    assert "ak-trace-panel" not in chat_html
     assert '<input name="message"' not in chat_html
+    assert 'name="agent"' not in chat_html
 
     pages_css = client.get("/static/css/pages.css").get_data(as_text=True)
     for contract in (
-        ".ak-agent-button-group",
-        ".ak-agent-tooltip",
+        ".ak-general-chat-layout",
+        ".ak-mention-menu",
         ".ak-chat-workspace",
         ".ak-chat-thread",
         ".ak-chat-composer",
@@ -267,10 +278,20 @@ def test_authenticated_shell_preserves_structure_and_accessibility(client):
     workspace_rule = re.search(r"\.ak-chat-workspace\s*\{([^}]+)\}", pages_css)
     assert workspace_rule is not None
     assert "min-block-size: 38rem" in workspace_rule.group(1)
-    assert "100vh" in workspace_rule.group(1)
-    assert "100dvh" in workspace_rule.group(1)
-    assert "52rem" not in workspace_rule.group(1)
-    assert "@media (max-width: 56.25rem)" in pages_css
+
+
+def test_agent_network_uses_live_registry_topology(client):
+    _login(client)
+    page = client.get("/agents")
+    assert page.status_code == 200
+    html = page.get_data(as_text=True)
+    assert "data-agent-network" in html
+    assert "/static/js/agent_graph.js" in html
+
+    registry = client.get("/api/registry").get_json()
+    assert any(agent["name"] == "general_agent" for agent in registry["agents"])
+    assert any(edge["type"] == "coordinates" for edge in registry["relationships"])
+    assert any(edge["type"] == "binds" for edge in registry["relationships"])
 
     application_js = client.get("/static/js/app.js").get_data(as_text=True)
     dynamic_class_values = re.findall(r'class="([^"]*)"', application_js)
@@ -283,10 +304,11 @@ def test_authenticated_shell_preserves_structure_and_accessibility(client):
     assert "table-wrap ak-table-wrap" in application_js
     assert "data-table ak-data-table" in application_js
     for contract in (
-        'aria-selected="${active}"',
+        'button.setAttribute("aria-current", "page")',
+        "function renderConversationHistory()",
         'event.key === "ArrowDown"',
         'event.key === "Home"',
-        'card.dataset.state = label',
+        "card.dataset.state = label",
         'chatForm.querySelector("[data-chat-input]")',
         "event.isComposing || isComposing",
         "event.shiftKey",
@@ -307,39 +329,23 @@ def test_governance_groups_metadata_into_progressive_tabs(client):
 
     panel_ids = (
         "governance-panel-agents",
-        "governance-panel-capabilities",
-        "governance-panel-configuration",
-        "governance-panel-audit",
+        "governance-panel-skills",
+        "governance-panel-tools",
+        "governance-panel-contexts",
+        "governance-panel-budgets",
     )
     assert 'data-tabs-default="governance-panel-agents"' in html
-    assert len(re.findall(r"<a\b[^>]*\sdata-tab(?:\s|>)", html, re.DOTALL)) == 4
+    assert len(re.findall(r"<a\b[^>]*\sdata-tab(?:\s|>)", html, re.DOTALL)) == 5
     for panel_id in panel_ids:
         assert f'href="#{panel_id}"' in html
         assert f'id="{panel_id}"' in html
-    assert html.count("data-tab-panel") == 4
-    assert 'data-tab-panel hidden' not in html
-
-    agents = html[
-        html.index('id="governance-panel-agents"') : html.index(
-            'id="governance-panel-capabilities"'
-        )
-    ]
-    capabilities = html[
-        html.index('id="governance-panel-capabilities"') : html.index(
-            'id="governance-panel-configuration"'
-        )
-    ]
-    configuration = html[
-        html.index('id="governance-panel-configuration"') : html.index(
-            'id="governance-panel-audit"'
-        )
-    ]
-    audit = html[html.index('id="governance-panel-audit"') :]
-    assert "Agent Profiles" in agents
-    assert capabilities.index("Skill Registry") < capabilities.index("Tool Registry")
-    assert "Context Registry" in configuration
-    assert "Audit Persistence" in configuration
-    assert "Audit Events" in audit
+    assert html.count("data-tab-panel") == 5
+    assert "data-tab-panel hidden" not in html
+    assert "data-governance-search" in html
+    assert "data-governance-row" in html
+    assert "Context Pack" in html
+    assert "LLM 成本与 Tokens" in html
+    assert "data-governance-detail" in html
 
     application_js = client.get("/static/js/app.js").get_data(as_text=True)
     for contract in (
@@ -353,6 +359,7 @@ def test_governance_groups_metadata_into_progressive_tabs(client):
         'event.key === "End"',
         "window.history.replaceState",
         'window.addEventListener("hashchange"',
+        "function bindGovernanceRegistry()",
     ):
         assert contract in application_js
 
@@ -368,12 +375,12 @@ def test_login_error_uses_accessible_field_state(client):
     response = client.post("/login", data={"token": "nope"})
     assert response.status_code == 401
     html = response.get_data(as_text=True)
-    assert 'id="login-error" role="alert"' in html
+    assert re.search(r'id="login-error"\s+role="alert"', html)
     assert 'aria-invalid="true"' in html
     assert 'aria-errormessage="login-error"' in html
 
 
-def test_operations_uses_stable_columns_and_collapsible_json(client, monkeypatch, tmp_path):
+def test_operations_uses_run_browser_and_collapsible_json(client, monkeypatch, tmp_path):
     import agentkit.web.app as web_app
     from agentkit.core.audit import SQLiteAuditLog
 
@@ -390,6 +397,7 @@ def test_operations_uses_stable_columns_and_collapsible_json(client, monkeypatch
         "context_prepared_with_a_long_event_name",
         {
             "nested": {"items": [1, True, None], "label": "测试"},
+            "text": "你好",
             "unsafe": "</pre><script>alert(1)</script>",
         },
     )
@@ -406,9 +414,11 @@ def test_operations_uses_stable_columns_and_collapsible_json(client, monkeypatch
     html = response.get_data(as_text=True)
 
     assert "Awaiting approval" in html
-    assert 'class="data-table ak-data-table ak-operations-runs-table"' in html
-    assert html.count('<th scope="col">') == 4
-    assert 'class="ak-run-request-link"' in html
+    assert 'class="ak-run-list" data-run-list' in html
+    assert 'class="ak-run-list-item"' in html
+    assert 'data-run-filter="query"' in html
+    assert 'data-run-filter="status"' in html
+    assert 'data-run-filter="agent"' in html
     assert html.count(f"/operations?run_id={run_id}#run-detail") == 1
     assert 'aria-current="location"' in html
     assert re.search(
@@ -416,20 +426,22 @@ def test_operations_uses_stable_columns_and_collapsible_json(client, monkeypatch
         html,
     )
     assert 'class="ak-operations-back-link" href="#recent-requests-title"' in html
-    assert 'class="ak-event-timeline"' in html
+    assert 'class="ak-run-timeline ak-event-timeline"' in html
     assert 'class="ak-json-details"' in html
     assert 'class="ak-json-viewer" tabindex="0"' in html
-    assert '"nested": {' in html
+    assert "&#34;nested&#34;: {" in html
+    assert "你好" in html
+    assert "\\u4f60\\u597d" not in html
     assert "<script>alert(1)</script>" not in html
-    assert "\\u003cscript\\u003ealert" in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
 
     pages_css = client.get("/static/css/pages.css").get_data(as_text=True)
-    assert ".ak-run-status-cell" in pages_css
-    assert ".ak-run-time-cell" in pages_css
+    assert ".ak-operations-workspace" in pages_css
+    assert ".ak-run-list-item" in pages_css
     assert "white-space: nowrap" in pages_css
     assert ".ak-json-viewer" in pages_css
     assert "@media (max-width: 87.5rem)" in pages_css
-    assert '"status status"' in pages_css
+    assert "grid-template-columns: minmax(20rem, 23rem) minmax(0, 1fr)" in pages_css
 
 
 def test_post_without_csrf_rejected(client):

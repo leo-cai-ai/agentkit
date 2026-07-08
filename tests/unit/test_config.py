@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import agentkit.config as config_mod
 
 
@@ -29,12 +31,20 @@ def _fresh_settings(monkeypatch, **env):
         "AGENTKIT_RAG_STORE_BACKEND",
         "AGENTKIT_RAG_QUERY_REWRITE",
         "AGENTKIT_RAG_RERANKER",
+        "AGENTKIT_OCR_PROVIDER",
+        "AGENTKIT_OCR_URL",
+        "AGENTKIT_OCR_MODEL",
+        "AGENTKIT_OCR_TIMEOUT_SECONDS",
+        "AGENTKIT_OCR_MAX_IMAGE_BYTES",
         "AGENTKIT_XHS_RESEARCH_PROVIDER",
         "AGENTKIT_XHS_BASE_URL",
         "AGENTKIT_XHS_ENRICH_DETAILS",
         "AGENTKIT_XHS_DETAIL_LIMIT",
         "AGENTKIT_XHS_DETAIL_TIMEOUT_SECONDS",
         "AGENTKIT_XHS_DETAIL_PAUSE_SECONDS",
+        "AGENTKIT_MEDIA_UNDERSTANDING_PROVIDER",
+        "AGENTKIT_MEDIA_UNDERSTANDING_MAX_IMAGES",
+        "AGENTKIT_MEDIA_UNDERSTANDING_MIN_CONFIDENCE",
         "AGENTKIT_WEB_SEARCH_BROWSER",
         "AGENTKIT_WEB_SEARCH_HEADLESS",
         "AGENTKIT_WEB_SEARCH_TIMEOUT_SECONDS",
@@ -78,6 +88,65 @@ def test_defaults(monkeypatch):
     assert s.web_search_storage_state_root is None
     assert s.browser_publish_observation_seconds == 90.0
     assert s.artifact_max_payload_bytes == 1_048_576
+
+
+def test_media_understanding_defaults(monkeypatch):
+    settings = _fresh_settings(monkeypatch)
+
+    assert settings.media_understanding_provider == "none"
+    assert settings.media_understanding_max_images == 3
+    assert settings.media_understanding_min_confidence == 0.75
+
+
+def test_shared_ocr_defaults_to_none(monkeypatch):
+    settings = _fresh_settings(monkeypatch)
+
+    assert settings.ocr_provider == "none"
+    assert settings.ocr_url == "http://localhost:11434/api/generate"
+    assert settings.ocr_model == "glm-ocr:latest"
+    assert settings.ocr_timeout_seconds == 120.0
+    assert settings.ocr_max_image_bytes == 10 * 1024 * 1024
+
+
+def test_shared_ocr_environment_overrides(monkeypatch):
+    settings = _fresh_settings(
+        monkeypatch,
+        AGENTKIT_OCR_PROVIDER="ollama",
+        AGENTKIT_OCR_URL="http://127.0.0.1:11434/api/generate",
+        AGENTKIT_OCR_MODEL="glm-ocr:q8_0",
+        AGENTKIT_OCR_TIMEOUT_SECONDS="45",
+        AGENTKIT_OCR_MAX_IMAGE_BYTES="2048",
+    )
+
+    assert settings.ocr_provider == "ollama"
+    assert settings.ocr_url.endswith("/api/generate")
+    assert settings.ocr_model == "glm-ocr:q8_0"
+    assert settings.ocr_timeout_seconds == 45.0
+    assert settings.ocr_max_image_bytes == 2048
+
+
+def test_env_example_documents_shared_ocr_configuration() -> None:
+    env_example = (Path(__file__).parents[2] / ".env.example").read_text(encoding="utf-8")
+
+    assert "AGENTKIT_OCR_PROVIDER=none" in env_example
+    assert "AGENTKIT_OCR_URL=http://localhost:11434/api/generate" in env_example
+    assert "AGENTKIT_OCR_MODEL=glm-ocr:latest" in env_example
+    assert "AGENTKIT_MEDIA_UNDERSTANDING_PROVIDER=ocr" in env_example
+    assert "AGENTKIT_RAG_OCR_ENABLED=false" in env_example
+    assert "AGENTKIT_RAG_OCR_LANGUAGES" not in env_example
+
+
+def test_media_understanding_env_overrides(monkeypatch):
+    settings = _fresh_settings(
+        monkeypatch,
+        AGENTKIT_MEDIA_UNDERSTANDING_PROVIDER="registered-test-provider",
+        AGENTKIT_MEDIA_UNDERSTANDING_MAX_IMAGES="5",
+        AGENTKIT_MEDIA_UNDERSTANDING_MIN_CONFIDENCE="0.8",
+    )
+
+    assert settings.media_understanding_provider == "registered-test-provider"
+    assert settings.media_understanding_max_images == 5
+    assert settings.media_understanding_min_confidence == 0.8
 
 
 def test_xhs_publish_observation_seconds_env_override(monkeypatch):

@@ -125,5 +125,23 @@ class PgVectorStore:
             if float(r[2]) >= min_score
         ]
 
+    def delete_by_source(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        source_conversation_id: str,
+    ) -> int:
+        self._ensure_schema()
+        with connection(self._settings) as conn:
+            cursor = conn.execute(
+                f"""
+                DELETE FROM {_TABLE}
+                WHERE tenant_id = %s AND user_id = %s AND source_conversation_id = %s
+                """,
+                (tenant_id, user_id, source_conversation_id),
+            )
+            return int(cursor.rowcount)
+
 
 __all__ = ["PgVectorStore"]

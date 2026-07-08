@@ -1,0 +1,52 @@
+id: runtime.input-resolve
+version: 1
+owner: runtime
+templates:
+  system: system.md
+  user: user.md
+fragments: [json-only]
+instructions:
+  agent: true
+  skill: true
+inputs:
+  - name: message
+    source: request.message
+    required: true
+    priority: 100
+    max_chars: 4000
+  - name: summary
+    source: conversation.summary
+    required: false
+    priority: 60
+    max_chars: 4000
+    truncate: newest
+  - name: arguments
+    source: request.arguments
+    required: true
+    priority: 90
+    serializer: canonical_json
+    max_chars: 4000
+  - name: missing_fields
+    source: skill.missing_fields
+    required: true
+    priority: 100
+    serializer: canonical_json
+    max_items: 32
+    max_chars: 2000
+  - name: input_schema
+    source: skill.input_schema
+    required: true
+    priority: 100
+    serializer: canonical_json
+    max_chars: 8000
+exclude: [secrets, tool_credentials, rag.raw_documents, other_agent_context]
+limits:
+  max_input_tokens: 7000
+  response_reserve_tokens: 1200
+output:
+  mode: json
+  schema: output.schema.json
+audit:
+  record_input_names: true
+  record_content_hashes: true
+  record_rendered_content: false

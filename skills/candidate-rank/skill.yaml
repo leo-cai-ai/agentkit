@@ -30,8 +30,8 @@ capabilities:
       type: object
       required: [job_id, candidate_ids]
       properties:
-        job_id: {type: string, minLength: 1}
-        candidate_ids: {type: array, minItems: 1, items: {type: string, minLength: 1}}
+        job_id: {type: string, minLength: 1, description: 要招聘的职位编号}
+        candidate_ids: {type: array, minItems: 1, description: 要评估的候选人编号列表, items: {type: string, minLength: 1}}
         top_n: {type: integer, minimum: 1, default: 5}
     output_schema:
       type: object

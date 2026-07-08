@@ -36,8 +36,9 @@ from agentkit.core.memory.extractor import MemoryExtractor
 from agentkit.core.memory.retrieval import MemoryRetriever
 from agentkit.core.memory.store import build_conversation_store
 from agentkit.core.memory.summarizer import Summarizer
-from agentkit.core.memory.vector_store import build_vector_store
+from agentkit.core.memory.vector_store import SqliteVectorStore, build_vector_store
 from agentkit.core.migrations import run_storage_migrations
+from agentkit.core.multi_agent import AgentDirectory, MultiAgentCoordinator
 from agentkit.core.rag.service import build_knowledge_service
 from agentkit.core.registry import AgentRegistry, SkillRegistry, ToolRegistry
 from agentkit.core.skill_store import SkillFileStore, attach_skill_packages
@@ -48,15 +49,18 @@ from agentkit.core.tool_backends import (
     ToolBackendRegistry,
 )
 from agentkit.runtime.conversation_context import ConversationContextService
+from agentkit.runtime.conversation_deletion import ConversationDeletionService
 from agentkit.runtime.conversation_persistence import (
     ConversationPersistenceService,
     ExtractingMemoryWriter,
 )
+from agentkit.runtime.conversation_runs import ConversationRunStateResolver
 from agentkit.runtime.declarative_catalog import (
     load_catalog,
     register_catalog,
     resolve_enabled_agent_ids,
 )
+from agentkit.runtime.ocr import build_configured_ocr_provider
 
 AGENTKIT_ROOT = Path(
     os.environ.get("AGENTKIT_ROOT") or Path(__file__).resolve().parents[3]
@@ -78,9 +82,11 @@ class AgentKitRuntime:
     conversations: Any
     contexts: ContextRegistry
     context_invoker: ContextInvocationService
+    conversation_deletion: ConversationDeletionService
+    conversation_runs: ConversationRunStateResolver
     manifest: dict[str, Any] | None = None
     # 迁移期间保留属性形状，但不再存在第二套 Chat Runtime。
-    chat_service: None = None
+    chat_service: MultiAgentCoordinator | None = None
 
 
 def list_tenants() -> list[str]:
@@ -170,8 +176,7 @@ def build_runtime(
     )
     debug_sampler = (
         ContextDebugSampler()
-        if settings.runtime_environment == "development"
-        and settings.context_debug_rendered_enabled
+        if settings.runtime_environment == "development" and settings.context_debug_rendered_enabled
         else None
     )
     context_invoker = ContextInvocationService(
@@ -228,9 +233,21 @@ def build_runtime(
     )
     strategies = _build_strategies(checkpointer)
     conversation_store = build_conversation_store(settings, db_path)
+    conversation_runs = ConversationRunStateResolver(
+        audit=audit,
+        timeout_seconds=float(settings.autonomy_timeout_seconds),
+    )
     embeddings = build_embedding_provider(settings)
     vector_store = build_vector_store(settings, conversation_store)
     memory = MemoryRetriever(vector_store=vector_store, embeddings=embeddings)
+    conversation_deletion = ConversationDeletionService(
+        store=conversation_store,
+        audit=audit,
+        resolver=conversation_runs,
+        external_memory_store=(
+            None if isinstance(vector_store, SqliteVectorStore) else vector_store
+        ),
+    )
     knowledge = (
         build_knowledge_service(
             settings,
@@ -238,6 +255,7 @@ def build_runtime(
             tenant_selector=resolved_tenant_id,
             context_invoker=context_invoker,
             embeddings=embeddings,
+            ocr_provider=build_configured_ocr_provider(settings),
         )
         if bool(getattr(settings, "rag_enabled", False))
         else None
@@ -303,6 +321,20 @@ def build_runtime(
         tool_backends=_build_tool_backends(tools=tools, tenant_config=tenant_config),
         idempotency_store=idempotency_store,
     )
+    directory = AgentDirectory(
+        agents=agents,
+        config=dict(tenant_config.get("agent_directory") or {}),
+    )
+    chat_service = MultiAgentCoordinator(
+        tenant_id=tenant_key,
+        tenant_selector=resolved_tenant_id,
+        directory=directory,
+        gateway=gateway,
+        audit=audit,
+        context_invoker=context_invoker,
+        conversation_context=conversation_context,
+        conversation_persistence=conversation_persistence,
+    )
     strategy_names = ("direct", "workflow", "batch", "parallel", "react", "plan_execute")
     return AgentKitRuntime(
         gateway=gateway,
@@ -314,7 +346,10 @@ def build_runtime(
         conversations=conversation_store,
         contexts=context_registry,
         context_invoker=context_invoker,
+        conversation_deletion=conversation_deletion,
+        conversation_runs=conversation_runs,
         manifest=manifest,
+        chat_service=chat_service,
     )
 
 

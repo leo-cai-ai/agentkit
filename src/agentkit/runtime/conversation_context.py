@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from agentkit.core.contracts import AgentProfile
+from agentkit.core.response_text import normalize_persisted_assistant_text
 
 
 class ConversationReader(Protocol):
     def get_conversation(self, conversation_id: str) -> dict[str, Any] | None: ...
 
-    def recent_messages(
-        self, *, conversation_id: str, limit: int
-    ) -> list[dict[str, Any]]: ...
+    def recent_messages(self, *, conversation_id: str, limit: int) -> list[dict[str, Any]]: ...
 
     def get_summary(self, conversation_id: str) -> dict[str, Any] | None: ...
 
@@ -92,6 +91,59 @@ class ConversationContextService:
         ):
             raise ValueError("会话不属于当前租户、Agent 或用户")
 
+        return self._assemble_context(
+            agent=agent,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            run_id=run_id,
+            message=message,
+            roles=roles,
+        )
+
+    def build_for_delegation(
+        self,
+        *,
+        agent: AgentProfile,
+        tenant_id: str,
+        owner_agent_id: str,
+        user_id: str,
+        conversation_id: str,
+        run_id: str,
+        message: str,
+        roles: Sequence[str] = (),
+    ) -> AgentConversationContext:
+        """共享 General 会话历史，同时使用目标 Agent 自己的记忆和 RAG。"""
+        conversation = self._store.get_conversation(conversation_id)
+        if conversation is None:
+            raise ValueError(f"未知 conversation_id: {conversation_id}")
+        if (
+            conversation.get("tenant_id") != tenant_id
+            or conversation.get("agent") != owner_agent_id
+            or conversation.get("user_id") != user_id
+        ):
+            raise ValueError("会话不属于当前租户、所有者 Agent 或用户")
+        return self._assemble_context(
+            agent=agent,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            run_id=run_id,
+            message=message,
+            roles=roles,
+        )
+
+    def _assemble_context(
+        self,
+        *,
+        agent: AgentProfile,
+        tenant_id: str,
+        user_id: str,
+        conversation_id: str,
+        run_id: str,
+        message: str,
+        roles: Sequence[str],
+    ) -> AgentConversationContext:
         policy = agent.context_policy
         recent: tuple[dict[str, str], ...] = ()
         summary = ""
@@ -101,18 +153,14 @@ class ConversationContextService:
                 conversation_id=conversation_id,
                 limit=policy.memory.window_turns * 2,
             )
-            recent = tuple(
-                {"role": str(row["role"]), "content": str(row["content"])}
-                for row in rows
-                if row.get("content")
-            )
+            recent = tuple(_context_message(row) for row in rows if row.get("content"))
             summary_row = self._store.get_summary(conversation_id)
             summary = str(summary_row.get("summary_text", "")) if summary_row else ""
             if self._memory is not None:
                 memories = tuple(
                     self._memory.retrieve(
                         tenant_id=tenant_id,
-                        agent=agent_id,
+                        agent=agent.name,
                         user_id=user_id,
                         query=message,
                         k=policy.memory.retrieval_k,
@@ -126,7 +174,7 @@ class ConversationContextService:
                     message,
                     run_id=run_id,
                     user_id=user_id,
-                    agent=agent_id,
+                    agent=agent.name,
                     roles=roles,
                     k=policy.rag.top_k,
                     filters={"collection": list(policy.rag.collections)},
@@ -139,6 +187,14 @@ class ConversationContextService:
             memories=memories,
             knowledge=knowledge,
         )
+
+
+def _context_message(row: Mapping[str, Any]) -> dict[str, str]:
+    role = str(row["role"])
+    content = str(row["content"])
+    if role == "assistant":
+        content = normalize_persisted_assistant_text(content)
+    return {"role": role, "content": content}
 
 
 __all__ = ["AgentConversationContext", "ConversationContextService"]

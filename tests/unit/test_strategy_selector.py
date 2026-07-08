@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from agentkit.core.execution.models import (
     AutonomyBudget,
+    AutonomyLimits,
     CapabilityResolution,
     ComplexityAssessment,
     ExecutionStrategyName,
@@ -34,6 +37,17 @@ def _selector(*, suggestion=None) -> StrategySelector:
     skills.register(_skill("order.lookup"))
     skills.register(_skill("logistics.diagnose"))
     skills.register(_skill("refund.apply"))
+    return StrategySelector(
+        skills=skills,
+        global_budget=AutonomyBudget(20, 20, 10, 10, 2, 50000, 600),
+        suggestion=suggestion,
+    )
+
+
+def _selector_with_skills(*skill_definitions, suggestion=None) -> StrategySelector:
+    skills = SkillRegistry()
+    for skill in skill_definitions:
+        skills.register(skill)
     return StrategySelector(
         skills=skills,
         global_budget=AutonomyBudget(20, 20, 10, 10, 2, 50000, 600),
@@ -75,9 +89,7 @@ def test_strategy_matrix(assessment, expected) -> None:
 def test_side_effect_never_accepts_react_suggestion() -> None:
     selected = _selector(suggestion=lambda *_: "react").select(
         agent=_agent(),
-        resolution=_resolution(
-            ComplexityAssessment(has_side_effects=True), primary="refund.apply"
-        ),
+        resolution=_resolution(ComplexityAssessment(has_side_effects=True), primary="refund.apply"),
     )
 
     assert selected.strategy in {
@@ -97,9 +109,33 @@ def test_selector_rejects_candidate_outside_agent_boundary() -> None:
 
 
 def test_effective_budget_is_restricted_by_agent_and_skill() -> None:
-    selected = _selector().select(
-        agent=_agent(), resolution=_resolution(ComplexityAssessment())
-    )
+    selected = _selector().select(agent=_agent(), resolution=_resolution(ComplexityAssessment()))
 
     assert selected.budget.max_model_calls == 8
     assert selected.budget.max_tool_calls == 16
+
+
+def test_multi_skill_plan_uses_global_and_agent_envelope() -> None:
+    selector = _selector_with_skills(
+        replace(
+            _skill("order.lookup"),
+            autonomy=AutonomyLimits(max_plan_steps=1),
+        ),
+        replace(
+            _skill("logistics.diagnose"),
+            autonomy=AutonomyLimits(max_plan_steps=2),
+        ),
+    )
+    resolution = _resolution(
+        ComplexityAssessment(
+            candidate_skills=("order.lookup", "logistics.diagnose"),
+            estimated_steps=2,
+            has_dependencies=True,
+        ),
+        primary=None,
+    )
+
+    selected = selector.select(agent=_agent(), resolution=resolution)
+
+    assert selected.strategy is ExecutionStrategyName.PLAN_EXECUTE
+    assert selected.budget.max_plan_steps == 8

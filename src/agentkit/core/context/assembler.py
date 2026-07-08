@@ -54,16 +54,11 @@ class ContextAssembler:
         definition = self._registry.get(request.context_id)
         prepared: list[_PreparedInput] = []
         for input_def in definition.model.inputs:
-            if (
-                input_def.source not in request.values
-                or request.values[input_def.source] is None
-            ):
+            if input_def.source not in request.values or request.values[input_def.source] is None:
                 if input_def.required:
                     raise ContextInputMissingError(request.context_id, input_def.name)
                 continue
-            prepared.append(
-                self._prepare_input(input_def, request.values[input_def.source])
-            )
+            prepared.append(self._prepare_input(input_def, request.values[input_def.source]))
 
         system = self._render_system(request, definition)
         effective_limit = min(
@@ -78,16 +73,10 @@ class ContextAssembler:
 
         values = {input_def.name: "" for input_def in definition.model.inputs}
         required = [
-            prepared_item
-            for prepared_item in prepared
-            if prepared_item.definition.required
+            prepared_item for prepared_item in prepared if prepared_item.definition.required
         ]
         optional = sorted(
-            (
-                prepared_item
-                for prepared_item in prepared
-                if not prepared_item.definition.required
-            ),
+            (prepared_item for prepared_item in prepared if not prepared_item.definition.required),
             key=lambda prepared_item: (
                 -prepared_item.definition.priority,
                 prepared_item.definition.name,
@@ -129,9 +118,7 @@ class ContextAssembler:
             )
 
         intrinsic_details = [
-            prepared_item.detail
-            for prepared_item in prepared
-            if prepared_item.detail is not None
+            prepared_item.detail for prepared_item in prepared if prepared_item.detail is not None
         ]
         intrinsic_truncated = [
             prepared_item.definition.name

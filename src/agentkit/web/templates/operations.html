@@ -1,145 +1,145 @@
 {% extends "base.html" %}
 {% from "_components.html" import metric_grid, status_pill %}
 
-{% block page_description %}Review request history and execution audit events.{% endblock %}
+{% block page_description %}查看运行记录、父子 Agent 链路与真实审计事件。{% endblock %}
 
 {% block content %}
-  {{ metric_grid(metrics, 'Operations key metrics') }}
+  {{ metric_grid(metrics, '运行关键指标') }}
 
-  <section class="dashboard-grid operations-grid ak-operations-grid" aria-label="Operations details">
-    <article class="panel ak-panel ak-panel--table ak-operations-list" aria-labelledby="recent-requests-title">
+  <section class="ak-operations-workspace" aria-label="运行追踪工作区">
+    <aside class="panel ak-panel ak-run-browser" aria-labelledby="recent-requests-title">
       <div class="panel-head ak-panel-header">
-        <h2 id="recent-requests-title">Recent Business Requests</h2>
-        <span>{{ runs | length }} visible</span>
-      </div>
-      {% if runs %}
-        <div class="table-wrap ak-table-wrap" role="region" aria-label="Scrollable recent business requests" tabindex="0">
-          <table class="data-table ak-data-table ak-operations-runs-table" aria-label="Recent business requests">
-            <colgroup>
-              <col class="ak-run-col-status">
-              <col class="ak-run-col-request">
-              <col class="ak-run-col-user">
-              <col class="ak-run-col-time">
-            </colgroup>
-            <thead>
-              <tr>
-                <th scope="col">Status</th>
-                <th scope="col">Request</th>
-                <th scope="col">User</th>
-                <th scope="col">Started</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for run in runs %}
-                <tr class="{{ 'selected-row' if run.run_id == selected_run_id else '' }}">
-                  <td class="ak-run-status-cell">
-                    {{ status_pill(run.status) }}
-                  </td>
-                  <td class="ak-run-request-cell">
-                    <a
-                      class="ak-run-request-link"
-                      href="{{ url_for('operations', run_id=run.run_id) }}#run-detail"
-                      aria-label="View run details: {{ run.text }}; {{ run.user_id }}; {{ run.started_at | format_ts }}"
-                      title="{{ run.text }}"
-                      {% if run.run_id == selected_run_id %}aria-current="location"{% endif %}
-                    >{{ run.text }}</a>
-                  </td>
-                  <td class="ak-run-user-cell">
-                    <span title="{{ run.user_id }}">{{ run.user_id }}</span>
-                  </td>
-                  <td class="ak-run-time-cell">
-                    <time datetime="{{ run.started_at | datetime_ts }}">{{ run.started_at | format_ts }}</time>
-                  </td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
+        <div>
+          <span class="ak-eyebrow">Run Browser</span>
+          <h2 id="recent-requests-title">运行记录</h2>
         </div>
-      {% else %}
-        <div class="empty-state ak-empty-state">No runs yet.</div>
-      {% endif %}
-    </article>
-
-    <article class="panel ak-panel ak-panel--table ak-operations-timeline" id="run-detail" aria-labelledby="run-timeline-title">
-      <div class="panel-head ak-panel-header">
-        <h2 id="run-timeline-title">Run Timeline</h2>
-        <span>{{ selected_run_id[:8] if selected_run_id else 'No run' }}</span>
+        <span><span data-run-filter-count>{{ runs | length }}</span> 条</span>
       </div>
-      <a class="ak-operations-back-link" href="#recent-requests-title">Back to recent requests</a>
+
+      <form class="ak-run-filters" data-run-filters role="search" aria-label="过滤当前运行列表">
+        <label class="ak-run-filter-query">
+          <span>搜索</span>
+          <input data-run-filter="query" aria-label="搜索运行" type="search" placeholder="请求或用户">
+        </label>
+        <label>
+          <span>状态</span>
+          <select data-run-filter="status" aria-label="按状态筛选">
+            <option value="">全部状态</option>
+            {% for status in ('queued', 'running', 'waiting_for_approval', 'completed', 'failed', 'rejected', 'blocked', 'unknown') %}
+              <option value="{{ status }}">{{ status | replace('_', ' ') }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          <span>Agent</span>
+          <input data-run-filter="agent" aria-label="按 Agent 筛选" type="search" placeholder="Agent ID">
+        </label>
+        <button class="secondary" type="reset" aria-label="清除运行过滤条件">清除</button>
+      </form>
+
+      <div class="ak-run-list" data-run-list>
+        {% for run in runs %}
+          <a
+            class="ak-run-list-item"
+            href="{{ url_for('operations', run_id=run.run_id) }}#run-detail"
+            data-run-row
+            data-run-status="{{ run.status }}"
+            data-run-agent="{{ run.agent_id or '' }}"
+            data-run-text="{{ run.text }} {{ run.user_id }}"
+            {% if run.run_id == selected_run_id %}aria-current="location"{% endif %}
+          >
+            <div>
+              {{ status_pill(run.status) }}
+              <time datetime="{{ run.started_at | datetime_ts }}">{{ run.started_at | format_ts }}</time>
+            </div>
+            <strong title="{{ run.text }}">{{ run.text }}</strong>
+            <span>{{ run.agent_id or '未记录 Agent' }} · {{ run.user_id }}</span>
+          </a>
+        {% else %}
+          <div class="ak-empty-state">暂无运行记录。</div>
+        {% endfor %}
+        <div class="ak-empty-state ak-run-filter-empty" data-run-filter-empty hidden>当前列表没有匹配的运行。</div>
+      </div>
+    </aside>
+
+    <article class="panel ak-panel ak-run-inspector" id="run-detail" data-run-detail aria-labelledby="run-timeline-title">
+      <div class="panel-head ak-panel-header">
+        <div>
+          <span class="ak-eyebrow">Run Inspector</span>
+          <h2 id="run-timeline-title">运行详情</h2>
+        </div>
+        <span>{{ selected_run_id[:8] if selected_run_id else '未选择' }}</span>
+      </div>
+      <a class="ak-operations-back-link" href="#recent-requests-title">返回运行记录</a>
+
+      <nav class="ak-run-chain" data-run-chain aria-label="父子运行链路">
+        {% if selected_run and selected_run.parent_run_id %}
+          <a href="{{ url_for('operations', run_id=selected_run.parent_run_id) }}#run-detail">General 父运行</a>
+          <span aria-hidden="true">/</span>
+        {% endif %}
+        {% if selected_run %}
+          <span aria-current="page">{{ selected_run.agent_id or '当前运行' }}</span>
+        {% else %}
+          <span>尚未选择运行</span>
+        {% endif %}
+        {% for child in child_runs %}
+          <span aria-hidden="true">/</span>
+          <a href="{{ url_for('operations', run_id=child.run_id) }}#run-detail">{{ child.agent_id or '业务子运行' }}</a>
+        {% endfor %}
+      </nav>
 
       {% if selected_run %}
-        <section class="ak-run-summary" aria-label="Selected run summary">
+        <section class="ak-run-summary" aria-label="当前运行摘要">
           <div class="ak-run-summary-heading">
-            <h3>Selected request</h3>
+            <h3>请求摘要</h3>
             {{ status_pill(selected_run.status) }}
           </div>
           <p>{{ selected_run.text }}</p>
           <dl class="ak-run-facts">
+            <div><dt>用户</dt><dd>{{ selected_run.user_id }}</dd></div>
+            <div><dt>Agent</dt><dd>{{ selected_run.agent_id or '未记录' }}</dd></div>
             <div>
-              <dt>User</dt>
-              <dd>{{ selected_run.user_id }}</dd>
+              <dt>开始时间</dt>
+              <dd class="ak-run-fact-time"><time datetime="{{ selected_run.started_at | datetime_ts }}">{{ selected_run.started_at | format_ts }}</time></dd>
             </div>
             <div>
-              <dt>Started</dt>
-              <dd class="ak-run-fact-time">
-                <time datetime="{{ selected_run.started_at | datetime_ts }}">{{ selected_run.started_at | format_ts }}</time>
-              </dd>
-            </div>
-            <div>
-              <dt>Finished</dt>
+              <dt>结束时间</dt>
               <dd class="ak-run-fact-time">
                 {% if selected_run.finished_at %}
                   <time datetime="{{ selected_run.finished_at | datetime_ts }}">{{ selected_run.finished_at | format_ts }}</time>
-                {% else %}
-                  <span>—</span>
-                {% endif %}
+                {% else %}—{% endif %}
               </dd>
             </div>
-            <div class="ak-run-fact-wide">
-              <dt>Run ID</dt>
-              <dd><code title="{{ selected_run.run_id }}">{{ selected_run.run_id }}</code></dd>
-            </div>
+            <div class="ak-run-fact-wide"><dt>Run ID</dt><dd><code title="{{ selected_run.run_id }}">{{ selected_run.run_id }}</code></dd></div>
           </dl>
         </section>
       {% endif %}
 
-      {% if event_rows %}
-        <ol class="ak-event-timeline" aria-label="Run timeline events">
-          {% for event in event_rows %}
-            <li class="ak-event-item">
-              <div class="ak-event-heading">
-                <span class="ak-event-name" title="{{ event.type }}">
-                  {{ event.type | replace('_', ' ') | title }}
-                </span>
-                <time class="ak-event-time" datetime="{{ event.timestamp | datetime_ts }}">{{ event.time }}</time>
-              </div>
-              {% if event.payload %}
-                <details class="ak-json-details">
-                  <summary aria-label="View payload for {{ event.type | replace('_', ' ') }} at {{ event.time }}">
-                    <span>Payload</span>
-                    <span>
-                      {% if event.payload is mapping %}
-                        {{ event.payload | length }} fields
-                      {% elif event.payload is sequence and event.payload is not string %}
-                        {{ event.payload | length }} items
-                      {% else %}
-                        JSON value
-                      {% endif %}
-                    </span>
-                  </summary>
-                  <pre class="ak-json-viewer" tabindex="0"><code>{{ event.payload | tojson(indent=2) }}</code></pre>
-                </details>
-              {% else %}
-                <span class="ak-event-empty">No payload</span>
-              {% endif %}
-            </li>
-          {% endfor %}
-        </ol>
-      {% elif selected_run %}
-        <div class="empty-state ak-empty-state">No audit events recorded for this run.</div>
-      {% else %}
-        <div class="empty-state ak-empty-state">Select a run to inspect its audit timeline.</div>
-      {% endif %}
+      <ol class="ak-run-timeline ak-event-timeline" data-run-timeline aria-label="运行审计时间线">
+        {% for event in event_rows %}
+          <li class="ak-event-item">
+            <div class="ak-event-heading">
+              <span class="ak-event-name" title="{{ event.type }}">{{ event.type | replace('_', ' ') | title }}</span>
+              <time class="ak-event-time" datetime="{{ event.timestamp | datetime_ts }}">{{ event.time }}</time>
+            </div>
+            {% if event.payload %}
+              <details class="ak-json-details">
+                <summary aria-label="查看 {{ event.type | replace('_', ' ') }} 的事件摘要">
+                  <span>查看事件摘要</span>
+                  <span>{% if event.payload is mapping %}{{ event.payload | length }} 个字段{% else %}JSON{% endif %}</span>
+                </summary>
+                <pre class="ak-json-viewer" tabindex="0"><code>{{ event.payload | json_pretty }}</code></pre>
+              </details>
+            {% else %}
+              <span class="ak-event-empty">无事件载荷</span>
+            {% endif %}
+          </li>
+        {% else %}
+          <li class="ak-empty-state">
+            {% if selected_run %}当前运行没有可显示的审计事件。{% else %}选择一条运行以查看审计时间线。{% endif %}
+          </li>
+        {% endfor %}
+      </ol>
     </article>
   </section>
 {% endblock %}

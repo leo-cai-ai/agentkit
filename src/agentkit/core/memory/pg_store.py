@@ -53,6 +53,28 @@ class PgConversationStore(ConversationStore):
             ).fetchone()
         return _conversation_row(row) if row else None
 
+    def transition_conversation_status(
+        self,
+        conversation_id: str,
+        *,
+        expected: tuple[str, ...],
+        status: str,
+    ) -> bool:
+        """仅当会话处于预期状态时原子更新状态。"""
+        if not expected:
+            return False
+        placeholders = ", ".join("%s" for _ in expected)
+        with self._connect() as conn:
+            cursor = conn.execute(
+                f"""
+                UPDATE conversations
+                SET status = %s, updated_at = %s
+                WHERE id = %s AND status IN ({placeholders})
+                """,
+                (status, round(time.time(), 3), conversation_id, *expected),
+            )
+        return cursor.rowcount == 1
+
     def list_conversations(
         self,
         *,
@@ -74,6 +96,47 @@ class PgConversationStore(ConversationStore):
             ).fetchall()
         return [_conversation_row(row) for row in rows]
 
+    def delete_conversation(self, conversation_id: str) -> dict[str, int]:
+        """原子删除会话及其聊天数据和来源长期记忆。"""
+        counts = {
+            "conversations": 0,
+            "messages": 0,
+            "summaries": 0,
+            "memories": 0,
+        }
+        with self._connect() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM conversations WHERE id = %s",
+                (conversation_id,),
+            ).fetchone()
+            if exists is None:
+                return counts
+            counts["summaries"] = int(
+                conn.execute(
+                    "DELETE FROM conversation_summaries WHERE conversation_id = %s",
+                    (conversation_id,),
+                ).rowcount
+            )
+            counts["messages"] = int(
+                conn.execute(
+                    "DELETE FROM messages WHERE conversation_id = %s",
+                    (conversation_id,),
+                ).rowcount
+            )
+            counts["memories"] = int(
+                conn.execute(
+                    "DELETE FROM conversation_memories WHERE source_conversation_id = %s",
+                    (conversation_id,),
+                ).rowcount
+            )
+            counts["conversations"] = int(
+                conn.execute(
+                    "DELETE FROM conversations WHERE id = %s",
+                    (conversation_id,),
+                ).rowcount
+            )
+        return counts
+
     def add_message(
         self,
         *,
@@ -82,18 +145,28 @@ class PgConversationStore(ConversationStore):
         content: str,
         token_estimate: int = 0,
         run_id: str | None = None,
+        agent_id: str | None = None,
     ) -> int:
         now = round(time.time(), 3)
         with self._connect() as conn:
             row = conn.execute(
                 """
                 INSERT INTO messages (
-                    conversation_id, role, content, token_estimate, run_id, created_at
+                    conversation_id, role, content, token_estimate, run_id, agent_id,
+                    created_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
-                (conversation_id, role, content, token_estimate, run_id, now),
+                (
+                    conversation_id,
+                    role,
+                    content,
+                    token_estimate,
+                    run_id,
+                    agent_id,
+                    now,
+                ),
             ).fetchone()
             conn.execute(
                 "UPDATE conversations SET updated_at = %s WHERE id = %s",
@@ -101,15 +174,83 @@ class PgConversationStore(ConversationStore):
             )
         return int(row[0])
 
+    def replace_turn_messages(
+        self,
+        *,
+        conversation_id: str,
+        previous_run_id: str,
+        run_id: str,
+        user_content: str,
+        user_token_estimate: int,
+        assistant_content: str,
+        assistant_token_estimate: int,
+        assistant_agent_id: str,
+    ) -> bool:
+        """仅当旧 Run 恰好对应一组问答时原子替换该逻辑轮次。"""
+        now = round(time.time(), 3)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, role FROM messages
+                WHERE conversation_id = %s AND run_id = %s
+                ORDER BY id ASC
+                FOR UPDATE
+                """,
+                (conversation_id, previous_run_id),
+            ).fetchall()
+            by_role = {str(row[1]): int(row[0]) for row in rows}
+            if len(rows) != 2 or set(by_role) != {"user", "assistant"}:
+                return False
+            conn.execute(
+                """
+                UPDATE messages
+                SET content = %s, token_estimate = %s, run_id = %s, agent_id = NULL
+                WHERE id = %s AND conversation_id = %s
+                """,
+                (
+                    user_content,
+                    user_token_estimate,
+                    run_id,
+                    by_role["user"],
+                    conversation_id,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE messages
+                SET content = %s, token_estimate = %s, run_id = %s, agent_id = %s
+                WHERE id = %s AND conversation_id = %s
+                """,
+                (
+                    assistant_content,
+                    assistant_token_estimate,
+                    run_id,
+                    assistant_agent_id,
+                    by_role["assistant"],
+                    conversation_id,
+                ),
+            )
+            conn.execute(
+                "DELETE FROM conversation_summaries WHERE conversation_id = %s",
+                (conversation_id,),
+            )
+            conn.execute(
+                "UPDATE conversations SET updated_at = %s WHERE id = %s",
+                (now, conversation_id),
+            )
+        return True
+
     def recent_messages(self, *, conversation_id: str, limit: int) -> list[dict[str, Any]]:
         if limit <= 0:
             return []
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, conversation_id, role, content, token_estimate, run_id, created_at
+                SELECT id, conversation_id, role, content, token_estimate, run_id,
+                       agent_id, created_at
                 FROM (
-                    SELECT id, conversation_id, role, content, token_estimate, run_id, created_at
+                    SELECT id, conversation_id, role, content, token_estimate, run_id,
+                           agent_id, created_at
                     FROM messages
                     WHERE conversation_id = %s
                     ORDER BY id DESC
@@ -125,7 +266,8 @@ class PgConversationStore(ConversationStore):
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, conversation_id, role, content, token_estimate, run_id, created_at
+                SELECT id, conversation_id, role, content, token_estimate, run_id,
+                       agent_id, created_at
                 FROM messages
                 WHERE conversation_id = %s
                 ORDER BY id ASC
@@ -220,6 +362,24 @@ class PgConversationStore(ConversationStore):
             )
         return memory_id
 
+    def delete_memories_by_source(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        source_conversation_id: str,
+    ) -> int:
+        """删除当前用户从指定会话提取的长期记忆。"""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM conversation_memories
+                WHERE tenant_id = %s AND user_id = %s AND source_conversation_id = %s
+                """,
+                (tenant_id, user_id, source_conversation_id),
+            )
+            return int(cursor.rowcount)
+
     def iter_memories(
         self,
         *,
@@ -294,6 +454,7 @@ class PgConversationStore(ConversationStore):
                     content TEXT NOT NULL,
                     token_estimate INTEGER NOT NULL DEFAULT 0,
                     run_id TEXT,
+                    agent_id TEXT,
                     created_at DOUBLE PRECISION NOT NULL
                 )
                 """
@@ -304,6 +465,7 @@ class PgConversationStore(ConversationStore):
                 ON messages(conversation_id, id)
                 """
             )
+            conn.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS agent_id TEXT")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS conversation_summaries (
@@ -361,7 +523,8 @@ def _message_row(row: Any) -> dict[str, Any]:
         "content": row[3],
         "token_estimate": row[4],
         "run_id": row[5],
-        "created_at": row[6],
+        "agent_id": row[6],
+        "created_at": row[7],
     }
 
 

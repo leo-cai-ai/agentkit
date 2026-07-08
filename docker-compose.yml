@@ -34,7 +34,10 @@ services:
     #   - "5432:5432"
 
   web:
-    build: .
+    # 默认 Agent 集合包含 XHS 浏览器 Tool，因此使用已安装 Chromium 的运行阶段。
+    build:
+      context: .
+      target: browser-runtime
     image: agentkit-web:latest
     depends_on:
       db:
@@ -52,6 +55,10 @@ services:
       AGENTKIT_PG_HOST: db
       AGENTKIT_PG_PORT: "5432"
       AGENTKIT_PG_SSLMODE: disable
+      # 容器使用镜像内置 Chromium；忽略宿主机 Chrome/Edge 的路径与 Channel。
+      AGENTKIT_WEB_SEARCH_HEADLESS: "true"
+      AGENTKIT_WEB_SEARCH_BROWSER_CHANNEL: ""
+      AGENTKIT_WEB_SEARCH_EXECUTABLE_PATH: ""
       # Read-only root FS: keep every runtime write inside the writable tmpfs
       # (/tmp). Disable bytecode-on-disk and redirect any .pyc / cache / HOME
       # writes there so libraries can't try to write into /opt/venv or ~/.cache.
@@ -64,7 +71,8 @@ services:
     volumes:
       # Business config is editable on the host and mounted read-only.
       - ./tenants:/app/tenants:ro
-      - ./prompts:/app/prompts:ro
+      - ./agents:/app/agents:ro
+      - ./contexts:/app/contexts:ro
       - ./skills:/app/skills:ro
       # Runtime filesystem scratch/data. Durable audit, conversation, checkpoint,
       # and semantic memory data live in PostgreSQL when AGENTKIT_STORAGE_BACKEND

@@ -225,15 +225,15 @@ class LLMReranker:
         _validate_tenant_selector(query, self._tenant_selector)
         candidates = list(hits)[: self._max_candidates]
         candidate_payload = [
-                {
-                    "id": hit.chunk.id,
-                    "title": hit.chunk.title,
-                    "uri": hit.chunk.uri,
-                    "text": hit.chunk.text[:900],
-                    "score": hit.score,
-                }
-                for hit in candidates
-            ]
+            {
+                "id": hit.chunk.id,
+                "title": hit.chunk.title,
+                "uri": hit.chunk.uri,
+                "text": hit.chunk.text[:900],
+                "score": hit.score,
+            }
+            for hit in candidates
+        ]
         try:
             data = self._context_invoker.invoke_json(
                 ContextRenderRequest(

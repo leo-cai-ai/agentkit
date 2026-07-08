@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from agentkit.core.contracts import (
@@ -22,8 +24,9 @@ from agentkit.core.execution.models import (
     SkillExecutionPolicy,
     ToolPolicy,
 )
-from agentkit.core.registry import AgentRegistry, SkillRegistry
+from agentkit.core.registry import AgentRegistry, SkillRegistry, ToolRegistry
 from agentkit.core.router import CapabilityResolutionError, IntentRouter
+from agentkit.runtime.declarative_catalog import load_catalog, register_catalog
 from tests.context_support import SpyContextInvoker
 
 
@@ -32,7 +35,12 @@ def _agent() -> AgentProfile:
         name="customer_service",
         domain="support",
         description="客服",
-        allowed_skills=["order.lookup", "logistics.diagnose", "refund.apply"],
+        allowed_skills=[
+            "order.lookup",
+            "logistics.diagnose",
+            "refund.apply",
+            "support.resolve",
+        ],
         execution_policy=AgentExecutionPolicy(
             default_strategy=ExecutionStrategyName.DIRECT,
             allowed_strategies=(
@@ -65,6 +73,7 @@ def _skill(
     tool_policy: ToolPolicy = ToolPolicy.READ_ONLY,
     keywords: tuple[str, ...] = (),
     batch_key: str | None = None,
+    composes: tuple[str, ...] = (),
 ) -> SkillDefinition:
     return SkillDefinition(
         name=name,
@@ -79,6 +88,7 @@ def _skill(
         handler=lambda ctx, args: {},
         batch_key=batch_key,
         keywords=list(keywords),
+        composes=composes,
     )
 
 
@@ -92,6 +102,13 @@ def _router(context_invoker=None) -> IntentRouter:
             "logistics.diagnose",
             reasoning=ReasoningStrategy.REACT,
             keywords=("物流", "没到"),
+        )
+    )
+    skills.register(
+        _skill(
+            "support.resolve",
+            orchestration=OrchestrationMode.WORKFLOW,
+            composes=("order.lookup", "logistics.diagnose", "refund.apply"),
         )
     )
     skills.register(
@@ -111,7 +128,7 @@ def _router(context_invoker=None) -> IntentRouter:
     )
 
 
-def _intent(intent_type="business_task") -> IntentFrame:
+def _intent(intent_type="business_task", *, target=None) -> IntentFrame:
     return IntentFrame(
         raw_text="",
         language="zh-CN",
@@ -119,7 +136,7 @@ def _intent(intent_type="business_task") -> IntentFrame:
         goal="处理请求",
         boundaries={},
         entities={},
-        target={"kind": "none"},
+        target=target or {"kind": "none"},
         confidence="high",
     )
 
@@ -164,6 +181,128 @@ def test_router_allows_multiple_explicit_bound_skills() -> None:
     assert result.complexity.has_dependencies is True
 
 
+def test_router_collapses_dependent_atomic_skills_to_covering_workflow() -> None:
+    invoker = SpyContextInvoker(
+        {
+            "primary_skill": None,
+            "candidate_skills": ["order.lookup", "logistics.diagnose"],
+            "reason": "先查订单再诊断物流",
+            "confidence": "high",
+            "has_dependencies": True,
+        }
+    )
+
+    result = _router(invoker).resolve(
+        TaskRequest(
+            user_id="u1",
+            roles=[],
+            text="请完整处理这个问题",
+            context={"agent": "customer_service"},
+        ),
+        intent=_intent(),
+        run_id="r-composite",
+    )
+
+    assert result.response_mode == "skill"
+    assert result.primary_skill == "support.resolve"
+    assert result.candidate_skills == ("support.resolve",)
+    assert "组合 Workflow" in result.reason
+
+
+def test_explicit_multi_skill_request_is_not_collapsed() -> None:
+    result = _router().resolve(
+        TaskRequest(
+            user_id="u1",
+            roles=[],
+            text="自定义执行",
+            context={
+                "agent": "customer_service",
+                "skills": ["order.lookup", "logistics.diagnose"],
+                "has_dependencies": True,
+            },
+        ),
+        intent=_intent(),
+        run_id="r-explicit",
+    )
+
+    assert result.candidate_skills == ("order.lookup", "logistics.diagnose")
+    assert result.primary_skill is None
+
+
+def test_independent_llm_skills_are_not_collapsed() -> None:
+    invoker = SpyContextInvoker(
+        {
+            "primary_skill": None,
+            "candidate_skills": ["order.lookup", "logistics.diagnose"],
+            "reason": "两个独立查询",
+            "confidence": "high",
+            "has_dependencies": False,
+        }
+    )
+
+    result = _router(invoker).resolve(
+        TaskRequest(
+            user_id="u1",
+            roles=[],
+            text="分别处理这些问题",
+            context={"agent": "customer_service"},
+        ),
+        intent=_intent(),
+        run_id="r-independent",
+    )
+
+    assert result.response_mode == "multi_skill"
+    assert result.candidate_skills == ("order.lookup", "logistics.diagnose")
+
+
+def test_xhs_end_to_end_atomic_suggestion_collapses_to_campaign() -> None:
+    catalog = load_catalog(Path.cwd())
+    agents, skills, tools = AgentRegistry(), SkillRegistry(), ToolRegistry()
+    register_catalog(
+        catalog,
+        enabled_agent_ids={"xhs_growth"},
+        agents=agents,
+        skills=skills,
+        tools=tools,
+        tenant_config={},
+    )
+    invoker = SpyContextInvoker(
+        {
+            "primary_skill": None,
+            "candidate_skills": [
+                "xhs.trend.research",
+                "xhs.case.extract",
+                "xhs.copy.generate",
+                "xhs.publish.prepare",
+            ],
+            "reason": "趋势研究后生成并准备发布",
+            "confidence": "high",
+            "has_dependencies": True,
+        }
+    )
+    router = IntentRouter(
+        agents=agents,
+        skills=skills,
+        context_invoker=invoker,
+        tenant_id="AI-ABC",
+        tenant_selector="company_alpha",
+    )
+
+    result = router.resolve(
+        TaskRequest(
+            user_id="dev",
+            roles=[],
+            text="处理完整任务",
+            context={"agent": "xhs_growth"},
+        ),
+        intent=_intent(),
+        run_id="r-xhs-regression",
+    )
+
+    assert result.primary_skill == "xhs.growth.campaign"
+    assert result.candidate_skills == ("xhs.growth.campaign",)
+
+
 def test_router_rejects_skill_outside_agent_boundary() -> None:
     with pytest.raises(CapabilityResolutionError, match="未绑定"):
         _router().resolve(
@@ -176,6 +315,38 @@ def test_router_rejects_skill_outside_agent_boundary() -> None:
             intent=_intent(),
             run_id="r1",
         )
+
+
+def test_router_ignores_unbound_llm_target_and_uses_constrained_candidates() -> None:
+    invoker = SpyContextInvoker(
+        {
+            "primary_skill": "order.lookup",
+            "candidate_skills": ["order.lookup"],
+            "reason": "从 Agent 白名单选择真实能力",
+            "confidence": "high",
+            "has_dependencies": False,
+        }
+    )
+
+    result = _router(invoker).resolve(
+        TaskRequest(
+            user_id="u1",
+            roles=["support"],
+            text="请帮我处理这个问题",
+            context={"agent": "customer_service"},
+        ),
+        intent=_intent(
+            target={
+                "kind": "business_skill",
+                "name": "InventedCustomerServiceManager",
+            }
+        ),
+        run_id="r-hallucinated-target",
+    )
+
+    assert result.primary_skill == "order.lookup"
+    assert result.candidate_skills == ("order.lookup",)
+    assert invoker.requests[0].context_id == "runtime.capability-route"
 
 
 def test_non_business_intent_resolves_to_answer() -> None:
@@ -221,4 +392,13 @@ def test_router_llm_receives_minimal_candidate_contracts() -> None:
     assert request.context_id == "runtime.capability-route"
     candidates = request.values["routing.candidate_skills"]
     assert candidates
-    assert set(candidates[0]) == {"id", "description", "input_schema", "reasoning", "tools"}
+    assert set(candidates[0]) == {
+        "id",
+        "description",
+        "input_schema",
+        "reasoning",
+        "orchestration",
+        "tool_policy",
+        "tools",
+        "composes",
+    }

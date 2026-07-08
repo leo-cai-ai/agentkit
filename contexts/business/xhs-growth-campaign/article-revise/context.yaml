@@ -1,0 +1,45 @@
+id: skill.xhs-growth-campaign.article-revise
+version: 1
+owner: skill
+owner_skill: xhs.growth.campaign
+templates:
+  system: system.md
+  user: user.md
+fragments: [evidence-policy]
+instructions:
+  agent: true
+  skill: true
+inputs:
+  - name: article
+    source: skill.article
+    required: true
+    priority: 100
+    serializer: canonical_json
+    max_chars: 12000
+  - name: review
+    source: skill.review
+    required: true
+    priority: 100
+    serializer: canonical_json
+    max_chars: 8000
+  - name: research_quality
+    source: skill.research_quality
+    required: true
+    priority: 90
+    serializer: canonical_json
+    max_chars: 5000
+  - name: language
+    source: request.language
+    required: true
+    priority: 100
+    max_chars: 20
+exclude: [secrets, tool_credentials, source.instructions]
+limits:
+  max_input_tokens: 10000
+  response_reserve_tokens: 2500
+output:
+  mode: text
+audit:
+  record_input_names: true
+  record_content_hashes: true
+  record_rendered_content: false

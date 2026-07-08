@@ -15,18 +15,21 @@ def _validate_id(value: str, *, label: str) -> str:
 
 
 def render_tenant_config(tenant_id: str) -> str:
-    return json.dumps(
-        {
-            "tenant_id": tenant_id,
-            "enabled_agents": [],
-            "role_permissions": {},
-            "principal_business_roles": {},
-            "context_overrides": {},
-            "mcp_servers": {},
-        },
-        ensure_ascii=False,
-        indent=2,
-    ) + "\n"
+    return (
+        json.dumps(
+            {
+                "tenant_id": tenant_id,
+                "enabled_agents": [],
+                "role_permissions": {},
+                "principal_business_roles": {},
+                "context_overrides": {},
+                "mcp_servers": {},
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n"
+    )
 
 
 def render_agent_manifest(agent_id: str) -> str:

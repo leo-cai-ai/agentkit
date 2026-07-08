@@ -18,6 +18,12 @@ from agentkit.connectors.browser_search import (
 )
 from agentkit.connectors.xhs_browser_state import XHS_PHONE_VERIFICATION_PATTERN
 from agentkit.core.logging_config import get_logger
+from agentkit.core.media import (
+    MediaAsset,
+    MediaUnderstandingProvider,
+    MediaUnderstandingResult,
+    NoneMediaUnderstandingProvider,
+)
 
 _log = get_logger("agentkit.xhs.search")
 
@@ -93,6 +99,14 @@ _EXTRACT_DETAIL = r"""
   };
   const textsOf = (selector) => Array.from(document.querySelectorAll(selector))
     .map((element) => clean(element.textContent)).filter(Boolean).slice(0, 20);
+  const mediaRoots = Array.from(document.querySelectorAll(
+    '#detail-desc, [class*="note-content"], [class*="interaction-container"]'
+  ));
+  const mediaUrls = mediaRoots.flatMap((root) =>
+    Array.from(root.querySelectorAll('img')).map((image) =>
+      image.currentSrc || image.src || ""
+    )
+  ).filter(Boolean);
   return {
     title: textOf(['#detail-title', '[class*="title"]']),
     author: textOf([
@@ -114,7 +128,8 @@ _EXTRACT_DETAIL = r"""
     published_at: textOf([
       '[class*="date"]', '[class*="publish-time"]', '[class*="bottom-container"]'
     ]),
-    tags: textsOf('a[href*="/search_result?keyword="]')
+    tags: textsOf('a[href*="/search_result?keyword="]'),
+    media_urls: mediaUrls
   };
 }
 """
@@ -171,7 +186,7 @@ class XhsSearchAdapter:
 
     def search_url(self, query: str) -> str:
         return (
-            f"{self.base_url}/search_result?keyword={quote(query)}"
+            f"{self.base_url}/search_result/?keyword={quote(query)}"
             "&source=web_search_result_notes"
         )
 
@@ -191,7 +206,12 @@ class XhsSearchAdapter:
             self.search_url(query),
             timeout_ms=self._remaining_ms(deadline),
         )
-        self._wait_for_results(page, timeout_ms=self._remaining_ms(deadline))
+        try:
+            self._wait_for_results(page, timeout_ms=self._remaining_ms(deadline))
+        except BrowserPageChanged:
+            _log.warning("小红书搜索结果首次加载超时，使用同一浏览器会话重新加载一次。")
+            self._navigate(page, self.search_url(query), timeout_ms=timeout_ms)
+            self._wait_for_results(page, timeout_ms=timeout_ms)
 
         candidate_limit = min(max(limit * 3, limit), 60)
         raw_results = self._extract_raw_results(page, candidate_limit)
@@ -236,13 +256,25 @@ class XhsSearchAdapter:
         try:
             page.wait_for_selector(_RESULT_LINK_SELECTOR, state="attached", timeout=timeout_ms)
         except Exception as exc:  # noqa: BLE001 - classify timeout from optional dependency
-            self._raise_for_page_state(page)
+            state = self._page_state(page)
+            self._raise_for_page_state(page, state=state)
+            if state.get("resultCount"):
+                return
             raise BrowserPageChanged(
                 "Xiaohongshu search results did not appear before the timeout."
             ) from exc
 
-    def _raise_for_page_state(self, page: Any) -> None:
-        state = dict(page.evaluate(_PAGE_STATE) or {})
+    @staticmethod
+    def _page_state(page: Any) -> dict[str, Any]:
+        return dict(page.evaluate(_PAGE_STATE) or {})
+
+    def _raise_for_page_state(
+        self,
+        page: Any,
+        *,
+        state: dict[str, Any] | None = None,
+    ) -> None:
+        state = state if state is not None else self._page_state(page)
         if state.get("challenge") or state.get("phoneVerification"):
             raise BrowserChallengeRequired(
                 "Xiaohongshu requires human verification, possibly an SMS code. Open the "
@@ -305,6 +337,11 @@ class XhsSearchAdapter:
                     metadata={
                         "captured_at": captured_at,
                         "cover_url": str(item.get("cover_url") or ""),
+                        "detail_attempted": False,
+                        "detail_enriched": False,
+                        "detail_error": "",
+                        "detail_skipped_reason": "",
+                        "detail_media_urls": [],
                     },
                 )
             )
@@ -345,7 +382,11 @@ class XhsSearchAdapter:
                         metrics[key] = parsed
                 content = _clean_text(raw.get("content")) or result.snippet
                 metadata = dict(result.metadata)
+                metadata["detail_attempted"] = True
                 metadata["detail_enriched"] = True
+                metadata["detail_error"] = ""
+                metadata["detail_skipped_reason"] = ""
+                metadata["detail_media_urls"] = _safe_media_urls(raw.get("media_urls"))
                 enriched.append(
                     replace(
                         result,
@@ -360,16 +401,34 @@ class XhsSearchAdapter:
                 )
             except (BrowserAuthenticationRequired, BrowserChallengeRequired) as exc:
                 error_name = type(exc).__name__
-                for pending in results[index:]:
+                current_metadata = dict(result.metadata)
+                current_metadata["detail_attempted"] = True
+                current_metadata["detail_enriched"] = False
+                current_metadata["detail_error"] = error_name
+                current_metadata["detail_skipped_reason"] = ""
+                current_metadata["detail_media_urls"] = []
+                enriched.append(replace(result, metadata=current_metadata))
+                skipped_reason = (
+                    "session_challenge"
+                    if isinstance(exc, BrowserChallengeRequired)
+                    else "session_authentication"
+                )
+                for pending in results[index + 1 :]:
                     metadata = dict(pending.metadata)
+                    metadata["detail_attempted"] = False
                     metadata["detail_enriched"] = False
-                    metadata["detail_error"] = error_name
+                    metadata["detail_error"] = ""
+                    metadata["detail_skipped_reason"] = skipped_reason
+                    metadata["detail_media_urls"] = []
                     enriched.append(replace(pending, metadata=metadata))
                 return enriched
             except Exception as exc:  # noqa: BLE001 - keep usable search results on detail drift
                 metadata = dict(result.metadata)
+                metadata["detail_attempted"] = True
                 metadata["detail_enriched"] = False
                 metadata["detail_error"] = type(exc).__name__
+                metadata["detail_skipped_reason"] = ""
+                metadata["detail_media_urls"] = []
                 enriched.append(replace(result, metadata=metadata))
         return enriched
 
@@ -432,18 +491,55 @@ class XhsSearchAdapter:
 class PlaywrightXhsResearchProvider:
     """Domain-provider shape backed by the reusable browser client."""
 
-    def __init__(self, client: PlaywrightSearchClient, adapter: XhsSearchAdapter) -> None:
+    def __init__(
+        self,
+        client: PlaywrightSearchClient,
+        adapter: XhsSearchAdapter,
+        *,
+        media_provider: MediaUnderstandingProvider | None = None,
+        max_media_assets: int = 3,
+    ) -> None:
         self.client = client
         self.adapter = adapter
+        self.media_provider = media_provider or NoneMediaUnderstandingProvider()
+        self.max_media_assets = max(0, max_media_assets)
 
     def search_top_notes(self, *, topic: str, limit: int) -> list[dict[str, Any]]:
         results = self.client.search(self.adapter, query=topic, limit=limit)
-        return [self._to_note(result, topic=topic) for result in results]
+        notes: list[dict[str, Any]] = []
+        for result in results:
+            note = self._to_note(result, topic=topic)
+            assets = tuple(
+                MediaAsset(**item) for item in note["media_assets"][: self.max_media_assets]
+            )
+            try:
+                media_result = self.media_provider.analyze(
+                    assets,
+                    context={
+                        "platform": "xiaohongshu",
+                        "note_id": note["note_id"],
+                        "topic": topic,
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001 - Provider 边界失败时保留文本结果
+                _log.warning(
+                    "媒体理解 Provider %s 执行失败：%s",
+                    self.media_provider.name,
+                    type(exc).__name__,
+                )
+                media_result = MediaUnderstandingResult(
+                    status="failed",
+                    provider=self.media_provider.name,
+                    reason=type(exc).__name__,
+                )
+            note["media_understanding"] = media_result.to_dict()
+            notes.append(note)
+        return notes
 
-    @staticmethod
-    def _to_note(result: WebSearchResult, *, topic: str) -> dict[str, Any]:
+    def _to_note(self, result: WebSearchResult, *, topic: str) -> dict[str, Any]:
         metrics = result.metrics
         content = result.snippet[:3000]
+        media_assets = _media_assets_for_result(result, limit=self.max_media_assets)
         return {
             "note_id": result.result_id,
             "title": result.title,
@@ -464,8 +560,68 @@ class PlaywrightXhsResearchProvider:
             "captured_at": result.metadata.get("captured_at", ""),
             "detail_enriched": bool(result.metadata.get("detail_enriched")),
             "detail_error": str(result.metadata.get("detail_error") or ""),
+            "detail_attempted": bool(result.metadata.get("detail_attempted")),
+            "detail_skipped_reason": str(result.metadata.get("detail_skipped_reason") or ""),
+            "media_assets": media_assets,
             "topic": topic,
         }
+
+
+def _safe_media_urls(value: Any) -> list[str]:
+    """只保留小红书可信域名下的 HTTPS 媒体 URL，并按页面顺序去重。"""
+
+    items = value if isinstance(value, list | tuple) else [value]
+    seen: set[str] = set()
+    urls: list[str] = []
+    for item in items:
+        url = str(item or "").strip()
+        parsed = urlparse(url)
+        hostname = (parsed.hostname or "").lower()
+        allowed_host = any(
+            hostname == root or hostname.endswith(f".{root}")
+            for root in ("xiaohongshu.com", "xhscdn.com")
+        )
+        if parsed.scheme != "https" or not allowed_host or url in seen:
+            continue
+        seen.add(url)
+        urls.append(url)
+    return urls
+
+
+def _media_assets_for_result(
+    result: WebSearchResult,
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """把搜索封面和详情图片转换为通用媒体资产描述。"""
+
+    if limit <= 0:
+        return []
+    candidates: list[tuple[str, str]] = []
+    candidates.extend(("cover", url) for url in _safe_media_urls(result.metadata.get("cover_url")))
+    candidates.extend(
+        ("detail", url) for url in _safe_media_urls(result.metadata.get("detail_media_urls"))
+    )
+    seen: set[str] = set()
+    assets: list[dict[str, Any]] = []
+    for source_kind, url in candidates:
+        if url in seen:
+            continue
+        seen.add(url)
+        index = len(assets)
+        assets.append(
+            {
+                "asset_id": f"{result.result_id}:{source_kind}:{index}",
+                "source_url": url,
+                "media_type": "image",
+                "source_kind": source_kind,
+                "index": index,
+                "metadata": {},
+            }
+        )
+        if len(assets) >= limit:
+            break
+    return assets
 
 
 def _note_id(url: str) -> str:

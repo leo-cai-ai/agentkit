@@ -14,6 +14,7 @@ from agentkit.connectors.xhs_publication import (
     append_hashtags,
     normalize_publish_content,
     publication_content_hash,
+    resolve_publish_content,
 )
 from agentkit.connectors.xhs_publisher_playwright import (
     PlaywrightXhsPublishingProvider,
@@ -25,9 +26,7 @@ from agentkit.runtime.declarative_catalog import load_catalog, load_tool_factory
 
 _CATALOG = load_catalog(Path(__file__).resolve().parents[2])
 _FACTORY = load_tool_factory(_CATALOG, "xhs.rpa.search_top_notes")
-MockXhsProvider = sys.modules[
-    _FACTORY.__module__.rsplit(".", 1)[0] + ".providers"
-].MockXhsProvider
+MockXhsProvider = sys.modules[_FACTORY.__module__.rsplit(".", 1)[0] + ".providers"].MockXhsProvider
 
 
 def test_publication_contract_is_stable_and_deduplicates_tags() -> None:
@@ -51,18 +50,51 @@ def test_text_image_contract_hashes_card_text_and_style() -> None:
     content = normalize_publish_content(
         {
             "title": "标题",
-            "body": "正文",
+            "body": "第一段。第二段。",
             "media_strategy": "xhs_text_image",
-            "card_text": "卡片正文",
+            "card_text": "第一段。第二段。",
             "card_style": "涂鸦",
         }
     )
 
     assert content["media_strategy"] == "xhs_text_image"
-    assert content["card_text"] == "卡片正文"
+    assert content["card_text"] == "第一段。第二段。"
+    assert publication_content_hash(content) != publication_content_hash(
+        {**content, "card_text": "第二段。第一段。"}
+    )
     assert publication_content_hash(content) != publication_content_hash(
         {**content, "card_style": "基础"}
     )
+
+
+def test_text_image_contract_freezes_full_body_for_native_generation() -> None:
+    content = resolve_publish_content(
+        {"title": "AI 入门", "body": "先明确目标。再完成一个小任务。"},
+        default_media_strategy="xhs_text_image",
+        default_card_style="涂鸦",
+    )
+
+    assert content["media_strategy"] == "xhs_text_image"
+    assert content["card_text"] == "先明确目标。再完成一个小任务。"
+    assert content["card_style"] == "涂鸦"
+
+
+def test_upload_contract_clears_text_image_content() -> None:
+    content = resolve_publish_content(
+        {
+            "title": "标题",
+            "body": "正文",
+            "media_paths": ["cover.png"],
+            "card_text": "正文",
+            "card_style": "涂鸦",
+        },
+        default_media_strategy="xhs_text_image",
+        default_card_style="涂鸦",
+    )
+
+    assert content["media_strategy"] == "upload"
+    assert content["card_text"] == ""
+    assert content["card_style"] == ""
 
 
 def test_mock_publish_is_idempotent_and_hash_guarded() -> None:
@@ -199,6 +231,21 @@ class _Locator:
         self.click_options = dict(_kwargs)
 
 
+class _LocatorCollection:
+    def __init__(self, items: list[_Locator]) -> None:
+        self.items = items
+
+    @property
+    def first(self):
+        return self.items[0] if self.items else _Locator(count=0)
+
+    def count(self) -> int:
+        return len(self.items)
+
+    def nth(self, index: int) -> _Locator:
+        return self.items[index]
+
+
 class _DiscardingLocator(_Locator):
     def fill(self, _value: str) -> None:
         return None
@@ -228,6 +275,73 @@ class _ResponseLocator(_Locator):
         self.page.emit_response(self.response)
 
 
+class _Keyboard:
+    def __init__(self) -> None:
+        self.pressed: list[str] = []
+
+    def press(self, key: str) -> None:
+        self.pressed.append(key)
+
+
+class _CdpSession:
+    def __init__(self, page) -> None:
+        self.page = page
+        self.outer_html = '<button type="button" class="ce-btn bg-red">发布</button>'
+        self.border = [633.0, 655.0, 753.0, 655.0, 753.0, 695.0, 633.0, 695.0]
+        self.hit_backend_node_id = 99
+        self.node_location_params: dict = {}
+        self.mouse_events: list[dict] = []
+
+    def send(self, method: str, params: dict | None = None) -> dict:
+        params = dict(params or {})
+        if method == "DOM.enable":
+            return {}
+        if method == "DOM.getFlattenedDocument":
+            return {
+                "nodes": [
+                    {
+                        "nodeName": "BUTTON",
+                        "backendNodeId": 99,
+                        "attributes": ["type", "button", "class", "ce-btn bg-red"],
+                    }
+                ]
+            }
+        if method == "DOM.getOuterHTML":
+            return {"outerHTML": self.outer_html}
+        if method == "DOM.getBoxModel":
+            return {"model": {"border": self.border, "width": 120, "height": 40}}
+        if method == "DOM.getNodeForLocation":
+            self.node_location_params = params
+            return {"backendNodeId": self.hit_backend_node_id}
+        if method == "DOM.pushNodesByBackendIdsToFrontend":
+            return {"nodeIds": [self.hit_backend_node_id]}
+        if method == "DOM.describeNode":
+            return {
+                "node": {
+                    "backendNodeId": params["nodeId"],
+                    "parentId": 0,
+                }
+            }
+        if method == "Input.dispatchMouseEvent":
+            self.mouse_events.append(params)
+            if params.get("type") == "mouseReleased":
+                self.page.button.click(
+                    position={"x": params.get("x"), "y": params.get("y")},
+                    method="cdp",
+                )
+            return {}
+        raise AssertionError(f"unexpected CDP method: {method}")
+
+
+class _BrowserContext:
+    def __init__(self, page) -> None:
+        self.session = _CdpSession(page)
+
+    def new_cdp_session(self, page):
+        assert page is self.session.page
+        return self.session
+
+
 class _PublishPage:
     def __init__(self, *, login: bool = False, phone_verification: bool = False) -> None:
         self.login = login
@@ -240,16 +354,24 @@ class _PublishPage:
         self.title = _Locator()
         self.body = _Locator()
         self.button = _Locator(attributes={"is-publish": "true", "submit-disabled": "false"})
+        self.context = _BrowserContext(self)
+        self.cdp_session = self.context.session
+        self.keyboard = _Keyboard()
         self.tab = _Locator()
         self.optional = _Locator(count=0)
         self.viewport: dict = {}
         self.html = ""
         self.frames: list = []
+        self.blurred = False
+        self.wait_calls: list[int] = []
 
     def goto(self, url: str, **_kwargs) -> None:
         self.url = url
 
     def evaluate(self, _expression: str, *_args):
+        if "document.activeElement" in _expression:
+            self.blurred = True
+            return None
         if ".creator-tab.active" in _expression:
             return True
         if 'document.querySelectorAll(".creator-tab")' in _expression:
@@ -277,8 +399,8 @@ class _PublishPage:
             return self.button
         return self.optional
 
-    def wait_for_timeout(self, _timeout_ms: int) -> None:
-        return None
+    def wait_for_timeout(self, timeout_ms: int) -> None:
+        self.wait_calls.append(timeout_ms)
 
     def wait_for_function(self, *_args, **_kwargs) -> None:
         if not self.button.clicked:
@@ -298,7 +420,6 @@ class _UnknownPublishPage(_PublishPage):
     def __init__(self) -> None:
         super().__init__()
         self.handlers: dict[str, list] = {}
-        self.wait_calls: list[int] = []
         request = _FakeRequest(
             url="https://creator.xiaohongshu.com/api/sns/v1/note?body=secret-body",
             method="POST",
@@ -337,7 +458,7 @@ class _TextImagePublishPage(_PublishPage):
     def __init__(self) -> None:
         super().__init__()
         self.entry = _Locator()
-        self.card_editor = _Locator()
+        self.card_editors = [_Locator()]
         self.generate_button = _Locator()
         self.next_button = _Locator()
         self.stage = "entry"
@@ -347,7 +468,7 @@ class _TextImagePublishPage(_PublishPage):
         if selector == "button.text2image-button":
             return self.entry
         if "div.tiptap.ProseMirror" in selector or "真诚分享" in selector:
-            return self.card_editor if self.entry.clicked else self.optional
+            return _LocatorCollection(self.card_editors) if self.entry.clicked else self.optional
         if selector == ".edit-text-button":
             return self.generate_button if self.entry.clicked else self.optional
         if selector == "button.bg-red":
@@ -364,7 +485,7 @@ class _TextImagePublishPage(_PublishPage):
 
     def evaluate(self, expression: str, *args):
         if ".edit-text-button" in expression:
-            return bool(self.card_editor.value)
+            return all(editor.value for editor in self.card_editors)
         if ".cover-name" in expression:
             self.selected_style = str(args[0])
             return True
@@ -393,7 +514,10 @@ def test_playwright_publish_adapter_prepares_and_submits_exact_content(tmp_path)
     assert page.title.value == package["title"]
     assert "#亲子游" in page.body.value
     assert page.button.clicked is True
-    assert page.button.click_options["position"] == {"x": 620.0, "y": 45.0}
+    assert page.button.click_options == {
+        "position": {"x": 693.0, "y": 675.0},
+        "method": "cdp",
+    }
     assert result["status"] == "published"
 
 
@@ -414,7 +538,7 @@ def test_publish_stops_before_click_when_title_does_not_persist(tmp_path) -> Non
     assert page.button.clicked is False
 
 
-def test_publish_targets_right_side_of_closed_shadow_host(tmp_path) -> None:
+def test_publish_targets_exact_button_inside_closed_shadow_host(tmp_path) -> None:
     page = _PublishPage()
     page.button.box = {"x": 100.0, "y": 200.0, "width": 252.0, "height": 40.0}
     adapter = XhsPublishAdapter(asset_root=tmp_path / "assets")
@@ -427,7 +551,52 @@ def test_publish_targets_right_side_of_closed_shadow_host(tmp_path) -> None:
         timeout_ms=1000,
     )
 
-    assert page.button.click_options["position"] == {"x": 192.0, "y": 20.0}
+    assert [event["type"] for event in page.cdp_session.mouse_events] == [
+        "mouseMoved",
+        "mousePressed",
+        "mouseReleased",
+    ]
+    assert page.keyboard.pressed == ["Escape"]
+    assert page.blurred is True
+    assert 250 in page.wait_calls
+    assert page.cdp_session.node_location_params["ignorePointerEventsNone"] is False
+    assert page.button.click_options["position"] == {"x": 693.0, "y": 675.0}
+
+
+def test_publish_refuses_click_when_overlay_covers_shadow_button(tmp_path) -> None:
+    page = _PublishPage()
+    page.cdp_session.hit_backend_node_id = 123
+    adapter = XhsPublishAdapter(asset_root=tmp_path / "assets")
+    media = tmp_path / "cover.png"
+    media.write_bytes(b"png")
+
+    with pytest.raises(BrowserPageChanged, match="covered"):
+        adapter.publish(
+            page,
+            package={"title": "标题", "body": "正文", "media_paths": [str(media)]},
+            timeout_ms=1000,
+        )
+
+    assert page.cdp_session.mouse_events == []
+
+
+def test_publish_refuses_to_guess_when_closed_shadow_publish_button_is_missing(tmp_path) -> None:
+    page = _PublishPage()
+    page.cdp_session.outer_html = (
+        '<button type="button" class="custom-button bg-red upload-button">上传图片</button>'
+    )
+    adapter = XhsPublishAdapter(asset_root=tmp_path / "assets")
+    media = tmp_path / "cover.png"
+    media.write_bytes(b"png")
+
+    with pytest.raises(BrowserPageChanged, match="closed shadow publish button"):
+        adapter.publish(
+            page,
+            package={"title": "标题", "body": "正文", "media_paths": [str(media)]},
+            timeout_ms=1000,
+        )
+
+    assert page.button.clicked is False
 
 
 def test_unknown_publish_outcome_includes_redacted_network_evidence_and_waits(tmp_path) -> None:
@@ -449,7 +618,7 @@ def test_unknown_publish_outcome_includes_redacted_network_evidence_and_waits(tm
     assert "secret-body" not in message
     assert "secret-page-body" not in message
     assert "secret-page-query" not in message
-    assert page.wait_calls == [90_000]
+    assert page.wait_calls == [250, 90_000]
 
 
 def test_unknown_publish_outcome_does_not_wait_when_observation_is_disabled(tmp_path) -> None:
@@ -465,7 +634,7 @@ def test_unknown_publish_outcome_does_not_wait_when_observation_is_disabled(tmp_
             timeout_ms=1000,
         )
 
-    assert page.wait_calls == []
+    assert page.wait_calls == [250]
 
 
 def test_playwright_publish_adapter_generates_reviewed_text_images(tmp_path) -> None:
@@ -491,7 +660,9 @@ def test_playwright_publish_adapter_generates_reviewed_text_images(tmp_path) -> 
 
     result = adapter.publish(page, package=package, timeout_ms=1000)
 
-    assert page.card_editor.value == package["card_text"]
+    assert len(page.card_editors) == 1
+    assert page.card_editors[0].value == package["card_text"]
+    assert page.generate_button.clicked is True
     assert page.selected_style == "涂鸦"
     assert page.upload.files == []
     assert page.title.value == package["title"]
@@ -659,6 +830,7 @@ class _FramedPublishPage(_PublishPage):
     def __init__(self) -> None:
         super().__init__()
         self.frame = _PublishPage()
+        self.button = self.frame.button
         self.frames = [self.frame]
 
     def locator(self, _selector: str):

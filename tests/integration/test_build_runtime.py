@@ -10,7 +10,12 @@ def test_build_runtime_registers_expected_components(tmp_path):
     agent_names = {a.name for a in runtime.gateway.agents.all()}
 
     assert "candidate.rank" in skill_names
-    assert agent_names == {"customer_service", "hr_recruiter", "xhs_growth"}
+    assert agent_names == {
+        "general_agent",
+        "customer_service",
+        "hr_recruiter",
+        "xhs_growth",
+    }
     assert runtime.tenant_config["tenant_id"]
     assert runtime.manifest
     assert runtime.manifest["tenant_config"]["sha256"]
@@ -38,8 +43,7 @@ def test_legacy_runtime_is_removed() -> None:
         "routing_hints",
     ]
     sources = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in (repo_root / "src" / "agentkit").rglob("*.py")
+        path.read_text(encoding="utf-8") for path in (repo_root / "src" / "agentkit").rglob("*.py")
     )
     for symbol in forbidden:
         assert symbol not in sources, symbol

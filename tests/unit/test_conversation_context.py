@@ -67,9 +67,7 @@ def test_context_builder_enables_rag_per_agent(tmp_path) -> None:
         memory_reader=FakeMemoryReader(),
         knowledge_service=knowledge,
     )
-    customer_id = store.create_conversation(
-        tenant_id="t1", agent="customer_service", user_id="u1"
-    )
+    customer_id = store.create_conversation(tenant_id="t1", agent="customer_service", user_id="u1")
     xhs_id = store.create_conversation(tenant_id="t1", agent="xhs_growth", user_id="u1")
 
     customer = service.build(
@@ -103,9 +101,7 @@ def test_context_is_scoped_by_tenant_agent_user(tmp_path) -> None:
     memory = FakeMemoryReader()
     memory.values[("t1", "customer_service", "u1")] = ["订单 O-1"]
     service = ConversationContextService(store=store, memory_reader=memory)
-    customer_id = store.create_conversation(
-        tenant_id="t1", agent="customer_service", user_id="u1"
-    )
+    customer_id = store.create_conversation(tenant_id="t1", agent="customer_service", user_id="u1")
     store.add_message(conversation_id=customer_id, role="user", content="查询 O-1")
     xhs_id = store.create_conversation(tenant_id="t1", agent="xhs_growth", user_id="u1")
 
@@ -155,3 +151,47 @@ def test_context_rejects_cross_scope_conversation(tmp_path) -> None:
         assert "不属于当前" in str(exc)
     else:
         raise AssertionError("必须拒绝跨 Agent 会话")
+
+
+def test_context_normalizes_legacy_structured_assistant_message(tmp_path) -> None:
+    import json
+
+    store = ConversationStore(tmp_path / "memory.sqlite")
+    conversation_id = store.create_conversation(
+        tenant_id="t1",
+        agent="general_agent",
+        user_id="u1",
+    )
+    store.add_message(
+        conversation_id=conversation_id,
+        role="assistant",
+        content=json.dumps(
+            {
+                "campaign_id": "XHS-30D-10000",
+                "platform": "xiaohongshu",
+                "topic": "AI时代的副业",
+                "workflow_status": "blocked",
+                "workflow_trace": [{"step": "xhs.trend.research"}],
+                "publish": {
+                    "status": "blocked",
+                    "review": {"reason": "证据不足"},
+                },
+            },
+            ensure_ascii=False,
+        ),
+        agent_id="xhs_growth",
+    )
+    service = ConversationContextService(store=store)
+
+    context = service.build(
+        agent=_agent(agent_id="general_agent", rag_enabled=False),
+        tenant_id="t1",
+        agent_id="general_agent",
+        user_id="u1",
+        conversation_id=conversation_id,
+        run_id="r1",
+        message="继续",
+    )
+
+    assert context.recent_messages[-1]["content"] == ("内容审核未通过，未进入发布：证据不足")
+    assert "workflow_trace" not in context.recent_messages[-1]["content"]

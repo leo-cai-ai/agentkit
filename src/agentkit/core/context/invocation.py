@@ -8,6 +8,7 @@ import re
 import time
 from collections import deque
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any, Protocol
 
 from jsonschema import Draft202012Validator
@@ -17,10 +18,16 @@ from agentkit.core.llm_client import strip_reasoning_tags
 from agentkit.core.memory.tokenizer import HeuristicTokenEstimator, TokenEstimator
 
 from .assembler import ContextAssembler
-from .errors import ContextError, ContextOutputInvalidError, ContextRenderError
+from .errors import (
+    ContextError,
+    ContextOutputInvalidError,
+    ContextRenderError,
+    ContextTooLargeError,
+)
 from .models import ContextRenderRequest, LLMInvocationResult, RenderedContext
 
 _JSON_FENCE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", flags=re.IGNORECASE | re.DOTALL)
+_JSON_SCHEMA_HEADING = "Runtime 强制输出契约：必须严格按照以下 JSON Schema 返回唯一 JSON 值。"
 _PHONE = re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)")
 _EMAIL = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 _NAMED_SECRET = re.compile(
@@ -139,10 +146,9 @@ class ContextInvocationService:
                     context_id=request.context_id,
                 )
             rendered = self._assembler.render(request)
-            if (
-                self._debug_sampler is not None
-                and definition.model.audit.record_rendered_content
-            ):
+            if parse_json and rendered.output_schema is not None:
+                rendered = self._inject_json_schema(request, rendered)
+            if self._debug_sampler is not None and definition.model.audit.record_rendered_content:
                 self._debug_sampler.add(
                     context_id=request.context_id,
                     system=rendered.system,
@@ -175,6 +181,37 @@ class ContextInvocationService:
         except Exception as exc:
             self._record_failure(request, rendered, exc)
             raise
+
+    def _inject_json_schema(
+        self,
+        request: ContextRenderRequest,
+        rendered: RenderedContext,
+    ) -> RenderedContext:
+        schema = json.dumps(
+            rendered.output_schema,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        system = f"{rendered.system}\n\n{_JSON_SCHEMA_HEADING}\n{schema}"
+        estimated_input_tokens = self._tokenizer.estimate(system) + self._tokenizer.estimate(
+            rendered.user
+        )
+        definition = self._assembler.registry.get(request.context_id)
+        effective_limit = min(
+            definition.model.limits.max_input_tokens,
+            request.global_token_limit - definition.model.limits.response_reserve_tokens,
+        )
+        if estimated_input_tokens > effective_limit:
+            raise ContextTooLargeError(
+                f"{request.context_id}: 注入输出 Schema 后超过 {effective_limit} Token",
+                context_id=request.context_id,
+            )
+        return replace(
+            rendered,
+            system=system,
+            estimated_input_tokens=estimated_input_tokens,
+        )
 
     def _record_success(
         self,

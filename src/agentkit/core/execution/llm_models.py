@@ -61,9 +61,7 @@ class StructuredPlanModel:
         previous_failure: dict[str, Any] | None,
         remaining_budget: dict[str, int | float],
     ) -> PlanModelDecision:
-        skill_summaries = tuple(
-            _skill_summary(context.skill(name)) for name in allowed_skills
-        )
+        skill_summaries = tuple(_skill_summary(context.skill(name)) for name in allowed_skills)
         result = context.context_invoker.invoke_json(
             ContextRenderRequest(
                 context_id="runtime.plan-generate",

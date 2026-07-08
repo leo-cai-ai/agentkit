@@ -36,6 +36,7 @@ from agentkit.core.execution.models import (
     ToolRisk,
 )
 from agentkit.core.registry import AgentRegistry, SkillRegistry, ToolRegistry
+from agentkit.core.review import ReviewPolicy
 
 DEFAULT_GLOBAL_BUDGET = AutonomyBudget(
     max_model_calls=64,
@@ -132,6 +133,15 @@ class _SkillAutonomyYaml(_StrictModel):
         return AutonomyLimits(**self.model_dump())
 
 
+class _ReviewYaml(_StrictModel):
+    enabled: bool = False
+    max_revisions: int = Field(default=0, ge=0)
+    exhausted_status: Literal["blocked"] = "blocked"
+
+    def to_runtime(self) -> ReviewPolicy:
+        return ReviewPolicy(**self.model_dump())
+
+
 class _AgentYaml(_StrictModel):
     id: str = Field(min_length=1)
     domain: str = Field(min_length=1)
@@ -176,12 +186,14 @@ class _CapabilityYaml(_StrictModel):
     entrypoint: str = Field(min_length=1)
     execution: _SkillExecutionYaml
     autonomy: _SkillAutonomyYaml = Field(default_factory=_SkillAutonomyYaml)
+    review: _ReviewYaml | None = None
     permissions: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
     input_schema: dict[str, Any] = Field(default_factory=lambda: {"type": "object"})
     output_schema: dict[str, Any] = Field(default_factory=lambda: {"type": "object"})
     batch_key: str | None = None
     keywords: list[str] = Field(default_factory=list)
+    composes: list[str] = Field(default_factory=list)
 
 
 class _SkillPackageYaml(_StrictModel):
@@ -238,12 +250,14 @@ class CapabilityManifest:
     entrypoint: str
     execution: SkillExecutionPolicy
     autonomy: AutonomyLimits
+    review: ReviewPolicy | None
     permissions: tuple[str, ...]
     tools: tuple[str, ...]
     input_schema: dict[str, Any]
     output_schema: dict[str, Any]
     batch_key: str | None
     keywords: tuple[str, ...]
+    composes: tuple[str, ...]
     source_path: Path
 
 
@@ -398,13 +412,9 @@ def _load_skill_packages(
                 raise ValueError(f"{source_path}: 重复的工具 ID {tool.tool_id}")
             tools[tool.tool_id] = tool
         for raw_capability in package.capabilities:
-            capability = _build_capability_manifest(
-                raw_capability, package.package_id, source_path
-            )
+            capability = _build_capability_manifest(raw_capability, package.package_id, source_path)
             if capability.capability_id in capabilities:
-                raise ValueError(
-                    f"{source_path}: 重复的 capability ID {capability.capability_id}"
-                )
+                raise ValueError(f"{source_path}: 重复的 capability ID {capability.capability_id}")
             capabilities[capability.capability_id] = capability
     return capabilities, tools
 
@@ -503,12 +513,14 @@ def _build_capability_manifest(
             allow_dynamic_selection=raw.execution.allow_dynamic_selection,
         ),
         autonomy=raw.autonomy.to_runtime(),
+        review=raw.review.to_runtime() if raw.review is not None else None,
         permissions=tuple(raw.permissions),
         tools=tuple(raw.tools),
         input_schema=dict(raw.input_schema),
         output_schema=dict(raw.output_schema),
         batch_key=raw.batch_key,
         keywords=tuple(raw.keywords),
+        composes=tuple(raw.composes),
         source_path=source_path,
     )
 
@@ -535,18 +547,29 @@ def _validate_references(
     for capability in capabilities.values():
         unknown = sorted(set(capability.tools) - set(tools))
         if unknown:
-            raise ValueError(
-                f"{capability.source_path}: 引用了未知工具: {', '.join(unknown)}"
-            )
+            raise ValueError(f"{capability.source_path}: 引用了未知工具: {', '.join(unknown)}")
+        if capability.composes:
+            if capability.execution.orchestration is not OrchestrationMode.WORKFLOW:
+                raise ValueError(
+                    f"{capability.source_path}: 只有 workflow Capability 可以声明 composes"
+                )
+            if capability.capability_id in capability.composes:
+                raise ValueError(f"{capability.source_path}: composes 不能包含自身")
+            if len(capability.composes) != len(set(capability.composes)):
+                raise ValueError(f"{capability.source_path}: composes 不能重复")
+            unknown_composed = sorted(set(capability.composes) - set(capabilities))
+            if unknown_composed:
+                raise ValueError(
+                    f"{capability.source_path}: composes 引用了未知 capability: "
+                    + ", ".join(unknown_composed)
+                )
 
 
 def _validate_skill_budget(agent: AgentManifest, capability: CapabilityManifest) -> None:
     for item in fields(capability.autonomy):
         value = getattr(capability.autonomy, item.name)
         if value is not None and value > getattr(agent.autonomy, item.name):
-            raise ValueError(
-                f"{capability.source_path}: Skill 自主预算不能超过 Agent: {item.name}"
-            )
+            raise ValueError(f"{capability.source_path}: Skill 自主预算不能超过 Agent: {item.name}")
 
 
 def _validate_budget_not_greater(
@@ -622,9 +645,7 @@ def _resolve_python_tool_handler(
     cache_key = (manifest.source_path.parent, manifest.factory_entrypoint)
     handlers = tool_factory_cache.get(cache_key)
     if handlers is None:
-        factory = _load_entrypoint(
-            root, manifest.source_path.parent, manifest.factory_entrypoint
-        )
+        factory = _load_entrypoint(root, manifest.source_path.parent, manifest.factory_entrypoint)
         built = factory(tenant_config)
         if not isinstance(built, dict) or any(
             not isinstance(key, str) or not callable(value) for key, value in built.items()
@@ -649,10 +670,12 @@ def _compile_capability(root: Path, manifest: CapabilityManifest) -> SkillDefini
         permissions=list(manifest.permissions),
         execution=manifest.execution,
         autonomy=manifest.autonomy,
+        review=manifest.review,
         tools=list(manifest.tools),
         handler=handler,
         batch_key=manifest.batch_key,
         keywords=list(manifest.keywords),
+        composes=manifest.composes,
     )
 
 

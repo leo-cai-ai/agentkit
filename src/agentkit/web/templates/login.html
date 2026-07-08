@@ -1,59 +1,72 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Sign in | Enterprise AI Workforce</title>
+    <title>安全登录 | AgentKit</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/tokens.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/components.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/login.css') }}">
+    <script defer src="{{ url_for('static', filename='js/login.js') }}"></script>
   </head>
   <body class="login-page" data-page="login">
-    <main class="login-shell">
-      <section class="login-card" aria-labelledby="login-title">
-        <div class="login-brand">
-          <span class="login-brand-mark" aria-hidden="true">EA</span>
-          <span class="login-brand-copy">
-            <span class="login-brand-name">Enterprise AI</span>
-            <span class="login-brand-product">Workforce Console</span>
-          </span>
-        </div>
+    <main class="ak-login-shell">
+      <section class="ak-login-story" aria-labelledby="login-product-title">
+        <div class="ak-login-brand"><span aria-hidden="true">AK</span><strong>AgentKit</strong></div>
+        <span class="ak-login-eyebrow">Enterprise Agent Runtime</span>
+        <h1 id="login-product-title">企业 Agent 的统一工作入口</h1>
+        <p>受治理的对话、委派、审批和运行追踪，都在同一条可审计链路中完成。</p>
+        <ul>
+          <li>多 Agent 协同与单轮定向委派</li>
+          <li>高风险动作人工审批</li>
+          <li>完整运行、成本与审计证据</li>
+        </ul>
+      </section>
 
-        <header class="login-heading">
-          <h1 id="login-title">Sign in</h1>
-          <p>Enter your access token to continue to the management console.</p>
+      <section class="ak-login-panel" aria-labelledby="login-title">
+        <header>
+          <span class="ak-login-eyebrow">Secure Access</span>
+          <h2 id="login-title">登录工作台</h2>
+          <p>输入管理员提供的访问令牌。</p>
         </header>
 
-        <form class="login-form" method="post">
+        <form class="ak-login-form" method="post" data-login-form>
           <div class="ak-field">
-            <label class="ak-field-label" for="access-token">Access token</label>
-            <input
-              class="ak-input"
-              id="access-token"
-              type="password"
-              name="token"
-              autocomplete="current-password"
-              autocapitalize="none"
-              spellcheck="false"
-              {% if error %}
-              aria-describedby="login-error"
-              aria-errormessage="login-error"
-              aria-invalid="true"
-              {% else %}
-              aria-describedby="login-token-hint"
-              {% endif %}
-              required
-            >
-            <div class="login-feedback">
-              {% if error %}
-              <p class="ak-alert ak-alert-danger" id="login-error" role="alert">{{ error }}</p>
-              {% else %}
-              <p class="ak-field-hint" id="login-token-hint">Your token is used only to authenticate this session.</p>
-              {% endif %}
+            <label class="ak-field-label" for="access-token">访问令牌</label>
+            <div class="ak-secret-input">
+              <input
+                class="ak-input"
+                id="access-token"
+                type="password"
+                name="token"
+                autocomplete="current-password"
+                autocapitalize="none"
+                spellcheck="false"
+                aria-describedby="access-token-help"
+                {% if error %}aria-errormessage="login-error" aria-invalid="true"{% endif %}
+                required
+              >
+              <button
+                type="button"
+                data-token-visibility-toggle
+                aria-controls="access-token"
+                aria-pressed="false"
+              >显示</button>
             </div>
+            <p class="ak-field-hint" id="access-token-help">令牌只用于建立当前安全会话，不会保存在浏览器本地存储中。</p>
           </div>
 
-          <button class="ak-button ak-button-primary ak-button-block" type="submit">Sign in</button>
+          <button
+            class="ak-button ak-button-primary ak-button-block"
+            type="submit"
+            data-loading-label="正在验证"
+          >安全登录</button>
+          <p
+            class="{{ 'ak-alert ak-alert-danger' if error else 'ak-login-status' }}"
+            id="login-error"
+            {% if error %}role="alert"{% else %}role="status"{% endif %}
+            aria-live="polite"
+          >{{ error or '' }}</p>
         </form>
       </section>
     </main>

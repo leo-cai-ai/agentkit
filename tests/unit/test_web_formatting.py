@@ -16,3 +16,50 @@ def test_unified_response_formatter_prefers_business_summary() -> None:
     )
 
     assert format_response_text(response) == "已完成小红书内容草稿"
+
+
+def test_unified_response_formatter_explains_blocked_review() -> None:
+    response = TaskResponse(
+        status="blocked",
+        output={
+            "campaign_summary": "Prepared workflow",
+            "publish": {
+                "status": "blocked",
+                "reason": "copy review failed",
+                "review": {
+                    "reason": "证据不足",
+                    "findings": [{"severity": "error", "message": "无证据事实"}],
+                },
+            },
+        },
+        run_id="r-blocked",
+        thread_id="t-blocked",
+        agent="xhs_growth",
+        strategy="workflow",
+        conversation_id="c-blocked",
+        governance={},
+        audit_events=[],
+    )
+
+    assert format_response_text(response) == "内容审核未通过，未进入发布：证据不足"
+
+
+def test_unified_response_formatter_uses_published_xhs_outcome() -> None:
+    response = TaskResponse(
+        status="completed",
+        output={
+            "platform": "xiaohongshu",
+            "topic": "AI时代的副业",
+            "campaign_summary": "Prepared a reviewed 30-day workflow.",
+            "publish": {"status": "published"},
+        },
+        run_id="r-published",
+        thread_id="t-published",
+        agent="xhs_growth",
+        strategy="workflow",
+        conversation_id="c-published",
+        governance={},
+        audit_events=[],
+    )
+
+    assert format_response_text(response) == ("已完成“AI时代的副业”主题研究、文案审核与发布。")

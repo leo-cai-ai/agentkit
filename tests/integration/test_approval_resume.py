@@ -1,7 +1,17 @@
+from pathlib import Path
+
 import pytest
 
 from agentkit.core.contracts import TaskRequest
 from tests.integration.test_unified_agent_graph import _build_gateway
+
+
+def test_runtime_uses_public_langgraph_interrupt_api() -> None:
+    source = Path("src/agentkit/core/langgraph_agent.py").read_text(encoding="utf-8")
+
+    assert "NodeInterrupt" not in source
+    assert "from langgraph.types import Command, interrupt" in source
+    assert "Command(resume=True)" in source
 
 
 def test_resume_rejects_invalid_decisions(tmp_path) -> None:

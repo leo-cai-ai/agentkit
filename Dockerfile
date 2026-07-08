@@ -41,7 +41,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     VIRTUAL_ENV=/opt/venv \
     PATH="/opt/venv/bin:$PATH" \
     # The package is pip-installed into the venv, so it can't derive the config
-    # root from __file__. Pin it to /app where tenants/prompts/skills are copied
+    # root from __file__. Pin it to /app where tenants/agents/contexts/skills are copied
     # and the data volume is mounted.
     AGENTKIT_ROOT=/app
 
@@ -59,7 +59,8 @@ WORKDIR /app
 
 COPY --from=builder /opt/venv /opt/venv
 COPY src ./src
-COPY prompts ./prompts
+COPY agents ./agents
+COPY contexts ./contexts
 COPY skills ./skills
 COPY tenants ./tenants
 

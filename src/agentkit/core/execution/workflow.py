@@ -6,6 +6,14 @@ from .models import OrchestrationMode, StrategyRequest, StrategyResult
 from .protocol import ExecutionContext
 from .selector import StrategyPolicyError
 
+_WORKFLOW_TERMINAL_STATUSES = {
+    "completed",
+    "blocked",
+    "failed",
+    "needs_clarification",
+    "rejected",
+}
+
 
 class WorkflowStrategy:
     name = "workflow"
@@ -30,8 +38,14 @@ class WorkflowStrategy:
             summary=summary,
             metadata={"skill": skill.name, "run_id": context.run_id},
         ).ref()
+        if "deferred_action" in output:
+            status = "deferred_action"
+        else:
+            status = str(output.get("workflow_status") or "completed")
+            if status not in _WORKFLOW_TERMINAL_STATUSES:
+                raise StrategyPolicyError(f"Workflow 返回了非法终态: {status}")
         return StrategyResult(
-            status="deferred_action" if "deferred_action" in output else "completed",
+            status=status,
             output=output,
             artifacts=(artifact,),
         )

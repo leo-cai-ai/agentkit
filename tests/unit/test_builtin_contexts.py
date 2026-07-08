@@ -6,7 +6,10 @@ from agentkit.core.context.registry import ContextRegistry
 
 EXPECTED = {
     "runtime.intent": "json",
+    "runtime.input-resolve": "json",
     "runtime.capability-route": "json",
+    "runtime.agent-route": "json",
+    "runtime.general-answer": "text",
     "runtime.react-action": "json",
     "runtime.plan-generate": "json",
     "runtime.memory-extract": "json",
@@ -15,6 +18,7 @@ EXPECTED = {
     "runtime.rag-rerank": "json",
     "skill.candidate-rank.summary": "text",
     "skill.xhs-growth-campaign.article-generate": "text",
+    "skill.xhs-growth-campaign.article-revise": "text",
     "skill.xhs-growth-campaign.content-review": "json",
 }
 
@@ -33,8 +37,7 @@ def test_builtin_contexts_never_enable_rendered_content_audit() -> None:
     registry = ContextRegistry(root=Path("contexts"), tenant_selector="company_alpha")
 
     assert all(
-        not registry.get(context_id).model.audit.record_rendered_content
-        for context_id in EXPECTED
+        not registry.get(context_id).model.audit.record_rendered_content for context_id in EXPECTED
     )
 
 
@@ -42,10 +45,6 @@ def test_business_contexts_use_unambiguous_directory() -> None:
     assert Path("contexts/business").is_dir()
     assert not Path("contexts/skills").exists()
     registry = ContextRegistry(root=Path("contexts"), tenant_selector="company_alpha")
-    business = [
-        item for item in registry.manifest() if str(item["id"]).startswith("skill.")
-    ]
-    assert len(business) == 3
-    assert all(
-        registry.get(str(item["id"])).model.owner_skill for item in business
-    )
+    business = [item for item in registry.manifest() if str(item["id"]).startswith("skill.")]
+    assert len(business) == 4
+    assert all(registry.get(str(item["id"])).model.owner_skill for item in business)

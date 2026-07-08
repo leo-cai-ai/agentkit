@@ -81,6 +81,27 @@ def test_build_vector_store_rejects_unknown_backend(store):
         build_vector_store(_Settings(), store)
 
 
+def test_sqlite_vectors_delete_only_matching_source(vectors):
+    scope = MemoryScope("t1", "xhs_growth", "u1")
+    vectors.add(
+        scope=scope,
+        text="删除",
+        embedding=[1.0],
+        source_conversation_id="c1",
+    )
+    vectors.add(
+        scope=scope,
+        text="保留",
+        embedding=[0.0],
+        source_conversation_id="c2",
+    )
+
+    deleted = vectors.delete_by_source(tenant_id="t1", user_id="u1", source_conversation_id="c1")
+
+    assert deleted == 1
+    assert [hit.text for hit in vectors.query(scope=scope, embedding=[0.0], k=10)] == ["保留"]
+
+
 def test_cosine_edges():
     assert cosine([0.0, 0.0], [1.0, 1.0]) == 0.0
     assert cosine([1.0, 0.0], [1.0, 0.0]) == pytest.approx(1.0)

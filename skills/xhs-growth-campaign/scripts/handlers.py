@@ -13,6 +13,7 @@ from typing import Any
 
 from agentkit.core.context.models import ContextRenderRequest
 from agentkit.core.contracts import SkillContext
+from agentkit.core.review import ReviewDecision, ReviewLoop, ReviewPolicy
 from agentkit.core.workflow import WorkflowRunner
 
 DOMAIN = "marketing.social_growth"
@@ -24,6 +25,7 @@ COMPARE_SKILL = "xhs.case.compare"
 STRATEGY_SKILL = "xhs.strategy.plan"
 COPY_SKILL = "xhs.copy.generate"
 REVIEW_SKILL = "xhs.copy.review"
+REVISE_SKILL = "xhs.copy.revise"
 PUBLISH_SKILL = "xhs.publish.prepare"
 METRICS_SKILL = "xhs.metrics.track"
 
@@ -35,6 +37,7 @@ XHS_WORKFLOW_SKILLS = [
     STRATEGY_SKILL,
     COPY_SKILL,
     REVIEW_SKILL,
+    REVISE_SKILL,
     PUBLISH_SKILL,
     METRICS_SKILL,
 ]
@@ -138,26 +141,70 @@ def run_growth_campaign(ctx: SkillContext, args: dict) -> dict:
         allowed_tools=[],
         artifact_kind="xhs.copy.generate",
     )
-    review = runner.run_step(
-        step_name=REVIEW_SKILL,
-        handler=review_copy,
-        args={
-            **base,
-            "article": copy.output["article"],
-            "strategy": strategy.output["strategy"],
-            "top_cases": research.output["top_cases"],
-            "research_quality": research.output["research_quality"],
-        },
-        allowed_tools=[],
-        artifact_kind="xhs.copy.review",
+
+    def review_candidate(article: dict, attempt: int) -> ReviewDecision:
+        reviewed = runner.run_step(
+            step_name=REVIEW_SKILL,
+            handler=review_copy,
+            args={
+                **base,
+                "article": article,
+                "strategy": strategy.output["strategy"],
+                "top_cases": research.output["top_cases"],
+                "research_quality": research.output["research_quality"],
+            },
+            allowed_tools=[],
+            artifact_kind="xhs.copy.review",
+            metadata={"attempt": attempt},
+        )
+        raw_review = dict(reviewed.output["review"])
+        status = (
+            "passed"
+            if raw_review.get("status") in {"approved", "approved_with_warnings"}
+            else "revisable"
+        )
+        return ReviewDecision(
+            status=status,
+            reason=str(raw_review.get("reason") or raw_review.get("status") or ""),
+            findings=tuple(raw_review.get("findings") or ()),
+            metadata={"review": raw_review},
+        )
+
+    def revise_candidate(
+        article: dict,
+        decision: ReviewDecision,
+        attempt: int,
+    ) -> dict:
+        revised = runner.run_step(
+            step_name=REVISE_SKILL,
+            handler=revise_copy,
+            args={
+                **base,
+                "article": article,
+                "review": decision.metadata["review"],
+                "research_quality": research.output["research_quality"],
+            },
+            allowed_tools=[],
+            artifact_kind="xhs.copy.revise",
+            metadata={"attempt": attempt},
+        )
+        return dict(revised.output["article"])
+
+    review_loop = ReviewLoop(ctx.skill.review or ReviewPolicy())
+    review_result = review_loop.run(
+        dict(copy.output["article"]),
+        review=review_candidate,
+        revise=revise_candidate,
     )
+    article = dict(review_result.candidate)
+    review = dict(review_result.decision.metadata["review"])
     publish = runner.run_step(
         step_name=PUBLISH_SKILL,
         handler=prepare_publish,
         args={
             **base,
-            "article": copy.output["article"],
-            "review": review.output["review"],
+            "article": article,
+            "review": review,
         },
         allowed_tools=["xhs.rpa.create_publish_package"],
         artifact_kind="xhs.publish.prepare",
@@ -165,8 +212,8 @@ def run_growth_campaign(ctx: SkillContext, args: dict) -> dict:
     deferred_action = build_publish_deferred_action(
         ctx=ctx,
         base=base,
-        article=copy.output["article"],
-        review=review.output["review"],
+        article=article,
+        review=review,
         publish=publish.output["publish"],
     )
     if publish.output["publish"].get("status") == "blocked":
@@ -189,6 +236,17 @@ def run_growth_campaign(ctx: SkillContext, args: dict) -> dict:
         )
         metrics_output = metrics.output["metrics"]
 
+    blocked = review_result.decision.status == "blocked"
+    language = detect_language(ctx.request.text)
+    campaign_summary = (
+        (
+            "内容审核未通过，自动修订一次后仍未达到发布标准，未进入发布。"
+            if language == "zh-CN"
+            else "Content review remained blocked after one revision; publication was not prepared."
+        )
+        if blocked
+        else ""
+    )
     return {
         "campaign_id": base["campaign_id"],
         "platform": "xiaohongshu",
@@ -197,17 +255,17 @@ def run_growth_campaign(ctx: SkillContext, args: dict) -> dict:
         "top_n": base["top_n"],
         "growth_goal": base["goal"],
         "cadence": base["cadence"],
-        "campaign_summary": (
-            f"Prepared a reviewed {base['goal']['days']}-day Xiaohongshu workflow targeting "
-            f"{base['goal']['target_followers']} new followers with {base['cadence']} publishing."
-        ),
+        "campaign_summary": campaign_summary,
+        "workflow_status": "blocked" if blocked else "completed",
         "workflow_trace": runner.compact_trace(),
         "top_cases": research.output["top_cases"],
         "research_quality": research.output["research_quality"],
         "comparison": compared.output["comparison"],
         "strategy": strategy.output["strategy"],
-        "article": copy.output["article"],
-        "review": review.output["review"],
+        "article": article,
+        "review": review,
+        "review_history": [dict(decision.metadata["review"]) for decision in review_result.history],
+        "revision_count": review_result.revision_count,
         "publish": publish.output["publish"],
         "metrics": metrics_output,
         **({"deferred_action": deferred_action} if deferred_action else {}),
@@ -252,6 +310,52 @@ def assess_research_quality(
         name: sum(int(case.get(name, 0)) > 0 for case in top_cases)
         for name in ("likes", "saves", "comments")
     }
+    media_status_counts = {"completed": 0, "skipped": 0, "failed": 0}
+    media_evidence: list[dict[str, Any]] = []
+    cases_with_media_evidence: set[str] = set()
+    for case in top_cases:
+        understanding = _normalize_media_understanding(case.get("media_understanding"))
+        status = str(understanding["status"])
+        media_status_counts[status] += 1
+        valid_evidence = [
+            item
+            for item in understanding["evidence"]
+            if isinstance(item, dict) and str(item.get("text") or "").strip()
+        ]
+        note_id = str(case.get("note_id") or "")
+        if note_id and valid_evidence:
+            cases_with_media_evidence.add(note_id)
+        for raw_evidence in valid_evidence:
+            if len(media_evidence) >= 20:
+                break
+            if not isinstance(raw_evidence, dict):
+                continue
+            text = str(raw_evidence.get("text") or "").strip()
+            media_evidence.append(
+                {
+                    "note_id": note_id,
+                    "asset_id": str(raw_evidence.get("asset_id") or ""),
+                    "text": text[:500],
+                    "provider": str(raw_evidence.get("provider") or ""),
+                    "model": str(raw_evidence.get("model") or ""),
+                    "confidence": raw_evidence.get("confidence"),
+                }
+            )
+    grounded_case_count = sum(
+        bool(case.get("detail_enriched"))
+        or str(case.get("note_id") or "") in cases_with_media_evidence
+        for case in top_cases
+    )
+    detail_attempted_count = sum(bool(case.get("detail_attempted")) for case in top_cases)
+    detail_failed_count = sum(
+        bool(case.get("detail_attempted")) and not bool(case.get("detail_enriched"))
+        for case in top_cases
+    )
+    detail_skipped_count = sum(
+        not bool(case.get("detail_attempted"))
+        and bool(str(case.get("detail_skipped_reason") or "").strip())
+        for case in top_cases
+    )
     warnings: list[str] = []
     is_zh = language == "zh-CN"
     detail_errors = sorted(
@@ -320,7 +424,7 @@ def assess_research_quality(
 
     if observed < requested_top_n:
         status = "insufficient"
-    elif detail_count < observed:
+    elif grounded_case_count < observed:
         status = "limited"
     else:
         status = "sufficient_for_draft"
@@ -329,9 +433,16 @@ def assess_research_quality(
         "requested_count": requested_top_n,
         "observed_count": observed,
         "detail_count": detail_count,
+        "detail_attempted_count": detail_attempted_count,
+        "detail_failed_count": detail_failed_count,
+        "detail_skipped_count": detail_skipped_count,
+        "grounded_case_count": grounded_case_count,
         "dated_count": dated_count,
         "metric_coverage": metric_coverage,
         "detail_errors": detail_errors,
+        "media_status_counts": media_status_counts,
+        "media_evidence_count": len(media_evidence),
+        "media_evidence": media_evidence,
         "official_daily_rank": False,
         "recurring_schedule_configured": False,
         "warnings": warnings,
@@ -434,6 +545,42 @@ def generate_copy(ctx: SkillContext, args: dict) -> dict:
     }
 
 
+def revise_copy(ctx: SkillContext, args: dict) -> dict:
+    """根据审核意见修订一次，并保留来源与内部治理字段。"""
+
+    original = dict(args.get("article") or {})
+    generated = ctx.context_invoker.invoke_streaming(
+        ContextRenderRequest(
+            context_id="skill.xhs-growth-campaign.article-revise",
+            tenant_id=ctx.tenant_id,
+            tenant_selector=ctx.tenant_selector,
+            run_id=ctx.run_id,
+            agent=ctx.agent,
+            skill=ctx.skill,
+            values={
+                "skill.article": original,
+                "skill.review": dict(args.get("review") or {}),
+                "skill.research_quality": dict(args.get("research_quality") or {}),
+                "request.language": detect_language(ctx.request.text),
+            },
+            global_token_limit=_context_token_limit(ctx),
+        )
+    ).value
+    title, body = _parse_generated_article(
+        str(generated),
+        fallback_title=str(original.get("title") or args.get("topic") or ""),
+    )
+    revised = dict(original)
+    title_limit = int(ctx.tenant_config.get("social_growth", {}).get("title_max_chars", 20))
+    revised["title"] = title[:title_limit]
+    revised["body"] = body
+    revised["generated_by"] = "llm_revision"
+    return {
+        "summary": f"Revised copy once for {args.get('topic', '')}.",
+        "article": revised,
+    }
+
+
 def review_copy(ctx: SkillContext, args: dict) -> dict:
     article = dict(args.get("article", {}))
     top_cases = list(args.get("top_cases", []))
@@ -504,10 +651,18 @@ def review_copy(ctx: SkillContext, args: dict) -> dict:
         status = "approved_with_warnings"
     else:
         status = "approved"
+    reason = ""
+    if llm_review:
+        reason = str(llm_review.get("reason") or "")
+    if not reason and status == "failed":
+        reason = "; ".join(
+            str(item.get("message") or "") for item in findings if item.get("severity") == "error"
+        )
     return {
         "summary": f"Copy review status: {status}.",
         "review": {
             "status": status,
+            "reason": reason,
             "findings": findings,
             "brand_safe": status != "failed",
             "requires_human_approval": True,
@@ -745,22 +900,9 @@ def topic_source_for(*, text: str) -> str:
 
 
 def _extract_explicit_topic(text: str) -> str:
-    patterns = [
-        r"(?:围绕|关于)\s*[“\"「『]([^”\"」』\r\n]{1,100})[”\"」』]",
-        r"(?:主题(?:是|为)?|选题)\s*[:：]\s*[“\"「『]?([^”\"」』，,。；;\r\n]{1,100})",
-        r"(?:about|topic:)\s*([^.，,;；\r\n]{1,100})",
-        (
-            r"(?:围绕|关于)\s*([^，,。；;\r\n]{1,100}?)"
-            r"(?=\s*(?:，|,|。|；|;|研究|搜索|整理|分析|$))"
-        ),
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match:
-            topic = match.group(1).strip().strip('“”"「」『』')
-            if topic:
-                return topic
-    return ""
+    from agentkit.core.intent import extract_topic_from_text
+
+    return extract_topic_from_text(text)
 
 
 def compare_cases(top_cases: list[dict], *, language: str = "en") -> list[dict]:
@@ -941,6 +1083,19 @@ def _maybe_llm_article(
                 "saves": case.get("saves", 0),
                 "comments": case.get("comments", 0),
                 "excerpt": str(case.get("content") or case.get("insight") or "")[:800],
+                "media_evidence": [
+                    {
+                        "asset_id": str(item.get("asset_id") or ""),
+                        "text": str(item.get("text") or "")[:500],
+                        "provider": str(item.get("provider") or ""),
+                        "model": str(item.get("model") or ""),
+                        "confidence": item.get("confidence"),
+                    }
+                    for item in _normalize_media_understanding(case.get("media_understanding"))[
+                        "evidence"
+                    ][:10]
+                    if isinstance(item, dict) and str(item.get("text") or "").strip()
+                ],
                 "score": _case_engagement_score(case),
             }
         )
@@ -966,9 +1121,7 @@ def _maybe_llm_article(
             global_token_limit=_context_token_limit(ctx),
         )
     ).value
-    title, body = _parse_generated_article(
-        str(generated), fallback_title=str(article["title"])
-    )
+    title, body = _parse_generated_article(str(generated), fallback_title=str(article["title"]))
 
     enriched = dict(article)
     enriched["title"] = title
@@ -1023,6 +1176,36 @@ def compact_cases(cases: list[dict]) -> list[dict]:
             "captured_at": case.get("captured_at", ""),
             "detail_enriched": bool(case.get("detail_enriched")),
             "detail_error": case.get("detail_error", ""),
+            "detail_attempted": bool(case.get("detail_attempted")),
+            "detail_skipped_reason": case.get("detail_skipped_reason", ""),
+            "media_assets": [
+                dict(item) for item in case.get("media_assets", []) if isinstance(item, dict)
+            ],
+            "media_understanding": _normalize_media_understanding(case.get("media_understanding")),
         }
         for case in cases
     ]
+
+
+def _normalize_media_understanding(value: Any) -> dict[str, Any]:
+    """规范化 Provider 结果，并为 Mock 或旧数据补充显式跳过状态。"""
+
+    if not isinstance(value, dict):
+        return {
+            "status": "skipped",
+            "provider": "none",
+            "evidence": [],
+            "reason": "not_configured",
+            "usage": {},
+        }
+    status = str(value.get("status") or "failed")
+    if status not in {"completed", "skipped", "failed"}:
+        status = "failed"
+    evidence = value.get("evidence")
+    return {
+        "status": status,
+        "provider": str(value.get("provider") or "unknown"),
+        "evidence": [dict(item) for item in evidence or [] if isinstance(item, dict)],
+        "reason": str(value.get("reason") or ""),
+        "usage": dict(value.get("usage") or {}),
+    }

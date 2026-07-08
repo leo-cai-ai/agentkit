@@ -9,14 +9,14 @@ from __future__ import annotations
 
 import hashlib
 import html
-import io
 import json
 import re
 import zipfile
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+
+from agentkit.core.ocr import OcrProvider
 
 from .base import KnowledgeDocument
 
@@ -32,15 +32,10 @@ SUPPORTED_EXTENSIONS = {
 }
 
 
-class ImageAnalyzer(Protocol):
-    def analyze(self, image_bytes: bytes, *, mime_type: str, hint: str = "") -> str: ...
-
-
 @dataclass(frozen=True)
 class DocumentLoadOptions:
     recursive: bool = True
     ocr_enabled: bool = False
-    ocr_languages: str = "eng+chi_sim"
     min_page_text_chars: int = 40
     include_hidden_files: bool = False
     max_file_bytes: int = 50 * 1024 * 1024
@@ -51,30 +46,6 @@ class FileLoadReport:
     documents: list[KnowledgeDocument] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
-
-
-class TesseractImageAnalyzer:
-    """OCR image bytes with pytesseract.
-
-    Requires the Python packages from ``agentkit[rag]`` and a system tesseract
-    binary. Docker images can install ``tesseract-ocr`` plus language packs.
-    """
-
-    def __init__(self, *, languages: str = "eng+chi_sim") -> None:
-        self._languages = languages
-
-    def analyze(self, image_bytes: bytes, *, mime_type: str, hint: str = "") -> str:
-        try:
-            import pytesseract
-            from PIL import Image
-        except ImportError as exc:  # pragma: no cover - optional dependency
-            raise RuntimeError(
-                "OCR requires the RAG optional dependencies. Install with: "
-                "pip install 'agentkit[rag]'"
-            ) from exc
-        image = Image.open(io.BytesIO(image_bytes))
-        text = pytesseract.image_to_string(image, lang=self._languages)
-        return _clean_text(text)
 
 
 class DocumentFolderLoader:
@@ -88,12 +59,10 @@ class DocumentFolderLoader:
         self,
         *,
         options: DocumentLoadOptions | None = None,
-        image_analyzer: ImageAnalyzer | None = None,
+        ocr_provider: OcrProvider | None = None,
     ) -> None:
         self._options = options or DocumentLoadOptions()
-        self._image_analyzer = image_analyzer
-        if self._options.ocr_enabled and self._image_analyzer is None:
-            self._image_analyzer = TesseractImageAnalyzer(languages=self._options.ocr_languages)
+        self._ocr_provider = ocr_provider
 
     def load_path(
         self,
@@ -271,7 +240,8 @@ class DocumentFolderLoader:
         page_texts: Sequence[str],
         warnings: list[str],
     ) -> list[dict]:
-        if self._image_analyzer is None:
+        provider = self._ocr_provider
+        if provider is None:
             return []
         try:
             import fitz
@@ -288,11 +258,12 @@ class DocumentFolderLoader:
                 pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
                 image_bytes = pix.tobytes("png")
                 try:
-                    text = self._image_analyzer.analyze(
+                    result = provider.analyze(
                         image_bytes,
                         mime_type="image/png",
                         hint=f"{path.name} page {page_index}",
                     )
+                    text = result.text.strip() if result.status == "completed" else ""
                 except Exception as exc:  # noqa: BLE001
                     warnings.append(f"OCR failed on page {page_index}: {exc}")
                     continue
@@ -338,14 +309,14 @@ class DocumentFolderLoader:
                         "metadata": {"table_index": table_index},
                     }
                 )
-        if self._options.ocr_enabled and self._image_analyzer is not None:
+        if self._options.ocr_enabled and self._ocr_provider is not None:
             blocks.extend(self._extract_docx_image_ocr(path, warnings))
         text = "\n\n".join(str(block["text"]) for block in blocks)
         return text, blocks, warnings
 
     def _extract_docx_image_ocr(self, path: Path, warnings: list[str]) -> list[dict]:
-        analyzer = self._image_analyzer
-        if analyzer is None:
+        provider = self._ocr_provider
+        if provider is None:
             return []
         out: list[dict] = []
         with zipfile.ZipFile(path) as archive:
@@ -355,11 +326,12 @@ class DocumentFolderLoader:
                 suffix = Path(name).suffix.lower().lstrip(".") or "png"
                 mime_type = f"image/{'jpeg' if suffix in {'jpg', 'jpeg'} else suffix}"
                 try:
-                    text = analyzer.analyze(
+                    result = provider.analyze(
                         archive.read(name),
                         mime_type=mime_type,
                         hint=f"{path.name}:{name}",
                     )
+                    text = result.text.strip() if result.status == "completed" else ""
                 except Exception as exc:  # noqa: BLE001
                     warnings.append(f"OCR failed on embedded image {name}: {exc}")
                     continue
@@ -407,8 +379,6 @@ __all__ = [
     "DocumentFolderLoader",
     "DocumentLoadOptions",
     "FileLoadReport",
-    "ImageAnalyzer",
     "SUPPORTED_EXTENSIONS",
-    "TesseractImageAnalyzer",
     "load_eval_dataset",
 ]

@@ -25,6 +25,28 @@ def test_get_missing_conversation_returns_none(store):
     assert store.get_conversation("nope") is None
 
 
+def test_transition_conversation_status_is_conditional(store) -> None:
+    cid = store.create_conversation(tenant_id="t1", agent="general_agent", user_id="u1")
+
+    assert (
+        store.transition_conversation_status(
+            cid,
+            expected=("active",),
+            status="deletion_pending",
+        )
+        is True
+    )
+    assert store.get_conversation(cid)["status"] == "deletion_pending"
+    assert (
+        store.transition_conversation_status(
+            cid,
+            expected=("active",),
+            status="deletion_pending",
+        )
+        is False
+    )
+
+
 def test_add_message_updates_conversation_updated_at(store):
     cid = store.create_conversation(tenant_id="t1", agent="cs", user_id="u1")
     before = store.get_conversation(cid)["updated_at"]
@@ -33,6 +55,19 @@ def test_add_message_updates_conversation_updated_at(store):
     after = store.get_conversation(cid)["updated_at"]
     assert after >= before
     assert store.count_messages(cid) == 1
+
+
+def test_message_preserves_the_actual_assistant_agent(store):
+    cid = store.create_conversation(tenant_id="t1", agent="general_agent", user_id="u1")
+    store.add_message(
+        conversation_id=cid,
+        role="assistant",
+        content="已完成招聘分析",
+        agent_id="hr_recruiter",
+    )
+
+    message = store.all_messages(cid)[0]
+    assert message["agent_id"] == "hr_recruiter"
 
 
 def test_recent_messages_returns_last_n_chronological(store):
@@ -104,3 +139,59 @@ def test_memories_scoped_isolation(store):
     store.add_memory(tenant_id="t1", agent="other", user_id="u1", text="c", embedding=[0.0, 1.0])
     rows = store.iter_memories(tenant_id="t1", agent="cs", user_id="u1")
     assert [r["text"] for r in rows] == ["a"]
+
+
+def test_delete_conversation_removes_chat_data_and_source_memories(store) -> None:
+    cid = store.create_conversation(
+        tenant_id="t1", agent="general_agent", user_id="u1", title="待删除"
+    )
+    other = store.create_conversation(
+        tenant_id="t1", agent="general_agent", user_id="u1", title="保留"
+    )
+    store.add_message(conversation_id=cid, role="user", content="你好")
+    store.upsert_summary(
+        conversation_id=cid,
+        summary_text="摘要",
+        covered_through_message_id=1,
+    )
+    store.add_memory(
+        tenant_id="t1",
+        agent="xhs_growth",
+        user_id="u1",
+        text="来源记忆",
+        embedding=[1.0, 0.0],
+        source_conversation_id=cid,
+    )
+    store.add_memory(
+        tenant_id="t1",
+        agent="xhs_growth",
+        user_id="u1",
+        text="保留记忆",
+        embedding=[0.0, 1.0],
+        source_conversation_id=other,
+    )
+
+    counts = store.delete_conversation(cid)
+
+    assert counts == {
+        "conversations": 1,
+        "messages": 1,
+        "summaries": 1,
+        "memories": 1,
+    }
+    assert store.get_conversation(cid) is None
+    assert store.all_messages(cid) == []
+    assert store.get_summary(cid) is None
+    assert store.get_conversation(other) is not None
+    assert [
+        row["text"] for row in store.iter_memories(tenant_id="t1", agent="xhs_growth", user_id="u1")
+    ] == ["保留记忆"]
+
+
+def test_delete_missing_conversation_changes_nothing(store) -> None:
+    assert store.delete_conversation("missing") == {
+        "conversations": 0,
+        "messages": 0,
+        "summaries": 0,
+        "memories": 0,
+    }

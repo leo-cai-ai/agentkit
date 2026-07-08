@@ -43,15 +43,26 @@ capabilities:
     description: 执行完整的小红书增长 Workflow。
     entrypoint: scripts.handlers:run_growth_campaign
     execution: {reasoning: direct, orchestration: workflow, tool_policy: governed}
+    composes:
+      - xhs.trend.research
+      - xhs.case.extract
+      - xhs.case.compare
+      - xhs.strategy.plan
+      - xhs.copy.generate
+      - xhs.copy.review
+      - xhs.copy.revise
+      - xhs.publish.prepare
+      - xhs.metrics.track
     autonomy: {max_model_calls: 16, max_tool_calls: 20, max_iterations: 8, max_plan_steps: 10, max_replans: 1, max_tokens: 40000, timeout_seconds: 600}
+    review: {enabled: true, max_revisions: 1, exhausted_status: blocked}
     permissions: [content.research, content.write, content.publish]
     tools: [xhs.rpa.search_top_notes, xhs.rpa.create_publish_package, xhs.rpa.publish_note, xhs.metrics.fetch]
     input_schema:
       type: object
       required: [topic]
       properties:
-        topic: {type: string, minLength: 1, maxLength: 100}
-        top_n: {type: integer, minimum: 1, maximum: 20, default: 5}
+        topic: {type: string, minLength: 1, maxLength: 100, description: 要研究和创作的小红书主题}
+        top_n: {type: integer, minimum: 1, maximum: 20, default: 5, description: 要研究的热门内容数量}
         goal_days: {type: integer, minimum: 1, maximum: 365, default: 30}
         target_followers: {type: integer, minimum: 1, default: 10000}
         cadence: {type: string, enum: [daily, weekdays, weekly], default: daily}
@@ -68,7 +79,7 @@ capabilities:
     input_schema:
       type: object
       required: [topic]
-      properties: {topic: {type: string, minLength: 1, maxLength: 100}, top_n: {type: integer, minimum: 1, maximum: 20, default: 5}}
+      properties: {topic: {type: string, minLength: 1, maxLength: 100, description: 要研究的小红书主题}, top_n: {type: integer, minimum: 1, maximum: 20, default: 5, description: 要研究的热门内容数量}}
     output_schema: {type: object, properties: {}}
     keywords: [top, research, notes, videos, 爆款, 案例]
   - id: xhs.case.extract
@@ -121,6 +132,16 @@ capabilities:
     input_schema: {type: object, properties: {}}
     output_schema: {type: object, properties: {}}
     keywords: [review, brand, compliance, 审核]
+  - id: xhs.copy.revise
+    domain: marketing.social_growth
+    description: 根据结构化审核意见对文案进行一次受限修订。
+    entrypoint: scripts.handlers:revise_copy
+    execution: {reasoning: direct, orchestration: single, tool_policy: none}
+    permissions: [content.write]
+    tools: []
+    input_schema: {type: object, properties: {}}
+    output_schema: {type: object, properties: {}}
+    keywords: [revise, rewrite, 修订, 改写]
   - id: xhs.publish.prepare
     domain: marketing.social_growth
     description: 创建受治理的小红书发布草稿包。
