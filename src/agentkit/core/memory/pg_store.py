@@ -67,6 +67,20 @@ class PgConversationStore(ConversationStore):
 
         try:
             with self._connect() as conn:
+                if conversation_id is not None:
+                    scope = conn.execute(
+                        """
+                        SELECT tenant_id, agent, user_id, status FROM conversations
+                        WHERE id = %s FOR UPDATE
+                        """,
+                        (conversation_id,),
+                    ).fetchone()
+                    if scope is None:
+                        raise ValueError("conversation does not exist")
+                    if tuple(scope[:3]) != (tenant_id, agent, user_id):
+                        raise ValueError("conversation scope does not match")
+                    if str(scope[3]) != "active":
+                        raise ValueError("conversation must be active")
                 existing = find_existing(conn)
                 if existing is not None:
                     return existing
@@ -91,19 +105,6 @@ class PgConversationStore(ConversationStore):
                             now,
                         ),
                     )
-                else:
-                    scope = conn.execute(
-                        """
-                        SELECT tenant_id, agent, user_id FROM conversations
-                        WHERE id = %s FOR UPDATE
-                        """,
-                        (conversation_id,),
-                    ).fetchone()
-                    if scope is None:
-                        raise ValueError("conversation does not exist")
-                    if tuple(scope) != (tenant_id, agent, user_id):
-                        raise ValueError("conversation scope does not match")
-
                 ordinal = int(
                     conn.execute(
                         """
@@ -182,7 +183,9 @@ class PgConversationStore(ConversationStore):
                     user_message_id=user_message_id,
                     created=True,
                 )
-        except Exception:
+        except Exception as exc:
+            if getattr(exc, "sqlstate", None) != "23505":
+                raise
             with self._connect() as conn:
                 existing = find_existing(conn)
             if existing is not None:
@@ -277,17 +280,13 @@ class PgConversationStore(ConversationStore):
         idempotency_key: str,
     ) -> AttemptRef:
         with self._connect() as conn:
-            source = conn.execute(
+            turn = conn.execute(
                 """
-                SELECT a.id, a.status
-                FROM conversation_turns AS t
-                JOIN conversation_attempts AS a ON a.turn_id = t.id
-                WHERE t.id = %s AND a.id = %s
-                FOR UPDATE
+                SELECT id FROM conversation_turns WHERE id = %s FOR UPDATE
                 """,
-                (turn_id, retry_of_attempt_id),
+                (turn_id,),
             ).fetchone()
-            if source is None:
+            if turn is None:
                 raise ValueError("retry source does not belong to turn")
             duplicate = conn.execute(
                 """
@@ -304,6 +303,21 @@ class PgConversationStore(ConversationStore):
                     status=AttemptStatus(str(duplicate[2])),
                     created=False,
                 )
+            source = conn.execute(
+                """
+                SELECT a.attempt_no, a.status,
+                       (SELECT MAX(latest.attempt_no)
+                        FROM conversation_attempts AS latest
+                        WHERE latest.turn_id = a.turn_id)
+                FROM conversation_attempts AS a
+                WHERE a.id = %s AND a.turn_id = %s
+                """,
+                (retry_of_attempt_id, turn_id),
+            ).fetchone()
+            if source is None:
+                raise ValueError("retry source does not belong to turn")
+            if int(source[0]) != int(source[2]):
+                raise ValueError("retry source attempt must be latest")
             if str(source[1]) not in _TERMINAL_ATTEMPT_STATUSES:
                 raise ValueError("retry source attempt must be terminal")
             attempt_no = int(

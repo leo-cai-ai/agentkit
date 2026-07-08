@@ -8,12 +8,17 @@ from agentkit.core.memory.store import ConversationStore
 from agentkit.runtime.conversation_projection_models import AttemptStatus
 
 
-def _accept(store: ConversationStore, *, client_message_id: str = "client-1"):
+def _accept(
+    store: ConversationStore,
+    *,
+    client_message_id: str = "client-1",
+    conversation_id: str | None = None,
+):
     return store.accept_turn(
         tenant_id="tenant-a",
         agent="general_agent",
         user_id="u1",
-        conversation_id=None,
+        conversation_id=conversation_id,
         title="研究小红书",
         client_message_id=client_message_id,
         user_content="研究小红书 Top 5",
@@ -98,7 +103,7 @@ def test_retry_creates_new_attempt_without_copying_user_message(tmp_path) -> Non
     )
     duplicate = store.create_retry_attempt(
         turn_id=accepted.turn_id,
-        retry_of_attempt_id=accepted.attempt_id,
+        retry_of_attempt_id="missing-attempt",
         idempotency_key="retry-1",
     )
 
@@ -120,6 +125,74 @@ def test_retry_rejects_non_terminal_source_attempt(tmp_path) -> None:
             retry_of_attempt_id=accepted.attempt_id,
             idempotency_key="retry-1",
         )
+
+
+def test_retry_rejects_terminal_attempt_that_is_not_latest(tmp_path) -> None:
+    store = ConversationStore(tmp_path / "conversation.sqlite")
+    accepted = _accept(store)
+    store.transition_attempt(
+        accepted.attempt_id,
+        expected={"queued"},
+        status="failed",
+    )
+    retry = store.create_retry_attempt(
+        turn_id=accepted.turn_id,
+        retry_of_attempt_id=accepted.attempt_id,
+        idempotency_key="retry-1",
+    )
+    store.transition_attempt(
+        retry.attempt_id,
+        expected={"queued"},
+        status="failed",
+    )
+
+    with pytest.raises(ValueError, match="latest"):
+        store.create_retry_attempt(
+            turn_id=accepted.turn_id,
+            retry_of_attempt_id=accepted.attempt_id,
+            idempotency_key="retry-old-attempt",
+        )
+
+
+def test_accept_turn_rejects_non_active_existing_conversation(tmp_path) -> None:
+    store = ConversationStore(tmp_path / "conversation.sqlite")
+    conversation_id = store.create_conversation(
+        tenant_id="tenant-a",
+        agent="general_agent",
+        user_id="u1",
+        title="待删除",
+    )
+    store.transition_conversation_status(
+        conversation_id,
+        expected=("active",),
+        status="deletion_pending",
+    )
+
+    with pytest.raises(ValueError, match="active"):
+        _accept(store, conversation_id=conversation_id)
+
+    assert store.count_messages(conversation_id) == 0
+    with store._connect() as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM conversation_turns WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def test_accept_turn_checks_existing_conversation_status_before_duplicate_key(tmp_path) -> None:
+    store = ConversationStore(tmp_path / "conversation.sqlite")
+    accepted = _accept(store)
+    store.transition_conversation_status(
+        accepted.conversation_id,
+        expected=("active",),
+        status="deletion_pending",
+    )
+
+    with pytest.raises(ValueError, match="active"):
+        _accept(store, conversation_id=accepted.conversation_id)
 
 
 def test_delete_conversation_removes_projection_but_keeps_audit(tmp_path) -> None:

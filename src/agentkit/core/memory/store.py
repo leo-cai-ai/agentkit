@@ -92,6 +92,20 @@ class ConversationStore:
         try:
             with self._connect() as conn:
                 conn.execute("BEGIN IMMEDIATE")
+                if conversation_id is not None:
+                    scope = conn.execute(
+                        """
+                        SELECT tenant_id, agent, user_id, status
+                        FROM conversations WHERE id = ?
+                        """,
+                        (conversation_id,),
+                    ).fetchone()
+                    if scope is None:
+                        raise ValueError("conversation does not exist")
+                    if tuple(scope[:3]) != (tenant_id, agent, user_id):
+                        raise ValueError("conversation scope does not match")
+                    if str(scope[3]) != "active":
+                        raise ValueError("conversation must be active")
                 existing = find_existing(conn)
                 if existing is not None:
                     return existing
@@ -116,18 +130,6 @@ class ConversationStore:
                             now,
                         ),
                     )
-                else:
-                    scope = conn.execute(
-                        """
-                        SELECT tenant_id, agent, user_id FROM conversations WHERE id = ?
-                        """,
-                        (conversation_id,),
-                    ).fetchone()
-                    if scope is None:
-                        raise ValueError("conversation does not exist")
-                    if tuple(scope) != (tenant_id, agent, user_id):
-                        raise ValueError("conversation scope does not match")
-
                 ordinal = int(
                     conn.execute(
                         """
@@ -312,14 +314,20 @@ class ConversationStore:
                 )
             source = conn.execute(
                 """
-                SELECT status FROM conversation_attempts
-                WHERE id = ? AND turn_id = ?
+                SELECT a.attempt_no, a.status,
+                       (SELECT MAX(latest.attempt_no)
+                        FROM conversation_attempts AS latest
+                        WHERE latest.turn_id = a.turn_id)
+                FROM conversation_attempts AS a
+                WHERE a.id = ? AND a.turn_id = ?
                 """,
                 (retry_of_attempt_id, turn_id),
             ).fetchone()
             if source is None:
                 raise ValueError("retry source does not belong to turn")
-            if str(source[0]) not in _TERMINAL_ATTEMPT_STATUSES:
+            if int(source[0]) != int(source[2]):
+                raise ValueError("retry source attempt must be latest")
+            if str(source[1]) not in _TERMINAL_ATTEMPT_STATUSES:
                 raise ValueError("retry source attempt must be terminal")
             attempt_no = int(
                 conn.execute(

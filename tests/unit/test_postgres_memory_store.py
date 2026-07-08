@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 
+import pytest
+
 from agentkit.core import migrations
 from agentkit.core.memory.pg_store import PgConversationStore
 from agentkit.runtime.conversation_projection_models import AttemptStatus
@@ -139,9 +141,11 @@ def test_postgres_retry_locks_turn_and_returns_idempotent_attempt(monkeypatch) -
         def execute(self, sql, params):
             calls.append((sql, params))
             if "FROM conversation_turns" in sql and "FOR UPDATE" in sql:
-                return Result(("attempt-1", "failed"))
+                return Result(("turn-1",))
             if "idempotency_key = %s" in sql:
                 return Result(None)
+            if "SELECT a.attempt_no" in sql:
+                return Result((1, "failed", 1))
             if "MAX(attempt_no)" in sql:
                 return Result((2,))
             return Result()
@@ -190,3 +194,158 @@ def test_postgres_transition_attempt_uses_conditional_update(monkeypatch) -> Non
     assert changed is True
     assert "status IN (%s, %s)" in calls[0][0]
     assert all("?" not in sql for sql, _ in calls)
+
+
+def test_postgres_retry_rejects_terminal_attempt_that_is_not_latest(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class Result:
+        rowcount = 1
+
+        def __init__(self, row=None) -> None:
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class Connection:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+            if "JOIN conversation_attempts" in sql:
+                return Result(("attempt-1", "failed"))
+            if "FROM conversation_turns" in sql and "FOR UPDATE" in sql:
+                return Result(("turn-1",))
+            if "idempotency_key = %s" in sql:
+                return Result(None)
+            if "SELECT a.attempt_no" in sql:
+                return Result((1, "failed", 2))
+            if "MAX(attempt_no)" in sql:
+                return Result((3,))
+            return Result()
+
+    store = object.__new__(PgConversationStore)
+    store._settings = None
+    monkeypatch.setattr(store, "_connect", lambda: nullcontext(Connection()))
+
+    with pytest.raises(ValueError, match="latest"):
+        store.create_retry_attempt(
+            turn_id="turn-1",
+            retry_of_attempt_id="attempt-1",
+            idempotency_key="retry-old-attempt",
+        )
+
+
+def test_postgres_retry_returns_duplicate_before_validating_source(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class Result:
+        def __init__(self, row=None) -> None:
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class Connection:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+            if "a.id = %s" in sql:
+                raise AssertionError("source must not be validated for a duplicate key")
+            if "FROM conversation_turns" in sql and "FOR UPDATE" in sql:
+                return Result(("turn-1",))
+            if "idempotency_key = %s" in sql:
+                return Result(("attempt-2", 2, "queued"))
+            return Result()
+
+    store = object.__new__(PgConversationStore)
+    store._settings = None
+    monkeypatch.setattr(store, "_connect", lambda: nullcontext(Connection()))
+
+    duplicate = store.create_retry_attempt(
+        turn_id="turn-1",
+        retry_of_attempt_id="missing-attempt",
+        idempotency_key="retry-1",
+    )
+
+    assert duplicate.attempt_id == "attempt-2"
+    assert duplicate.created is False
+    assert any("idempotency_key = %s" in sql for sql, _ in calls)
+
+
+def test_postgres_accept_turn_locks_and_rejects_non_active_conversation(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class Result:
+        def __init__(self, row=None) -> None:
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class Connection:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+            if "FROM conversation_turns AS t" in sql:
+                return Result(None)
+            if "FROM conversations" in sql and "FOR UPDATE" in sql:
+                return Result(("tenant-a", "general_agent", "u1", "deletion_pending"))
+            raise AssertionError("non-active conversation must be rejected before inserts")
+
+    store = object.__new__(PgConversationStore)
+    store._settings = None
+    monkeypatch.setattr(store, "_connect", lambda: nullcontext(Connection()))
+
+    with pytest.raises(ValueError, match="active"):
+        store.accept_turn(
+            tenant_id="tenant-a",
+            agent="general_agent",
+            user_id="u1",
+            conversation_id="conversation-1",
+            title="待删除",
+            client_message_id="client-1",
+            user_content="不要新增",
+            user_token_estimate=4,
+        )
+
+    scope_sql = next(sql for sql, _ in calls if "FROM conversations" in sql)
+    assert "status" in scope_sql
+    assert "FOR UPDATE" in scope_sql
+
+
+def test_postgres_accept_turn_checks_status_before_duplicate_key(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class Result:
+        def __init__(self, row=None) -> None:
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class Connection:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+            if "FROM conversations" in sql and "FOR UPDATE" in sql:
+                return Result(("tenant-a", "general_agent", "u1", "deletion_pending"))
+            if "FROM conversation_turns AS t" in sql:
+                return Result(("conversation-1", "turn-1", "attempt-1", 1))
+            raise AssertionError("non-active conversation must be rejected before inserts")
+
+    store = object.__new__(PgConversationStore)
+    store._settings = None
+    monkeypatch.setattr(store, "_connect", lambda: nullcontext(Connection()))
+
+    with pytest.raises(ValueError, match="active"):
+        store.accept_turn(
+            tenant_id="tenant-a",
+            agent="general_agent",
+            user_id="u1",
+            conversation_id="conversation-1",
+            title="待删除",
+            client_message_id="client-1",
+            user_content="不要新增",
+            user_token_estimate=4,
+        )
+
+    assert "FROM conversations" in calls[0][0]
