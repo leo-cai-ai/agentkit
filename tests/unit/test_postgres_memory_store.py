@@ -772,3 +772,82 @@ def test_postgres_timeline_projection_batches_attempt_children(monkeypatch) -> N
     assert sum("FROM messages" in sql for sql, _ in calls) == 1
     assert sum("FROM conversation_actions" in sql for sql, _ in calls) == 1
     assert all("?" not in sql for sql, _ in calls)
+
+
+def test_postgres_open_active_message_locks_attempt_before_insert(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class Result:
+        def __init__(self, row=None, inserted_id=None) -> None:
+            self._row = row
+            self._inserted_id = inserted_id
+
+        def fetchone(self):
+            if self._inserted_id is not None:
+                return (self._inserted_id,)
+            return self._row
+
+    class Connection:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+            if "FROM conversation_attempts" in sql:
+                return Result(("running", "turn-1", "conversation-1"))
+            if "SELECT id FROM messages" in sql:
+                return Result()
+            if "INSERT INTO messages" in sql:
+                return Result(inserted_id=9)
+            raise AssertionError(sql)
+
+    store = object.__new__(PgConversationStore)
+    store._settings = None
+    monkeypatch.setattr(store, "_connect", lambda: nullcontext(Connection()))
+
+    message_id = store.open_active_attempt_message(
+        conversation_id="conversation-1",
+        turn_id="turn-1",
+        attempt_id="attempt-1",
+        role="assistant",
+        kind="assistant_output",
+        content="",
+        agent_id="xhs_growth",
+    )
+
+    assert message_id == 9
+    assert "FOR UPDATE" in calls[0][0]
+    assert "SELECT id FROM messages" in calls[1][0]
+    assert "INSERT INTO messages" in calls[2][0]
+    assert all("?" not in sql for sql, _ in calls)
+
+
+def test_postgres_open_active_message_rejects_terminal_before_insert(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class Result:
+        def fetchone(self):
+            return ("failed", "turn-1", "conversation-1")
+
+    class Connection:
+        def execute(self, sql, params):
+            del params
+            calls.append(sql)
+            if "FROM conversation_attempts" in sql:
+                return Result()
+            raise AssertionError("terminal attempt must be rejected before insert")
+
+    store = object.__new__(PgConversationStore)
+    store._settings = None
+    monkeypatch.setattr(store, "_connect", lambda: nullcontext(Connection()))
+
+    with pytest.raises(ValueError, match="active"):
+        store.open_active_attempt_message(
+            conversation_id="conversation-1",
+            turn_id="turn-1",
+            attempt_id="attempt-1",
+            role="assistant",
+            kind="assistant_output",
+            content="",
+            agent_id="xhs_growth",
+        )
+
+    assert len(calls) == 1
+    assert "FOR UPDATE" in calls[0]

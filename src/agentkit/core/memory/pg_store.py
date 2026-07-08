@@ -36,6 +36,7 @@ class PgConversationStore(ConversationStore):
 
     _projection_placeholder = "%s"
     _projection_lock_suffix = " FOR UPDATE"
+    _projection_returning_id = " RETURNING id"
 
     def __init__(self, settings: Any = None) -> None:
         self._settings = settings

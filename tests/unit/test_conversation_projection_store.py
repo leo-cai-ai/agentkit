@@ -11,6 +11,7 @@ from agentkit.core.memory.store import ConversationConflictError, ConversationSt
 from agentkit.runtime.conversation_projection_models import ActionStatus, AttemptStatus
 
 _PROJECTION_READ_API = (
+    "open_active_attempt_message",
     "get_projection_message",
     "get_attempt_output",
     "finalize_attempt_output",
@@ -26,6 +27,68 @@ def test_projection_public_api_matches_between_sqlite_and_postgres() -> None:
         sqlite_method = getattr(ConversationStore, method_name)
         postgres_method = getattr(PgConversationStore, method_name)
         assert inspect.signature(sqlite_method) == inspect.signature(postgres_method)
+
+
+def test_open_active_attempt_message_checks_status_inside_write_transaction(
+    tmp_path, monkeypatch
+) -> None:
+    store = ConversationStore(tmp_path / "conversation.sqlite")
+    accepted = _accept(store)
+    statements: list[str] = []
+    original_connect = store._connect
+
+    def traced_connect():
+        conn = original_connect()
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    monkeypatch.setattr(store, "_connect", traced_connect)
+
+    message_id = store.open_active_attempt_message(
+        conversation_id=accepted.conversation_id,
+        turn_id=accepted.turn_id,
+        attempt_id=accepted.attempt_id,
+        role="assistant",
+        kind="assistant_output",
+        content="",
+        agent_id="xhs_growth",
+    )
+
+    normalized = [" ".join(statement.split()).upper() for statement in statements]
+    begin_index = normalized.index("BEGIN IMMEDIATE")
+    status_index = next(
+        index
+        for index, statement in enumerate(normalized)
+        if "SELECT A.STATUS" in statement and "FROM CONVERSATION_ATTEMPTS AS A" in statement
+    )
+    insert_index = next(
+        index for index, statement in enumerate(normalized) if "INSERT INTO MESSAGES" in statement
+    )
+    assert message_id > 0
+    assert begin_index < status_index < insert_index
+
+
+def test_open_active_attempt_message_rejects_terminal_without_insert(tmp_path) -> None:
+    store = ConversationStore(tmp_path / "conversation.sqlite")
+    accepted = _accept(store)
+    assert store.transition_attempt(
+        accepted.attempt_id,
+        expected={"queued"},
+        status="failed",
+    )
+
+    with pytest.raises(ValueError, match="active"):
+        store.open_active_attempt_message(
+            conversation_id=accepted.conversation_id,
+            turn_id=accepted.turn_id,
+            attempt_id=accepted.attempt_id,
+            role="assistant",
+            kind="assistant_output",
+            content="",
+            agent_id="xhs_growth",
+        )
+
+    assert store.count_messages(accepted.conversation_id) == 1
 
 
 def _accept(

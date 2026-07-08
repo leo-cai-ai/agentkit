@@ -308,6 +308,36 @@ def test_audit_and_metrics_never_include_message_body(tmp_path) -> None:
     assert all(sample[2]["agent_id"] for sample in metrics.samples)
 
 
+def test_terminal_project_output_records_safe_idempotent_metric(tmp_path) -> None:
+    metrics = CaptureMetrics()
+    service, accepted = projection_fixture(tmp_path, metrics=metrics)
+    message_id = service.project_output(
+        accepted=accepted,
+        run_id="run-1",
+        agent_id="xhs_growth",
+        content="第一次最终正文",
+        status=AttemptStatus.SUCCEEDED,
+    )
+
+    duplicate_id = service.project_output(
+        accepted=accepted,
+        run_id="run-1",
+        agent_id="xhs_growth",
+        content="重复调用不得记录到指标",
+        status=AttemptStatus.SUCCEEDED,
+    )
+
+    assert duplicate_id == message_id
+    duplicates = [
+        sample
+        for sample in metrics.samples
+        if sample[0] == "conversation_idempotent_duplicate_total"
+    ]
+    assert duplicates[-1][1] == 1.0
+    assert duplicates[-1][2]["command"] == "project_output"
+    assert "正文" not in repr(duplicates[-1])
+
+
 def test_timeline_for_client_message_enforces_user_scope(tmp_path) -> None:
     service, accepted = projection_fixture(tmp_path)
 

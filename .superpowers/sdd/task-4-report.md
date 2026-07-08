@@ -64,3 +64,13 @@
 - Timeline Store public primitive 改为固定批量查询：Turns、Attempts、Messages、Actions 各一次，不随 Attempt 数增长；SQLite trace 与 PostgreSQL mock query contract 均覆盖。
 
 Review RED 证据：首次运行新增 focused tests 为 `10 failed, 39 passed`，失败分别命中上述五类缺陷。修复后 review focused tests 为 `78 passed`；fresh full 为 `863 passed, 6 skipped in 63.42s`。Ruff check、Ruff format check、mypy 与 `git diff --check` 全部通过。
+
+### Final Atomicity Review
+
+最后一次审查以 TDD 修复 streaming open 的并发窗口：
+
+- 新增 Store public `open_active_attempt_message`。SQLite 在 `BEGIN IMMEDIATE` 后读取 Attempt status/scope、复用现有 streaming Message 或插入新 Message；PostgreSQL 对 Attempt 执行 `SELECT ... FOR UPDATE` 后完成同样流程。Service 不再先查 Attempt active 再写入，因此终态迁移与 Message 插入不能并发穿透。
+- terminal `project_output` 幂等 early return 现在记录 `conversation_idempotent_duplicate_total`，仅含 tenant、Agent 与 command，不含正文。
+- SQLite trace 测试验证 `BEGIN IMMEDIATE → status check → insert` 顺序；PostgreSQL mock contract 验证 `FOR UPDATE`、existing lookup、insert 与 terminal-before-insert 拒绝。
+
+Final RED 为 `6 failed`；修复后 targeted 为 `6 passed`，相关 focused 为 `83 passed`。本轮改动局部，按主代理指令不重复 full；最近一次 full 仍为上一节记录的 `863 passed, 6 skipped`。

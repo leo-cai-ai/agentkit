@@ -181,33 +181,19 @@ class ConversationProjectionService:
         run_id: str,
         agent_id: str,
     ) -> int:
-        attempt = self._validate_accepted(accepted, run_id=run_id)
-        if str(attempt["status"]) not in _ACTIVE_STATUSES:
-            raise ValueError("attempt must be active to open streaming output")
-        existing = self._output_message(accepted.attempt_id, state="streaming")
-        if existing is not None:
-            self._checkpoints[int(existing["id"])] = (
-                self._clock(),
-                len(str(existing.get("content") or "")),
-            )
-            return int(existing["id"])
-        try:
-            message_id = self._store.open_attempt_message(
-                conversation_id=accepted.conversation_id,
-                turn_id=accepted.turn_id,
-                attempt_id=accepted.attempt_id,
-                role="assistant",
-                kind="assistant_output",
-                content="",
-                agent_id=agent_id,
-            )
-        except Exception:
-            # 唯一索引竞争时，读取获胜者写入的同一条 streaming Message。
-            existing = self._output_message(accepted.attempt_id, state="streaming")
-            if existing is None:
-                raise
-            message_id = int(existing["id"])
-        self._checkpoints[message_id] = (self._clock(), 0)
+        self._validate_accepted(accepted, run_id=run_id)
+        message_id = self._store.open_active_attempt_message(
+            conversation_id=accepted.conversation_id,
+            turn_id=accepted.turn_id,
+            attempt_id=accepted.attempt_id,
+            role="assistant",
+            kind="assistant_output",
+            content="",
+            agent_id=agent_id,
+        )
+        existing = self._message(message_id)
+        checkpoint_size = len(str(existing.get("content") or "")) if existing else 0
+        self._checkpoints[message_id] = (self._clock(), checkpoint_size)
         return message_id
 
     def checkpoint_streaming_output(self, message_id: int, *, content: str) -> bool:
@@ -287,6 +273,14 @@ class ConversationProjectionService:
                 terminal = self._output_message(accepted.attempt_id)
                 if terminal is None:
                     raise ValueError("terminal attempt has no projected output")
+                scope = self._attempt_scope(accepted.attempt_id)
+                self._metric(
+                    "conversation_idempotent_duplicate_total",
+                    1,
+                    tenant_id=scope["tenant_id"],
+                    agent_id=scope["agent_id"],
+                    command="project_output",
+                )
                 return int(terminal["id"])
             message_id = self.open_streaming_output(
                 accepted=accepted,

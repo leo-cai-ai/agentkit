@@ -101,6 +101,7 @@ def _unpack_embedding(blob: bytes) -> list[float]:
 class ConversationStore:
     _projection_placeholder = "?"
     _projection_lock_suffix = ""
+    _projection_returning_id = ""
 
     def __init__(self, db_path: str | Path) -> None:
         self._db_path = Path(db_path)
@@ -372,6 +373,76 @@ class ConversationStore:
                 ),
             )
         return int(cursor.lastrowid or 0)
+
+    def open_active_attempt_message(
+        self,
+        *,
+        conversation_id: str,
+        turn_id: str,
+        attempt_id: str,
+        role: str,
+        kind: str,
+        content: str,
+        agent_id: str,
+    ) -> int:
+        """在锁定 Attempt 的同一事务中校验 active 并打开 streaming Message。"""
+        placeholder = self._projection_placeholder
+        now = round(time.time(), 3)
+        with self._connect() as conn:
+            self._begin_projection_write(conn)
+            attempt = conn.execute(
+                f"""
+                SELECT a.status, a.turn_id, t.conversation_id
+                FROM conversation_attempts AS a
+                JOIN conversation_turns AS t ON t.id = a.turn_id
+                WHERE a.id = {placeholder}{self._projection_lock_suffix}
+                """,
+                (attempt_id,),
+            ).fetchone()
+            if attempt is None or (str(attempt[1]), str(attempt[2])) != (
+                turn_id,
+                conversation_id,
+            ):
+                raise ValueError("attempt scope does not match message")
+            if str(attempt[0]) not in _NON_TERMINAL_ATTEMPT_STATUSES:
+                raise ValueError("attempt must be active to open streaming output")
+            existing = conn.execute(
+                f"""
+                SELECT id FROM messages
+                WHERE attempt_id = {placeholder} AND state = 'streaming'
+                ORDER BY id DESC LIMIT 1
+                """,
+                (attempt_id,),
+            ).fetchone()
+            if existing is not None:
+                return int(existing[0])
+            cursor = conn.execute(
+                f"""
+                INSERT INTO messages (
+                    conversation_id, role, content, agent_id, created_at, turn_id,
+                    attempt_id, kind, state, updated_at
+                ) VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder},
+                          {placeholder}, {placeholder}, {placeholder}, {placeholder},
+                          'streaming', {placeholder}){self._projection_returning_id}
+                """,
+                (
+                    conversation_id,
+                    role,
+                    content,
+                    agent_id,
+                    now,
+                    turn_id,
+                    attempt_id,
+                    kind,
+                    now,
+                ),
+            )
+            if self._projection_returning_id:
+                inserted = cursor.fetchone()
+                if inserted is None:
+                    raise RuntimeError("streaming message insert returned no id")
+                return int(inserted[0])
+            return int(cursor.lastrowid or 0)
 
     def checkpoint_attempt_message(self, message_id: int, *, content: str) -> bool:
         with self._connect() as conn:
