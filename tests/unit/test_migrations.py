@@ -141,6 +141,14 @@ def test_sqlite_store_schema_matches_v4_migration(tmp_path) -> None:
     assert direct_indexes == migrated_indexes
 
 
+def test_sqlite_migrations_take_over_store_direct_init_schema(tmp_path) -> None:
+    db_path = tmp_path / "direct-then-migrated.sqlite"
+    ConversationStore(db_path)
+
+    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4, 5]
+    assert run_sqlite_migrations(db_path) == []
+
+
 def test_sqlite_migrations_bootstrap_and_record_version(tmp_path) -> None:
     db_path = tmp_path / "runtime.sqlite"
 

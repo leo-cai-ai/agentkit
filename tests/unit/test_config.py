@@ -83,6 +83,7 @@ def test_defaults(monkeypatch):
     assert s.auth_proxy_business_roles_header == "X-Forwarded-Business-Roles"
     assert s.xhs_research_provider == "mock"
     assert s.approval_checkpointer == "sqlite"
+    assert s.conversation_recovery_interval_seconds == 30.0
     assert s.xhs_publish_media_strategy == "upload"
     assert s.xhs_text_image_style == "涂鸦"
     assert s.xhs_text_image_generation_timeout_seconds == 120.0

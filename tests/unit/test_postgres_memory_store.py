@@ -12,6 +12,9 @@ from agentkit.runtime.conversation_projection_models import ActionStatus, Attemp
 
 def test_postgres_v4_migration_uses_projection_contract() -> None:
     sql = "\n".join(migrations._POSTGRES_MIGRATIONS[4])
+    index_statements = [
+        statement for statement in migrations._POSTGRES_MIGRATIONS[4] if " INDEX " in statement
+    ]
 
     assert "CREATE TABLE IF NOT EXISTS conversations" in sql
     assert "CREATE TABLE IF NOT EXISTS messages" in sql
@@ -25,10 +28,12 @@ def test_postgres_v4_migration_uses_projection_contract() -> None:
     assert "UPDATE messages SET updated_at = created_at" in sql
     assert "CREATE INDEX IF NOT EXISTS idx_conversations_scope" in sql
     assert "CREATE INDEX IF NOT EXISTS idx_messages_conv" in sql
-    assert "CREATE UNIQUE INDEX idx_conversation_attempts_one_active" in sql
-    assert "CREATE INDEX idx_conversation_attempts_resume_lease" in sql
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_attempts_one_active" in sql
+    assert "CREATE INDEX IF NOT EXISTS idx_conversation_attempts_resume_lease" in sql
     assert "resume_lease_generation BIGINT NOT NULL DEFAULT 0" in sql
-    assert "CREATE UNIQUE INDEX idx_messages_one_streaming_per_attempt" in sql
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_one_streaming_per_attempt" in sql
+    assert index_statements
+    assert all("IF NOT EXISTS" in statement for statement in index_statements)
 
 
 def test_postgres_store_initializes_latest_projection_schema(monkeypatch) -> None:

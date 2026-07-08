@@ -156,44 +156,44 @@ _SQLITE_MIGRATIONS: dict[int, tuple[str, ...]] = {
         )
         """,
         """
-        CREATE UNIQUE INDEX idx_conversation_turns_client_message
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_turns_client_message
         ON conversation_turns(tenant_id, user_id, client_message_id)
         """,
         """
-        CREATE UNIQUE INDEX idx_conversation_turns_ordinal
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_turns_ordinal
         ON conversation_turns(conversation_id, ordinal)
         """,
         """
-        CREATE UNIQUE INDEX idx_conversation_attempts_run_id
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_attempts_run_id
         ON conversation_attempts(run_id)
         WHERE run_id IS NOT NULL
         """,
         """
-        CREATE UNIQUE INDEX idx_conversation_attempts_number
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_attempts_number
         ON conversation_attempts(turn_id, attempt_no)
         """,
         """
-        CREATE UNIQUE INDEX idx_conversation_attempts_retry_key
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_attempts_retry_key
         ON conversation_attempts(turn_id, idempotency_key)
         WHERE idempotency_key IS NOT NULL
         """,
         """
-        CREATE UNIQUE INDEX idx_conversation_attempts_one_active
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_attempts_one_active
         ON conversation_attempts(turn_id)
         WHERE status IN ('queued', 'running', 'waiting_for_approval', 'resuming')
         """,
         """
-        CREATE INDEX idx_conversation_attempts_resume_lease
+        CREATE INDEX IF NOT EXISTS idx_conversation_attempts_resume_lease
         ON conversation_attempts(status, resume_lease_expires_at)
         WHERE status = 'running'
         """,
         """
-        CREATE UNIQUE INDEX idx_conversation_actions_idempotency
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_actions_idempotency
         ON conversation_actions(attempt_id, idempotency_key)
         WHERE idempotency_key IS NOT NULL
         """,
         """
-        CREATE UNIQUE INDEX idx_messages_one_streaming_per_attempt
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_one_streaming_per_attempt
         ON messages(attempt_id)
         WHERE attempt_id IS NOT NULL AND state = 'streaming'
         """,
@@ -410,44 +410,44 @@ _POSTGRES_MIGRATIONS: dict[int, tuple[str, ...]] = {
         )
         """,
         """
-        CREATE UNIQUE INDEX idx_conversation_turns_client_message
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_turns_client_message
         ON conversation_turns(tenant_id, user_id, client_message_id)
         """,
         """
-        CREATE UNIQUE INDEX idx_conversation_turns_ordinal
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_turns_ordinal
         ON conversation_turns(conversation_id, ordinal)
         """,
         """
-        CREATE UNIQUE INDEX idx_conversation_attempts_run_id
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_attempts_run_id
         ON conversation_attempts(run_id)
         WHERE run_id IS NOT NULL
         """,
         """
-        CREATE UNIQUE INDEX idx_conversation_attempts_number
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_attempts_number
         ON conversation_attempts(turn_id, attempt_no)
         """,
         """
-        CREATE UNIQUE INDEX idx_conversation_attempts_retry_key
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_attempts_retry_key
         ON conversation_attempts(turn_id, idempotency_key)
         WHERE idempotency_key IS NOT NULL
         """,
         """
-        CREATE UNIQUE INDEX idx_conversation_attempts_one_active
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_attempts_one_active
         ON conversation_attempts(turn_id)
         WHERE status IN ('queued', 'running', 'waiting_for_approval', 'resuming')
         """,
         """
-        CREATE INDEX idx_conversation_attempts_resume_lease
+        CREATE INDEX IF NOT EXISTS idx_conversation_attempts_resume_lease
         ON conversation_attempts(status, resume_lease_expires_at)
         WHERE status = 'running'
         """,
         """
-        CREATE UNIQUE INDEX idx_conversation_actions_idempotency
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_actions_idempotency
         ON conversation_actions(attempt_id, idempotency_key)
         WHERE idempotency_key IS NOT NULL
         """,
         """
-        CREATE UNIQUE INDEX idx_messages_one_streaming_per_attempt
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_one_streaming_per_attempt
         ON messages(attempt_id)
         WHERE attempt_id IS NOT NULL AND state = 'streaming'
         """,

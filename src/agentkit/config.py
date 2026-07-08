@@ -105,6 +105,7 @@ class Settings(BaseSettings):
     # processes/workers; "none" uses waiting output plus a protected full
     # resubmit to approve.
     approval_checkpointer: Literal["memory", "sqlite", "postgres", "none"] = "sqlite"
+    conversation_recovery_interval_seconds: float = Field(default=30.0, gt=0.0)
 
     # AI provider credentials — vendor-neutral naming (consumed by the
     # customer_band provider). Canonical env vars are AI_CLIENT_ID /

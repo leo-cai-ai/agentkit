@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -145,3 +146,18 @@ def test_legacy_browser_resume_endpoint_is_disabled(client) -> None:
     )
 
     assert response.status_code == 410
+
+
+def test_reference_marks_legacy_task_approval_routes_as_http_410() -> None:
+    reference = (
+        Path(__file__).resolve().parents[2] / "docs" / "framework" / "REFERENCE.md"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        "`/api/tasks/resume`、`/approve` | — | "
+        "旧浏览器审批接口，固定返回 HTTP 410；不得用于新集成"
+    ) in reference
+    assert (
+        "`/api/tasks/resume/stream`、`/approve/stream` | — | "
+        "旧浏览器流式审批接口，固定返回 HTTP 410；不得用于新集成"
+    ) in reference

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from agentkit.core.memory.store import ConversationConflictError, ConversationStore
@@ -443,7 +445,23 @@ def test_unbound_recovery_creates_a_valid_audit_run(tmp_path) -> None:
     assert audit.events[0][1] == "conversation_projection_reconciled"
 
 
-def test_running_attempt_projects_terminal_audit_status(tmp_path) -> None:
+def test_running_attempt_projects_failed_terminal_audit_status(tmp_path) -> None:
+    store, accepted = accepted_store(tmp_path)
+    store.bind_attempt_run(accepted.attempt_id, run_id="run-terminal", agent_id="xhs_growth")
+    audit = RecordingAudit({"run-terminal": {"status": "failed"}})
+    recovery = ConversationRecoveryService(
+        store=store,
+        coordinator=FakeRecoveryCoordinator(store, checkpoint_exists=False),
+        audit=audit,
+    )
+
+    recovery.reconcile(tenant_id="tenant-a")
+
+    assert store.get_attempt(accepted.attempt_id)["status"] == "failed"
+    assert audit.events[-1][1] == "conversation_projection_reconciled"
+
+
+def test_completed_audit_without_sealed_output_is_interrupted_and_retryable(tmp_path) -> None:
     store, accepted = accepted_store(tmp_path)
     store.bind_attempt_run(accepted.attempt_id, run_id="run-terminal", agent_id="xhs_growth")
     audit = RecordingAudit({"run-terminal": {"status": "completed"}})
@@ -455,8 +473,103 @@ def test_running_attempt_projects_terminal_audit_status(tmp_path) -> None:
 
     recovery.reconcile(tenant_id="tenant-a")
 
+    attempt = store.get_attempt(accepted.attempt_id)
+    assert attempt["status"] == "interrupted"
+    assert attempt["error_code"] == "terminal_output_missing"
+    retry = store.create_retry_attempt(
+        turn_id=accepted.turn_id,
+        retry_of_attempt_id=accepted.attempt_id,
+        idempotency_key="retry-after-recovery",
+    )
+    assert retry.created is True
+
+
+def test_completed_audit_atomically_adopts_sealed_output_as_canonical(tmp_path) -> None:
+    store, accepted = accepted_store(tmp_path)
+    store.bind_attempt_run(accepted.attempt_id, run_id="run-terminal", agent_id="xhs_growth")
+    message_id = store.open_active_attempt_message(
+        conversation_id=accepted.conversation_id,
+        turn_id=accepted.turn_id,
+        attempt_id=accepted.attempt_id,
+        role="assistant",
+        kind="assistant_output",
+        content="已持久化结果",
+        agent_id="xhs_growth",
+    )
+    assert store.seal_attempt_message(message_id, content="已持久化结果", state="sealed")
+    audit = RecordingAudit({"run-terminal": {"status": "completed"}})
+    recovery = ConversationRecoveryService(
+        store=store,
+        coordinator=FakeRecoveryCoordinator(store, checkpoint_exists=False),
+        audit=audit,
+    )
+
+    recovery.reconcile(tenant_id="tenant-a")
+
     assert store.get_attempt(accepted.attempt_id)["status"] == "succeeded"
-    assert audit.events[-1][1] == "conversation_projection_reconciled"
+    turn = store.timeline_turns(accepted.conversation_id)[0]
+    assert turn["canonical_attempt_id"] == accepted.attempt_id
+
+
+@pytest.mark.parametrize(
+    ("decision", "run_status", "expected_attempt"),
+    [
+        ("approved", "failed", "failed"),
+        ("approved", "cancelled", "cancelled"),
+        ("rejected", "rejected", "rejected"),
+    ],
+)
+def test_terminal_reconciliation_preserves_durable_action_decision(
+    tmp_path,
+    decision,
+    run_status,
+    expected_attempt,
+) -> None:
+    store, _, recovery, action, audit = recovery_fixture(
+        tmp_path,
+        checkpoint_exists=False,
+        approved=decision == "approved",
+    )
+    if decision == "rejected":
+        action = store.decide_action(
+            action.id,
+            decision="rejected",
+            decided_by="u1",
+            decision_context={"roles": ["growth_manager"]},
+            idempotency_key="reject-1",
+            expected_version=action.version,
+        )
+    audit.runs["run-1"] = {"status": run_status}
+
+    recovery.reconcile(tenant_id="tenant-a")
+
+    assert store.get_action(action.id)["status"] == decision
+    assert store.get_attempt(action.attempt_id)["status"] == expected_attempt
+
+
+def test_periodic_reconciliation_has_stoppable_non_reentrant_lifecycle() -> None:
+    reconciled = threading.Event()
+
+    class EmptyStore:
+        def list_non_terminal_attempts(self, *, tenant_id: str):
+            assert tenant_id == "tenant-a"
+            reconciled.set()
+            return []
+
+    recovery = ConversationRecoveryService(
+        store=EmptyStore(),
+        coordinator=object(),
+        audit=RecordingAudit(),
+    )
+
+    assert recovery.start(tenant_id="tenant-a", interval_seconds=0.01) is True
+    worker = recovery._thread
+    assert worker is not None
+    assert recovery.start(tenant_id="tenant-a", interval_seconds=0.01) is False
+    assert reconciled.wait(1.0)
+    assert recovery.stop(timeout=1.0) is True
+    assert recovery.running is False
+    assert worker.is_alive() is False
 
 
 def test_recovery_audit_and_metrics_exclude_body_and_tool_arguments(tmp_path) -> None:

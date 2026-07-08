@@ -94,6 +94,10 @@ class AgentKitRuntime:
     # 迁移期间保留属性形状，但不再存在第二套 Chat Runtime。
     chat_service: MultiAgentCoordinator | None = None
 
+    def close(self) -> None:
+        """停止本 Runtime 创建的后台生命周期资源。"""
+        self.conversation_recovery.stop()
+
 
 def list_tenants() -> list[str]:
     """返回可用租户 ID。"""
@@ -359,6 +363,10 @@ def build_runtime(
         metrics=metrics,
     )
     conversation_recovery.reconcile(tenant_id=tenant_key)
+    conversation_recovery.start(
+        tenant_id=tenant_key,
+        interval_seconds=float(settings.conversation_recovery_interval_seconds),
+    )
     strategy_names = ("direct", "workflow", "batch", "parallel", "react", "plan_execute")
     return AgentKitRuntime(
         gateway=gateway,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 
 import pytest
 
@@ -238,6 +239,129 @@ def test_timeline_rejects_foreign_tenant_and_user_scope(client) -> None:
 
     assert client.get(f"/api/conversations/{foreign_user_id}/timeline").status_code == 404
     assert client.get(f"/api/conversations/{foreign_tenant_id}/timeline").status_code == 404
+
+
+def test_chat_projection_endpoints_reject_foreign_owner_agent(client) -> None:
+    from agentkit.web.app import get_runtime
+
+    token = _login(client)
+    runtime = get_runtime()
+    tenant_id = str(runtime.tenant_config["tenant_id"])
+    accepted = runtime.conversations.accept_turn(
+        tenant_id=tenant_id,
+        agent="xhs_growth",
+        user_id="console-admin",
+        conversation_id=None,
+        title="业务 Agent 私有会话",
+        client_message_id="foreign-owner-agent",
+        user_content="不可作为 Chat 会话读取",
+        user_token_estimate=8,
+    )
+    runtime.conversations.bind_attempt_run(
+        accepted.attempt_id,
+        run_id="foreign-owner-run",
+        agent_id="xhs_growth",
+    )
+    _, action = runtime.conversations.persist_approval_request(
+        conversation_id=accepted.conversation_id,
+        turn_id=accepted.turn_id,
+        attempt_id=accepted.attempt_id,
+        agent_id="xhs_growth",
+        visible_content="业务审批",
+        thread_id="foreign-owner-thread",
+        skills=["xhs.growth.campaign"],
+        preview={"summary": "业务审批"},
+        preview_artifact_id=None,
+    )
+
+    direct = client.get(f"/api/conversations/{accepted.conversation_id}/timeline")
+    recovered = client.get(
+        "/api/conversations/timeline",
+        query_string={"client_message_id": "foreign-owner-agent"},
+    )
+    decision = client.post(
+        f"/api/conversation-actions/{action.id}/decision",
+        json={
+            "decision": "rejected",
+            "expected_version": action.version,
+            "idempotency_key": "foreign-owner-decision",
+        },
+        headers={"X-CSRF-Token": token},
+    )
+
+    assert direct.status_code == 404
+    assert recovered.status_code == 404
+    assert decision.status_code == 404
+
+
+def test_action_decision_stream_continues_after_client_disconnect(client, monkeypatch) -> None:
+    import agentkit.core.llm_client as llm_client
+    import agentkit.web.app as app_mod
+    from agentkit.web.app import get_runtime
+
+    token = _login(client)
+    runtime = get_runtime()
+    accepted = runtime.conversation_projection.accept_user_message(
+        tenant_id=str(runtime.tenant_config["tenant_id"]),
+        user_id="console-admin",
+        conversation_id=None,
+        client_message_id="disconnect-action",
+        content="需要审批",
+        title="需要审批",
+    )
+    runtime.conversation_projection.bind_run(
+        accepted.attempt_id,
+        run_id="disconnect-run",
+        agent_id="general_agent",
+    )
+    action = runtime.conversation_projection.request_approval(
+        accepted=accepted,
+        run_id="disconnect-run",
+        agent_id="general_agent",
+        thread_id="disconnect-thread",
+        skills=["customer.answer"],
+        preview={"summary": "需要审批"},
+    )
+    started = threading.Event()
+    release = threading.Event()
+    completed = threading.Event()
+
+    class StreamingProvider:
+        name = "disconnect-test"
+
+        def stream(self, system: str, user: str):
+            del system, user
+            yield "后台结果"
+
+    monkeypatch.setattr(llm_client, "_get_provider", lambda: StreamingProvider())
+
+    def decide_after_disconnect(*args, **kwargs):
+        del args, kwargs
+        started.set()
+        assert release.wait(1.0)
+        llm_client.require_chat_streaming("system", "user")
+        completed.set()
+        return {"status": "completed"}
+
+    monkeypatch.setattr(app_mod, "_decide_action", decide_after_disconnect)
+    response = client.post(
+        f"/api/conversation-actions/{action.id}/decision/stream",
+        json={
+            "decision": "approved",
+            "expected_version": action.version,
+            "idempotency_key": "disconnect-decision",
+        },
+        headers={"X-CSRF-Token": token},
+        buffered=False,
+    )
+    iterator = iter(response.response)
+    assert next(iterator).decode("utf-8") == ": stream-open\n\n"
+    assert started.wait(1.0)
+
+    response.close()
+    release.set()
+
+    assert completed.wait(1.0)
 
 
 @pytest.mark.parametrize("foreign_kind", ["user", "tenant"])

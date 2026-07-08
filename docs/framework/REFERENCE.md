@@ -148,8 +148,8 @@ blocked → 阻止或修订预算耗尽
 | POST | `/api/chat/stream` | `chat:use` | Chat SSE |
 | POST | `/api/tasks` | `task:run` | 显式 Agent Task |
 | POST | `/api/tasks/stream` | `task:run` | Task SSE |
-| POST | `/api/tasks/resume`、`/approve` | `task:approve` | 恢复审批 |
-| POST | `/api/tasks/resume/stream`、`/approve/stream` | `task:approve` | 流式恢复 |
+| POST | `/api/tasks/resume`、`/approve` | — | 旧浏览器审批接口，固定返回 HTTP 410；不得用于新集成 |
+| POST | `/api/tasks/resume/stream`、`/approve/stream` | — | 旧浏览器流式审批接口，固定返回 HTTP 410；不得用于新集成 |
 
 ### 3.3 Conversation、Run 与 Registry
 

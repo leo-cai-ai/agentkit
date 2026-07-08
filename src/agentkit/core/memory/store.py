@@ -707,6 +707,97 @@ class ConversationStore:
             )
         return True, scope
 
+    def reconcile_completed_attempt_output(
+        self,
+        attempt_id: str,
+        *,
+        expected_attempt: set[str],
+        action_id: str | None = None,
+        expected_action: set[str] | None = None,
+        action_status: str | None = None,
+        now: float | None = None,
+    ) -> bool:
+        """仅在已有 sealed 可见输出时，原子补齐成功终态与 canonical。"""
+        if not expected_attempt:
+            return False
+        if (action_id is None) != (expected_action is None or action_status is None):
+            raise ValueError("action reconciliation fields must be provided together")
+        resolved_now = round(time.time() if now is None else now, 3)
+        placeholder = self._projection_placeholder
+        attempt_values = tuple(sorted(expected_attempt))
+        attempt_slots = ", ".join(placeholder for _ in attempt_values)
+        with self._connect() as conn:
+            self._begin_projection_write(conn)
+            output = conn.execute(
+                f"""
+                SELECT m.id, a.turn_id
+                FROM messages AS m
+                JOIN conversation_attempts AS a ON a.id = m.attempt_id
+                WHERE a.id = {placeholder}
+                  AND a.status IN ({attempt_slots})
+                  AND m.kind = 'assistant_output'
+                  AND m.state = 'sealed'
+                  AND m.visibility = 'user'
+                ORDER BY m.id DESC LIMIT 1{self._projection_lock_suffix}
+                """,
+                (attempt_id, *attempt_values),
+            ).fetchone()
+            if output is None:
+                return False
+            turn_id = str(output[1])
+            if action_id is not None:
+                action_values = tuple(sorted(expected_action or set()))
+                action_slots = ", ".join(placeholder for _ in action_values)
+                completed_at = (
+                    resolved_now if action_status in {"completed", "invalidated"} else None
+                )
+                action = conn.execute(
+                    f"""
+                    UPDATE conversation_actions
+                    SET status = {placeholder}, version = version + 1,
+                        completed_at = CASE
+                            WHEN {placeholder} IS NULL THEN completed_at
+                            ELSE {placeholder}
+                        END
+                    WHERE id = {placeholder} AND attempt_id = {placeholder}
+                      AND status IN ({action_slots})
+                    """,
+                    (
+                        action_status,
+                        completed_at,
+                        completed_at,
+                        action_id,
+                        attempt_id,
+                        *action_values,
+                    ),
+                )
+                if action.rowcount != 1:
+                    conn.rollback()
+                    return False
+            attempt = conn.execute(
+                f"""
+                UPDATE conversation_attempts
+                SET status = 'succeeded', error_code = '', error_summary = '',
+                    version = version + 1, resume_lease_owner = NULL,
+                    resume_lease_expires_at = NULL, finished_at = {placeholder}
+                WHERE id = {placeholder} AND status IN ({attempt_slots})
+                """,
+                (resolved_now, attempt_id, *attempt_values),
+            )
+            if attempt.rowcount != 1:
+                conn.rollback()
+                return False
+            conn.execute(
+                f"""
+                UPDATE conversation_turns
+                SET active_attempt_id = NULL, canonical_attempt_id = {placeholder},
+                    updated_at = {placeholder}
+                WHERE id = {placeholder}
+                """,
+                (attempt_id, resolved_now, turn_id),
+            )
+        return True
+
     def finalize_approval_output(
         self,
         action_id: str,
@@ -1318,17 +1409,21 @@ class ConversationStore:
         *,
         tenant_id: str,
         user_id: str,
+        expected_agent: str,
         client_message_id: str,
     ) -> str | None:
         with self._connect() as conn:
             row = conn.execute(
                 f"""
-                SELECT conversation_id FROM conversation_turns
-                WHERE tenant_id = {self._projection_placeholder}
-                  AND user_id = {self._projection_placeholder}
-                  AND client_message_id = {self._projection_placeholder}
+                SELECT turn.conversation_id
+                FROM conversation_turns AS turn
+                JOIN conversations AS conversation ON conversation.id = turn.conversation_id
+                WHERE turn.tenant_id = {self._projection_placeholder}
+                  AND turn.user_id = {self._projection_placeholder}
+                  AND conversation.agent = {self._projection_placeholder}
+                  AND turn.client_message_id = {self._projection_placeholder}
                 """,
-                (tenant_id, user_id, client_message_id),
+                (tenant_id, user_id, expected_agent, client_message_id),
             ).fetchone()
         return str(row[0]) if row is not None else None
 

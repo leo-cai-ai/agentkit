@@ -7,7 +7,6 @@ import threading
 import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -136,18 +135,27 @@ class _StreamingProjectionObserver:
             app.logger.exception("conversation stream checkpoint audit failed")
 
 
-@lru_cache(maxsize=8)
-def _build_runtime_cached(tenant_id: str):
-    return build_runtime(tenant_id=tenant_id)
+_runtime_cache: dict[str, AgentKitRuntime] = {}
+_runtime_cache_lock = threading.Lock()
 
 
 def get_runtime():
-    return _build_runtime_cached(resolve_tenant_id())
+    tenant_id = resolve_tenant_id()
+    with _runtime_cache_lock:
+        runtime = _runtime_cache.get(tenant_id)
+        if runtime is None:
+            runtime = build_runtime(tenant_id=tenant_id)
+            _runtime_cache[tenant_id] = runtime
+        return runtime
 
 
 def clear_runtime_cache() -> None:
     """清空缓存，使 Agent、Skill、Tool 和租户声明重新编译。"""
-    _build_runtime_cached.cache_clear()
+    with _runtime_cache_lock:
+        runtimes = list(_runtime_cache.values())
+        _runtime_cache.clear()
+    for runtime in runtimes:
+        runtime.close()
 
 
 @app.get("/healthz")
@@ -587,6 +595,7 @@ def _scoped_timeline(
         conversation_id=conversation_id,
         tenant_id=tenant_id,
         user_id=user_id,
+        expected_agent="general_agent",
     )
 
 
@@ -996,7 +1005,8 @@ def api_conversation_action_decision_stream(action_id: str):
             payload,
             runtime=runtime,
             principal=principal,
-        )
+        ),
+        continue_on_disconnect=True,
     )
 
 
@@ -1027,6 +1037,7 @@ def api_conversation_timeline_by_client_message():
             tenant_id=tenant_id,
             user_id=user_id,
             client_message_id=client_message_id,
+            expected_agent="general_agent",
         )
     except KeyError:
         return jsonify({"error": "会话不存在"}), 404

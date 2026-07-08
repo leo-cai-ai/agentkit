@@ -60,3 +60,11 @@ def test_runtime_startup_reconciles_stale_queued_attempts(tmp_path) -> None:
 
     assert restarted.conversation_recovery is not None
     assert restarted.conversations.get_attempt(accepted.attempt_id)["status"] == "interrupted"
+
+
+def test_runtime_starts_and_stops_periodic_recovery(tmp_path) -> None:
+    runtime = build_runtime(tenant_id="company_alpha", db_path=tmp_path / "runtime.sqlite")
+
+    assert runtime.conversation_recovery.running is True
+    runtime.close()
+    assert runtime.conversation_recovery.running is False

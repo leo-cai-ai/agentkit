@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
+import threading
 import time
+import weakref
 from typing import Any
 
 from agentkit.core.audit import TERMINAL_RUN_STATUSES
@@ -21,6 +24,27 @@ _RUN_TO_ATTEMPT_STATUS = {
     "cancelled": "cancelled",
     "failed": "failed",
 }
+_LOG = logging.getLogger(__name__)
+
+
+def _run_periodic_reconciliation(
+    service_ref: weakref.ReferenceType[ConversationRecoveryService],
+    stop_event: threading.Event,
+    *,
+    tenant_id: str,
+    interval_seconds: float,
+) -> None:
+    """周期唤醒恢复器；弱引用确保遗弃 Runtime 不会留下后台线程。"""
+    while not stop_event.wait(interval_seconds):
+        service = service_ref()
+        if service is None:
+            return
+        try:
+            service.reconcile(tenant_id=tenant_id)
+        except Exception:  # noqa: BLE001 - 单轮失败不得终止后续巡检
+            _LOG.exception("conversation projection reconciliation failed")
+        finally:
+            del service
 
 
 class ConversationRecoveryService:
@@ -40,6 +64,57 @@ class ConversationRecoveryService:
         self._audit = audit
         self._metrics = metrics
         self._clock = clock
+        self._lifecycle_lock = threading.Lock()
+        self._stop_event: threading.Event | None = None
+        self._thread: threading.Thread | None = None
+
+    @property
+    def running(self) -> bool:
+        """返回本实例是否持有活跃的周期巡检线程。"""
+        with self._lifecycle_lock:
+            return self._thread is not None and self._thread.is_alive()
+
+    def start(self, *, tenant_id: str, interval_seconds: float) -> bool:
+        """启动一次周期巡检；重复调用不会创建第二个线程。"""
+        if interval_seconds <= 0:
+            raise ValueError("recovery interval must be greater than zero")
+        with self._lifecycle_lock:
+            if self._thread is not None and self._thread.is_alive():
+                return False
+            stop_event = threading.Event()
+            service_ref = weakref.ref(self, lambda _ref: stop_event.set())
+            thread = threading.Thread(
+                target=_run_periodic_reconciliation,
+                kwargs={
+                    "service_ref": service_ref,
+                    "stop_event": stop_event,
+                    "tenant_id": tenant_id,
+                    "interval_seconds": float(interval_seconds),
+                },
+                name=f"agentkit-conversation-recovery-{tenant_id}",
+                daemon=True,
+            )
+            self._stop_event = stop_event
+            self._thread = thread
+            thread.start()
+        return True
+
+    def stop(self, *, timeout: float = 5.0) -> bool:
+        """停止本实例创建的巡检线程，不触碰进程中的其他服务。"""
+        with self._lifecycle_lock:
+            thread = self._thread
+            stop_event = self._stop_event
+            if thread is None or stop_event is None:
+                return False
+            stop_event.set()
+        if thread is not threading.current_thread():
+            thread.join(timeout=max(0.0, timeout))
+        with self._lifecycle_lock:
+            stopped = not thread.is_alive()
+            if stopped and self._thread is thread:
+                self._thread = None
+                self._stop_event = None
+        return stopped
 
     def reconcile(self, *, tenant_id: str) -> list[str]:
         """对账一个租户；CAS 失败表示其他实例已先完成，不重复产生副作用。"""
@@ -66,28 +141,59 @@ class ConversationRecoveryService:
 
             action = self._active_action_for_attempt(attempt_id)
             terminal_run_status = self._terminal_run_status(run_id)
-            if status in {"queued", "running"} and terminal_run_status:
+            if (
+                status in {"queued", "running", "waiting_for_approval", "resuming"}
+                and terminal_run_status
+            ):
                 target = _RUN_TO_ATTEMPT_STATUS[terminal_run_status]
-                if action is None:
+                action_target = self._terminal_action_status(action, attempt_status=target)
+                if target == "succeeded":
+                    transitioned = self._store.reconcile_completed_attempt_output(
+                        attempt_id,
+                        expected_attempt={status},
+                        action_id=str(action["id"]) if action is not None else None,
+                        expected_action={str(action["status"])} if action is not None else None,
+                        action_status=action_target if action is not None else None,
+                    )
+                    if not transitioned:
+                        target = "interrupted"
+                        action_target = self._terminal_action_status(
+                            action,
+                            attempt_status=target,
+                        )
+                if target != "succeeded" and action is None:
                     transitioned = self._store.transition_attempt(
                         attempt_id,
                         expected={status},
                         status=target,
-                        error_code="reconciled_terminal_run" if target != "succeeded" else "",
-                        error_summary="执行终态已从审计记录对账" if target != "succeeded" else "",
+                        error_code=(
+                            "terminal_output_missing"
+                            if terminal_run_status == "completed"
+                            else "reconciled_terminal_run"
+                        ),
+                        error_summary=(
+                            "执行已结束，但没有可恢复的最终输出"
+                            if terminal_run_status == "completed"
+                            else "执行终态已从审计记录对账"
+                        ),
                     )
-                else:
-                    action_target = (
-                        "completed" if target in {"succeeded", "rejected"} else "invalidated"
-                    )
+                elif target != "succeeded" and action is not None:
                     transitioned = self._store.transition_action_attempt(
                         str(action["id"]),
                         expected_action={str(action["status"])},
                         action_status=action_target,
                         expected_attempt={status},
                         attempt_status=target,
-                        error_code="reconciled_terminal_run" if target != "succeeded" else "",
-                        error_summary="执行终态已从审计记录对账" if target != "succeeded" else "",
+                        error_code=(
+                            "terminal_output_missing"
+                            if terminal_run_status == "completed"
+                            else "reconciled_terminal_run"
+                        ),
+                        error_summary=(
+                            "执行已结束，但没有可恢复的最终输出"
+                            if terminal_run_status == "completed"
+                            else "执行终态已从审计记录对账"
+                        ),
                     )
                     if transitioned and action_target == "invalidated":
                         self._record_action_invalidated(attempt, action)
@@ -150,6 +256,21 @@ class ConversationRecoveryService:
                 self._record_recovery_metric(attempt, outcome="resumed")
                 changed_ids.append(action_id)
         return changed_ids
+
+    @staticmethod
+    def _terminal_action_status(
+        action: dict[str, Any] | None,
+        *,
+        attempt_status: str,
+    ) -> str | None:
+        if action is None:
+            return None
+        decision = str(action.get("decision") or action.get("status") or "")
+        if decision == "rejected":
+            return "rejected"
+        if decision == "approved":
+            return "completed" if attempt_status == "succeeded" else "approved"
+        return "invalidated"
 
     def _active_action_for_attempt(self, attempt_id: str) -> dict[str, Any] | None:
         scope = self._store.get_attempt_scope(attempt_id)

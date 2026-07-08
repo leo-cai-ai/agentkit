@@ -583,12 +583,14 @@ class ConversationProjectionService:
         conversation_id: str,
         tenant_id: str,
         user_id: str,
+        expected_agent: str = "general_agent",
     ) -> ConversationTimeline:
         started = self._clock()
         conversation = self._store.get_conversation(conversation_id)
         if conversation is None or (
             str(conversation.get("tenant_id")) != tenant_id
             or str(conversation.get("user_id")) != user_id
+            or str(conversation.get("agent")) != expected_agent
         ):
             raise KeyError(conversation_id)
         turns = self._timeline_turns(conversation_id)
@@ -629,10 +631,12 @@ class ConversationProjectionService:
         tenant_id: str,
         user_id: str,
         client_message_id: str,
+        expected_agent: str = "general_agent",
     ) -> ConversationTimeline:
         conversation_id = self._store.find_conversation_by_client_message(
             tenant_id=tenant_id,
             user_id=user_id,
+            expected_agent=expected_agent,
             client_message_id=client_message_id,
         )
         if conversation_id is None:
@@ -641,6 +645,7 @@ class ConversationProjectionService:
             conversation_id=conversation_id,
             tenant_id=tenant_id,
             user_id=user_id,
+            expected_agent=expected_agent,
         )
 
     def context_messages(
