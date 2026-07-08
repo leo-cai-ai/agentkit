@@ -71,6 +71,7 @@ def test_xhs_approval_publishes_frozen_content(monkeypatch, tmp_path) -> None:
         runtime = build_runtime(db_path=tmp_path / "audit.sqlite")
         waiting = runtime.gateway.handle(_request())
         assert waiting.status == "waiting_for_approval"
+        assert runtime.gateway.pending_approval(waiting.thread_id) is True
         assert waiting.output["approval"]["phase"] == "post_execution"
         assert waiting.output["approval"]["skills"] == ["xhs.growth.campaign"]
         assert waiting.output["approval"]["preview"]["title"] == "暑假带娃旅行避坑"
@@ -83,6 +84,7 @@ def test_xhs_approval_publishes_frozen_content(monkeypatch, tmp_path) -> None:
         assert resumed.status == "completed"
         assert resumed.output["publish"]["status"] == "published"
         assert resumed.output["publish"]["provider"] == "mock"
+        assert runtime.gateway.pending_approval(waiting.thread_id) is False
         assert calls.count("article") == 1
         assert calls.count("content_review") == 1
     finally:

@@ -187,6 +187,10 @@ class AgentGateway:
             decision_context=decision_context,
         )
 
+    def pending_approval(self, thread_id: str) -> bool:
+        """返回 Checkpoint 是否仍可审批恢复，不重建任何会话内容。"""
+        return self._agent_graph.pending_approval(thread_id)
+
     @property
     def agents(self) -> AgentRegistry:
         return self._agents

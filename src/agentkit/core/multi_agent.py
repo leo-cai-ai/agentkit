@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from agentkit.core.metrics import record_scoped_metric
 from agentkit.runtime.conversation_context import ConversationContextService
 from agentkit.runtime.conversation_persistence import ConversationPersistenceService
 from agentkit.runtime.conversation_projection import ConversationProjectionService
@@ -200,6 +201,8 @@ class MultiAgentCoordinator:
         conversation_context: ConversationContextService,
         conversation_persistence: ConversationPersistenceService,
         conversation_projection: ConversationProjectionService,
+        conversation_store: Any = None,
+        metrics: Any = None,
     ) -> None:
         self._tenant_id = tenant_id
         self._tenant_selector = tenant_selector
@@ -211,6 +214,8 @@ class MultiAgentCoordinator:
         self._conversation_context = conversation_context
         self._conversation_persistence = conversation_persistence
         self._projection = conversation_projection
+        self._store = conversation_store or conversation_projection._store
+        self._metrics = metrics
 
     def handle(self, request: TaskRequest) -> TaskResponse:
         conversation_id = str(request.context["conversation_id"])
@@ -464,6 +469,182 @@ class MultiAgentCoordinator:
                 fail_attempt=not action_failed,
             )
             raise
+
+    def decide_action(
+        self,
+        action_id: str,
+        *,
+        decision: str,
+        decided_by: str,
+        decision_context: dict[str, Any],
+        idempotency_key: str,
+        expected_version: int,
+    ) -> TaskResponse:
+        """原子保存 Action 决议，再仅使用服务端持久化字段恢复执行。"""
+        before, attempt, scope, conversation = self._trusted_action(action_id)
+        if str(conversation.get("user_id") or "") != decided_by:
+            raise ConversationConflictError(
+                "approval decision identity is outside conversation scope"
+            )
+        was_pending = str(before["status"]) == "pending"
+        decided = self._store.decide_action(
+            action_id,
+            decision=decision,
+            decided_by=decided_by,
+            decision_context=dict(decision_context),
+            idempotency_key=idempotency_key,
+            expected_version=expected_version,
+        )
+        current = self._store.get_action(action_id)
+        if current is None:
+            raise KeyError(action_id)
+        if was_pending and str(current.get("idempotency_key") or "") == idempotency_key:
+            run_id = str(attempt.get("run_id") or attempt["id"])
+            self._audit.record(
+                run_id,
+                "conversation_action_decided",
+                {
+                    "conversation_id": str(scope["conversation_id"]),
+                    "turn_id": str(scope["turn_id"]),
+                    "attempt_id": str(scope["attempt_id"]),
+                    "action_id": action_id,
+                    "agent_id": str(scope["agent_id"]),
+                    "status": decision,
+                },
+            )
+            wait_ms = max(
+                0.0,
+                (float(current.get("decided_at") or 0.0) - float(current.get("created_at") or 0.0))
+                * 1000,
+            )
+            record_scoped_metric(
+                self._metrics,
+                "conversation_approval_wait_ms",
+                wait_ms,
+                tenant_id=str(scope["tenant_id"]),
+                agent_id=str(scope["agent_id"]),
+                decision=decision,
+            )
+        elif not was_pending:
+            record_scoped_metric(
+                self._metrics,
+                "conversation_idempotent_duplicate_total",
+                1,
+                tenant_id=str(scope["tenant_id"]),
+                agent_id=str(scope["agent_id"]),
+                command="decide_action",
+            )
+        if decided.status.value == "completed":
+            return self._response_for_action(current, attempt, conversation)
+        return self.resume_action(action_id)
+
+    def resume_action(self, action_id: str) -> TaskResponse:
+        """从 durable Action 反查 thread、Skills 与父子 Run，浏览器字段不参与恢复。"""
+        action, attempt, scope, conversation = self._trusted_action(action_id)
+        if str(attempt["status"]) not in {"resuming", "running"}:
+            return self._response_for_action(action, attempt, conversation)
+
+        decision = str(action.get("decision") or action.get("status") or "")
+        if decision not in {"approved", "rejected"}:
+            raise ConversationConflictError("approval action has no durable decision")
+        thread_id = str(action["thread_id"])
+        user_id = str(conversation["user_id"])
+        child_run = self._audit.run_for_thread(
+            thread_id,
+            tenant_id=self._tenant_id,
+            user_id=user_id,
+        )
+        if child_run is None:
+            raise ConversationConflictError("approval action has no trusted child run")
+        parent_run_id = str(attempt.get("run_id") or "")
+        parent_run = self._audit.get_run(parent_run_id)
+        if (
+            not parent_run_id
+            or str(child_run.get("parent_run_id") or "") != parent_run_id
+            or parent_run is None
+            or str(parent_run.get("conversation_id") or "") != str(scope["conversation_id"])
+            or str(parent_run.get("user_id") or "") != user_id
+        ):
+            raise ConversationConflictError("approval action run relationship is invalid")
+        target_agent = str(child_run.get("agent_id") or scope["agent_id"])
+        self._directory.profile(target_agent)
+
+        if str(attempt["status"]) == "running":
+            return self._response_for_action(action, attempt, conversation)
+        claimed = self._store.transition_action_attempt(
+            action_id,
+            expected_action={decision},
+            action_status=decision,
+            expected_attempt={"resuming"},
+            attempt_status="running",
+        )
+        if not claimed:
+            latest_action = self._store.get_action(action_id)
+            latest_attempt = self._store.get_attempt(str(action["attempt_id"]))
+            if latest_action is None or latest_attempt is None:
+                raise KeyError(action_id)
+            return self._response_for_action(latest_action, latest_attempt, conversation)
+
+        accepted = self._projection.resolve_accepted(
+            conversation_id=str(scope["conversation_id"]),
+            turn_id=str(scope["turn_id"]),
+            attempt_id=str(scope["attempt_id"]),
+        )
+        stored_context = dict(action.get("decision_context_json") or {})
+        roles = [str(item) for item in stored_context.get("roles", [])]
+        skills = [str(item) for item in action.get("skills_json", [])]
+        approved_skills = skills if decision == "approved" else []
+        rejected_skills = skills if decision == "rejected" else []
+        try:
+            self._projection.set_stage(accepted.attempt_id, AttemptStage.EXECUTING_AGENT)
+            return self._resume_started(
+                thread_id=thread_id,
+                user_id=user_id,
+                roles=roles,
+                approved_skills=approved_skills,
+                rejected_skills=rejected_skills,
+                decision_context=stored_context,
+                child_run=child_run,
+                parent_run=parent_run,
+                parent_run_id=parent_run_id,
+                conversation_id=str(scope["conversation_id"]),
+                target_agent=target_agent,
+                accepted=accepted,
+                action_id=action_id,
+            )
+        except Exception as exc:
+            action_failed = False
+            try:
+                self._projection.fail_approval(
+                    action_id,
+                    error_code=type(exc).__name__,
+                    error_summary="审批恢复流程异常退出",
+                )
+                action_failed = True
+                self._audit.record(
+                    parent_run_id,
+                    "conversation_action_invalidated",
+                    {
+                        "conversation_id": str(scope["conversation_id"]),
+                        "turn_id": str(scope["turn_id"]),
+                        "attempt_id": str(scope["attempt_id"]),
+                        "action_id": action_id,
+                        "agent_id": str(scope["agent_id"]),
+                        "status": "invalidated",
+                    },
+                )
+            except Exception:  # noqa: BLE001 - 清理失败不得遮蔽原始恢复异常
+                pass
+            self._fail_parent_run(
+                parent_run_id,
+                accepted.attempt_id,
+                exc,
+                fail_attempt=not action_failed,
+            )
+            raise
+
+    def pending_approval(self, thread_id: str) -> bool:
+        return bool(self._gateway.pending_approval(thread_id))
 
     def _resume_started(
         self,
@@ -880,6 +1061,71 @@ class MultiAgentCoordinator:
         return "、".join(
             f"@{card['aliases'][0] if card['aliases'] else card['label']}"
             for card in self._directory.business_cards()
+        )
+
+    def _trusted_action(
+        self,
+        action_id: str,
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+        """从 Action 反查并校验租户内完整投影作用域。"""
+        action = self._store.get_action(action_id)
+        if action is None:
+            raise KeyError(action_id)
+        attempt = self._store.get_attempt(str(action["attempt_id"]))
+        scope = self._store.get_attempt_scope(str(action["attempt_id"]))
+        conversation = self._store.get_conversation(str(action["conversation_id"]))
+        if attempt is None or scope is None or conversation is None:
+            raise ConversationConflictError("approval action projection is incomplete")
+        if (
+            str(scope["tenant_id"]) != self._tenant_id
+            or str(scope["conversation_id"]) != str(action["conversation_id"])
+            or str(scope["turn_id"]) != str(action["turn_id"])
+            or str(scope["attempt_id"]) != str(action["attempt_id"])
+            or str(conversation.get("tenant_id") or "") != self._tenant_id
+        ):
+            raise ConversationConflictError("approval action projection scope is invalid")
+        return action, attempt, scope, conversation
+
+    def _response_for_action(
+        self,
+        action: dict[str, Any],
+        attempt: dict[str, Any],
+        conversation: dict[str, Any],
+    ) -> TaskResponse:
+        """为幂等重复命令返回持久化状态，不从 Checkpoint 重建正文。"""
+        status = {
+            "succeeded": "completed",
+            "failed": "failed",
+            "interrupted": "interrupted",
+            "rejected": "rejected",
+            "cancelled": "cancelled",
+            "waiting_for_approval": "waiting_for_approval",
+            "resuming": "running",
+            "running": "running",
+            "queued": "queued",
+        }.get(str(attempt["status"]), str(attempt["status"]))
+        output_message = self._store.get_attempt_output(str(attempt["id"]))
+        output = (
+            {"message": str(output_message.get("content") or "")}
+            if output_message is not None
+            else {}
+        )
+        run_id = str(attempt.get("run_id") or "")
+        return TaskResponse(
+            status=status,
+            output=output,
+            run_id=run_id,
+            thread_id=str(action.get("thread_id") or ""),
+            agent=str(attempt.get("agent_id") or conversation.get("agent") or ""),
+            strategy="",
+            conversation_id=str(action["conversation_id"]),
+            governance={
+                "approval": {
+                    "action_id": str(action["id"]),
+                    "status": str(action["status"]),
+                }
+            },
+            audit_events=self._audit.events_for(run_id) if run_id else [],
         )
 
     def _accepted_for_thread(

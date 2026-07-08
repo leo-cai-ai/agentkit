@@ -224,6 +224,11 @@ class UnifiedAgentGraph:
             return self._failure_response(thread_id, config, exc)
         return self._response_from_state(thread_id, config)
 
+    def pending_approval(self, thread_id: str) -> bool:
+        """只判断 durable Checkpoint 是否仍停在审批节点，不读取正文。"""
+        snapshot = self._graph.get_state({"configurable": {"thread_id": thread_id}})
+        return bool(snapshot.values and snapshot.next)
+
     def _failure_response(
         self,
         thread_id: str,

@@ -78,6 +78,7 @@ class FakeGateway:
         self.status = status
         self.output = output or {"message": "招聘分析已完成"}
         self.requests: list[TaskRequest] = []
+        self.resume_requests: list[tuple[str, dict]] = []
 
     def handle_delegated(self, request: TaskRequest) -> TaskResponse:
         self.requests.append(request)
@@ -110,6 +111,7 @@ class FakeGateway:
         )
 
     def resume(self, thread_id: str, **kwargs) -> TaskResponse:
+        self.resume_requests.append((thread_id, dict(kwargs)))
         child = self.audit.run_for_thread(thread_id, tenant_id="tenant-a", user_id="u1")
         self.audit.record(child["run_id"], "run_resumed", {"thread_id": thread_id})
         self.audit.record(child["run_id"], "run_finished", {"status": "completed"})
@@ -466,6 +468,140 @@ def test_resume_projects_final_output_without_second_user_message(tmp_path) -> N
     assert attempt["status"] == "succeeded"
     assert attempt["messages"][-1]["content"] == "审批后已执行"
     assert attempt["actions"][0]["status"] == "completed"
+
+
+def test_decide_action_uses_durable_thread_and_skills_then_resumes_once(tmp_path) -> None:
+    service, gateway, audit, _, _, projection = _projection_service(
+        tmp_path,
+        child_status="waiting_for_approval",
+        child_output={
+            "approval": {
+                "skills": ["candidate.rank"],
+                "preview": {"title": "候选人审批预览"},
+            }
+        },
+    )
+    waiting = service.handle(
+        _prepared_request(
+            projection,
+            message="@招聘 发布录用通知",
+            client_message_id="client-action-resume",
+        )
+    )
+    action = _timeline(projection, waiting.conversation_id).turns[0]["attempts"][0]["actions"][0]
+
+    resumed = service.decide_action(
+        action["id"],
+        decision="approved",
+        decided_by="u1",
+        decision_context={"roles": ["recruiter"]},
+        idempotency_key="approve-action-1",
+        expected_version=action["version"],
+    )
+    duplicate = service.decide_action(
+        action["id"],
+        decision="approved",
+        decided_by="u1",
+        decision_context={"roles": ["recruiter"]},
+        idempotency_key="approve-action-1",
+        expected_version=action["version"],
+    )
+
+    assert resumed.status == duplicate.status == "completed"
+    assert len(gateway.resume_requests) == 1
+    thread_id, resume_kwargs = gateway.resume_requests[0]
+    assert thread_id == action["thread_id"]
+    assert resume_kwargs["approved_skills"] == ["candidate.rank"]
+    assert resume_kwargs["rejected_skills"] == []
+    decided = [
+        event
+        for event in audit.events_for(waiting.run_id)
+        if event["type"] == "conversation_action_decided"
+    ]
+    assert len(decided) == 1
+    assert set(decided[0]["payload"]) <= {
+        "conversation_id",
+        "turn_id",
+        "attempt_id",
+        "action_id",
+        "agent_id",
+        "status",
+    }
+
+
+def test_decide_action_rejects_identity_outside_conversation_scope(tmp_path) -> None:
+    service, gateway, _, _, _, projection = _projection_service(
+        tmp_path,
+        child_status="waiting_for_approval",
+        child_output={"approval": {"skills": ["candidate.rank"], "preview": {}}},
+    )
+    waiting = service.handle(
+        _prepared_request(
+            projection,
+            message="@招聘 发布录用通知",
+            client_message_id="client-action-scope",
+        )
+    )
+    action = _timeline(projection, waiting.conversation_id).turns[0]["attempts"][0]["actions"][0]
+
+    with pytest.raises(ConversationConflictError, match="identity"):
+        service.decide_action(
+            action["id"],
+            decision="approved",
+            decided_by="other-user",
+            decision_context={"roles": ["recruiter"]},
+            idempotency_key="wrong-user",
+            expected_version=action["version"],
+        )
+
+    assert gateway.resume_requests == []
+    assert (
+        _timeline(projection, waiting.conversation_id).turns[0]["attempts"][0]["actions"][0][
+            "status"
+        ]
+        == "pending"
+    )
+
+
+def test_action_resume_failure_emits_safe_invalidation_audit(tmp_path) -> None:
+    service, gateway, audit, _, _, projection = _projection_service(
+        tmp_path,
+        child_status="waiting_for_approval",
+        child_output={"approval": {"skills": ["candidate.rank"], "preview": {}}},
+    )
+    waiting = service.handle(
+        _prepared_request(
+            projection,
+            message="@招聘 发布录用通知",
+            client_message_id="client-action-failure",
+        )
+    )
+    action = _timeline(projection, waiting.conversation_id).turns[0]["attempts"][0]["actions"][0]
+
+    def fail_resume(thread_id: str, **kwargs):
+        raise RuntimeError("resume failed")
+
+    gateway.resume = fail_resume
+    with pytest.raises(RuntimeError, match="resume failed"):
+        service.decide_action(
+            action["id"],
+            decision="approved",
+            decided_by="u1",
+            decision_context={"roles": ["recruiter"]},
+            idempotency_key="approve-failure",
+            expected_version=action["version"],
+        )
+
+    refreshed = _timeline(projection, waiting.conversation_id).turns[0]["attempts"][0]
+    assert refreshed["status"] == "failed"
+    assert refreshed["actions"][0]["status"] == "invalidated"
+    invalidated = [
+        event
+        for event in audit.events_for(waiting.run_id)
+        if event["type"] == "conversation_action_invalidated"
+    ]
+    assert len(invalidated) == 1
+    assert "发布录用通知" not in repr(invalidated)
 
 
 def test_resume_waiting_again_atomically_rolls_over_durable_approval(tmp_path) -> None:

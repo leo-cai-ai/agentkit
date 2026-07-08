@@ -54,3 +54,30 @@ def test_rejected_side_effect_never_executes(tmp_path) -> None:
 
     assert rejected.status == "rejected"
     assert calls == []
+
+
+def test_pending_approval_check_is_read_only(tmp_path) -> None:
+    from tests.integration.test_durable_execution import _durable_gateway
+
+    calls: list[str] = []
+    gateway = _durable_gateway(tmp_path, calls)
+    waiting = gateway.handle(
+        TaskRequest(
+            user_id="u1",
+            roles=[],
+            text="退款",
+            context={
+                "agent": "customer_service",
+                "skill": "refund.apply",
+                "skill_args": {"marker": "once"},
+            },
+        )
+    )
+
+    assert gateway.pending_approval(waiting.thread_id) is True
+    assert calls == []
+
+    gateway.resume(waiting.thread_id, approved_skills=["refund.apply"])
+
+    assert gateway.pending_approval(waiting.thread_id) is False
+    assert calls == ["once"]

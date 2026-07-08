@@ -55,6 +55,7 @@ from agentkit.runtime.conversation_persistence import (
     ExtractingMemoryWriter,
 )
 from agentkit.runtime.conversation_projection import ConversationProjectionService
+from agentkit.runtime.conversation_recovery import ConversationRecoveryService
 from agentkit.runtime.conversation_runs import ConversationRunStateResolver
 from agentkit.runtime.declarative_catalog import (
     load_catalog,
@@ -86,6 +87,7 @@ class AgentKitRuntime:
     conversation_deletion: ConversationDeletionService
     conversation_runs: ConversationRunStateResolver
     conversation_projection: ConversationProjectionService
+    conversation_recovery: ConversationRecoveryService
     manifest: dict[str, Any] | None = None
     # 迁移期间保留属性形状，但不再存在第二套 Chat Runtime。
     chat_service: MultiAgentCoordinator | None = None
@@ -342,7 +344,14 @@ def build_runtime(
         conversation_context=conversation_context,
         conversation_persistence=conversation_persistence,
         conversation_projection=conversation_projection,
+        conversation_store=conversation_store,
     )
+    conversation_recovery = ConversationRecoveryService(
+        store=conversation_store,
+        coordinator=chat_service,
+        audit=audit,
+    )
+    conversation_recovery.reconcile(tenant_id=tenant_key)
     strategy_names = ("direct", "workflow", "batch", "parallel", "react", "plan_execute")
     return AgentKitRuntime(
         gateway=gateway,
@@ -357,6 +366,7 @@ def build_runtime(
         conversation_deletion=conversation_deletion,
         conversation_runs=conversation_runs,
         conversation_projection=conversation_projection,
+        conversation_recovery=conversation_recovery,
         manifest=manifest,
         chat_service=chat_service,
     )
