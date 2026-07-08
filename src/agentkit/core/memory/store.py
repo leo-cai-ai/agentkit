@@ -438,6 +438,15 @@ class ConversationStore:
                     run_id TEXT,
                     agent_id TEXT,
                     created_at REAL NOT NULL,
+                    turn_id TEXT,
+                    attempt_id TEXT,
+                    kind TEXT NOT NULL DEFAULT 'assistant_output',
+                    state TEXT NOT NULL DEFAULT 'sealed',
+                    artifact_id TEXT,
+                    supersedes_message_id INTEGER,
+                    visibility TEXT NOT NULL DEFAULT 'user',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    updated_at REAL NOT NULL DEFAULT 0,
                     FOREIGN KEY(conversation_id) REFERENCES conversations(id)
                 )
                 """
@@ -449,8 +458,136 @@ class ConversationStore:
                 """
             )
             columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(messages)")}
-            if "agent_id" not in columns:
-                conn.execute("ALTER TABLE messages ADD COLUMN agent_id TEXT")
+            additions = {
+                "agent_id": "TEXT",
+                "turn_id": "TEXT",
+                "attempt_id": "TEXT",
+                "kind": "TEXT NOT NULL DEFAULT 'assistant_output'",
+                "state": "TEXT NOT NULL DEFAULT 'sealed'",
+                "artifact_id": "TEXT",
+                "supersedes_message_id": "INTEGER",
+                "visibility": "TEXT NOT NULL DEFAULT 'user'",
+                "metadata_json": "TEXT NOT NULL DEFAULT '{}'",
+                "updated_at": "REAL NOT NULL DEFAULT 0",
+            }
+            added_kind = "kind" not in columns
+            added_updated_at = "updated_at" not in columns
+            for name, column_type in additions.items():
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE messages ADD COLUMN {name} {column_type}")
+            if added_kind:
+                conn.execute("UPDATE messages SET kind = 'user_input' WHERE role = 'user'")
+            if added_updated_at:
+                conn.execute("UPDATE messages SET updated_at = created_at")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS conversation_turns (
+                    id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    tenant_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    client_message_id TEXT NOT NULL,
+                    user_message_id INTEGER NOT NULL,
+                    ordinal INTEGER NOT NULL,
+                    active_attempt_id TEXT,
+                    canonical_attempt_id TEXT,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    FOREIGN KEY(conversation_id) REFERENCES conversations(id),
+                    FOREIGN KEY(user_message_id) REFERENCES messages(id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS conversation_attempts (
+                    id TEXT PRIMARY KEY,
+                    turn_id TEXT NOT NULL,
+                    run_id TEXT,
+                    attempt_no INTEGER NOT NULL,
+                    retry_of_attempt_id TEXT,
+                    idempotency_key TEXT,
+                    source TEXT NOT NULL DEFAULT 'native',
+                    agent_id TEXT,
+                    status TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    error_code TEXT NOT NULL DEFAULT '',
+                    error_summary TEXT NOT NULL DEFAULT '',
+                    version INTEGER NOT NULL DEFAULT 1,
+                    started_at REAL NOT NULL,
+                    finished_at REAL,
+                    FOREIGN KEY(turn_id) REFERENCES conversation_turns(id),
+                    FOREIGN KEY(retry_of_attempt_id) REFERENCES conversation_attempts(id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS conversation_actions (
+                    id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    turn_id TEXT NOT NULL,
+                    attempt_id TEXT NOT NULL,
+                    type TEXT NOT NULL DEFAULT 'approval',
+                    status TEXT NOT NULL,
+                    thread_id TEXT NOT NULL,
+                    skills_json TEXT NOT NULL DEFAULT '[]',
+                    preview_artifact_id TEXT,
+                    preview_json TEXT NOT NULL DEFAULT '{}',
+                    decision TEXT,
+                    decided_by TEXT,
+                    decision_context_json TEXT NOT NULL DEFAULT '{}',
+                    idempotency_key TEXT,
+                    version INTEGER NOT NULL DEFAULT 1,
+                    created_at REAL NOT NULL,
+                    decided_at REAL,
+                    completed_at REAL,
+                    FOREIGN KEY(conversation_id) REFERENCES conversations(id),
+                    FOREIGN KEY(turn_id) REFERENCES conversation_turns(id),
+                    FOREIGN KEY(attempt_id) REFERENCES conversation_attempts(id)
+                )
+                """
+            )
+            projection_indexes = (
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_turns_client_message
+                ON conversation_turns(tenant_id, user_id, client_message_id)
+                """,
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_turns_ordinal
+                ON conversation_turns(conversation_id, ordinal)
+                """,
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_attempts_run_id
+                ON conversation_attempts(run_id) WHERE run_id IS NOT NULL
+                """,
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_attempts_number
+                ON conversation_attempts(turn_id, attempt_no)
+                """,
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_attempts_retry_key
+                ON conversation_attempts(turn_id, idempotency_key)
+                WHERE idempotency_key IS NOT NULL
+                """,
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_attempts_one_active
+                ON conversation_attempts(turn_id)
+                WHERE status IN ('queued', 'running', 'waiting_for_approval', 'resuming')
+                """,
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_actions_idempotency
+                ON conversation_actions(attempt_id, idempotency_key)
+                WHERE idempotency_key IS NOT NULL
+                """,
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_one_streaming_per_attempt
+                ON messages(attempt_id)
+                WHERE attempt_id IS NOT NULL AND state = 'streaming'
+                """,
+            )
+            for statement in projection_indexes:
+                conn.execute(statement)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS conversation_summaries (

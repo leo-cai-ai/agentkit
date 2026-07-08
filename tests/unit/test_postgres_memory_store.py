@@ -2,7 +2,48 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 
+from agentkit.core import migrations
 from agentkit.core.memory.pg_store import PgConversationStore
+
+
+def test_postgres_v4_migration_uses_projection_contract() -> None:
+    sql = "\n".join(migrations._POSTGRES_MIGRATIONS[4])
+
+    assert "CREATE TABLE IF NOT EXISTS conversations" in sql
+    assert "CREATE TABLE IF NOT EXISTS messages" in sql
+    assert "CREATE TABLE IF NOT EXISTS conversation_turns" in sql
+    assert "CREATE TABLE IF NOT EXISTS conversation_attempts" in sql
+    assert "CREATE TABLE IF NOT EXISTS conversation_actions" in sql
+    assert "metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb" in sql
+    assert "preview_json JSONB NOT NULL DEFAULT '{}'::jsonb" in sql
+    assert "decision_context_json JSONB NOT NULL DEFAULT '{}'::jsonb" in sql
+    assert "UPDATE messages SET kind = 'user_input'" in sql
+    assert "UPDATE messages SET updated_at = created_at" in sql
+    assert "CREATE UNIQUE INDEX idx_conversation_attempts_one_active" in sql
+    assert "CREATE UNIQUE INDEX idx_messages_one_streaming_per_attempt" in sql
+
+
+def test_postgres_store_initializes_latest_projection_schema(monkeypatch) -> None:
+    statements: list[str] = []
+
+    class Connection:
+        def execute(self, sql, params=None):
+            statements.append(sql)
+
+    store = object.__new__(PgConversationStore)
+    store._settings = None
+    monkeypatch.setattr(store, "_connect", lambda: nullcontext(Connection()))
+
+    store._init_schema()
+
+    sql = "\n".join(statements)
+    assert "CREATE TABLE IF NOT EXISTS conversation_turns" in sql
+    assert "CREATE TABLE IF NOT EXISTS conversation_attempts" in sql
+    assert "CREATE TABLE IF NOT EXISTS conversation_actions" in sql
+    assert "ALTER TABLE messages ADD COLUMN IF NOT EXISTS metadata_json JSONB" in sql
+    assert "UPDATE messages SET kind = 'user_input'" in sql
+    assert "UPDATE messages SET updated_at = created_at" in sql
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_one_streaming_per_attempt" in sql
 
 
 def test_postgres_transition_conversation_status_uses_conditional_update(

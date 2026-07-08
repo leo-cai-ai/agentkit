@@ -80,6 +80,108 @@ _SQLITE_MIGRATIONS: dict[int, tuple[str, ...]] = {
     ),
     2: (),
     3: (),
+    4: (
+        """
+        CREATE TABLE IF NOT EXISTS conversation_turns (
+            id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL,
+            tenant_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            client_message_id TEXT NOT NULL,
+            user_message_id INTEGER NOT NULL,
+            ordinal INTEGER NOT NULL,
+            active_attempt_id TEXT,
+            canonical_attempt_id TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            FOREIGN KEY(conversation_id) REFERENCES conversations(id),
+            FOREIGN KEY(user_message_id) REFERENCES messages(id)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS conversation_attempts (
+            id TEXT PRIMARY KEY,
+            turn_id TEXT NOT NULL,
+            run_id TEXT,
+            attempt_no INTEGER NOT NULL,
+            retry_of_attempt_id TEXT,
+            idempotency_key TEXT,
+            source TEXT NOT NULL DEFAULT 'native',
+            agent_id TEXT,
+            status TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            error_code TEXT NOT NULL DEFAULT '',
+            error_summary TEXT NOT NULL DEFAULT '',
+            version INTEGER NOT NULL DEFAULT 1,
+            started_at REAL NOT NULL,
+            finished_at REAL,
+            FOREIGN KEY(turn_id) REFERENCES conversation_turns(id),
+            FOREIGN KEY(retry_of_attempt_id) REFERENCES conversation_attempts(id)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS conversation_actions (
+            id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL,
+            turn_id TEXT NOT NULL,
+            attempt_id TEXT NOT NULL,
+            type TEXT NOT NULL DEFAULT 'approval',
+            status TEXT NOT NULL,
+            thread_id TEXT NOT NULL,
+            skills_json TEXT NOT NULL DEFAULT '[]',
+            preview_artifact_id TEXT,
+            preview_json TEXT NOT NULL DEFAULT '{}',
+            decision TEXT,
+            decided_by TEXT,
+            decision_context_json TEXT NOT NULL DEFAULT '{}',
+            idempotency_key TEXT,
+            version INTEGER NOT NULL DEFAULT 1,
+            created_at REAL NOT NULL,
+            decided_at REAL,
+            completed_at REAL,
+            FOREIGN KEY(conversation_id) REFERENCES conversations(id),
+            FOREIGN KEY(turn_id) REFERENCES conversation_turns(id),
+            FOREIGN KEY(attempt_id) REFERENCES conversation_attempts(id)
+        )
+        """,
+        """
+        CREATE UNIQUE INDEX idx_conversation_turns_client_message
+        ON conversation_turns(tenant_id, user_id, client_message_id)
+        """,
+        """
+        CREATE UNIQUE INDEX idx_conversation_turns_ordinal
+        ON conversation_turns(conversation_id, ordinal)
+        """,
+        """
+        CREATE UNIQUE INDEX idx_conversation_attempts_run_id
+        ON conversation_attempts(run_id)
+        WHERE run_id IS NOT NULL
+        """,
+        """
+        CREATE UNIQUE INDEX idx_conversation_attempts_number
+        ON conversation_attempts(turn_id, attempt_no)
+        """,
+        """
+        CREATE UNIQUE INDEX idx_conversation_attempts_retry_key
+        ON conversation_attempts(turn_id, idempotency_key)
+        WHERE idempotency_key IS NOT NULL
+        """,
+        """
+        CREATE UNIQUE INDEX idx_conversation_attempts_one_active
+        ON conversation_attempts(turn_id)
+        WHERE status IN ('queued', 'running', 'waiting_for_approval', 'resuming')
+        """,
+        """
+        CREATE UNIQUE INDEX idx_conversation_actions_idempotency
+        ON conversation_actions(attempt_id, idempotency_key)
+        WHERE idempotency_key IS NOT NULL
+        """,
+        """
+        CREATE UNIQUE INDEX idx_messages_one_streaming_per_attempt
+        ON messages(attempt_id)
+        WHERE attempt_id IS NOT NULL AND state = 'streaming'
+        """,
+    ),
 }
 
 
@@ -160,6 +262,163 @@ _POSTGRES_MIGRATIONS: dict[int, tuple[str, ...]] = {
     ),
     2: (),
     3: (),
+    4: (
+        """
+        CREATE TABLE IF NOT EXISTS conversations (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            agent TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            title TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at DOUBLE PRECISION NOT NULL,
+            updated_at DOUBLE PRECISION NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS messages (
+            id BIGSERIAL PRIMARY KEY,
+            conversation_id TEXT NOT NULL REFERENCES conversations(id),
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            token_estimate INTEGER NOT NULL DEFAULT 0,
+            run_id TEXT,
+            agent_id TEXT,
+            created_at DOUBLE PRECISION NOT NULL,
+            turn_id TEXT,
+            attempt_id TEXT,
+            kind TEXT NOT NULL DEFAULT 'assistant_output',
+            state TEXT NOT NULL DEFAULT 'sealed',
+            artifact_id TEXT,
+            supersedes_message_id BIGINT,
+            visibility TEXT NOT NULL DEFAULT 'user',
+            metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+            updated_at DOUBLE PRECISION NOT NULL DEFAULT 0
+        )
+        """,
+        "ALTER TABLE messages ADD COLUMN IF NOT EXISTS turn_id TEXT",
+        "ALTER TABLE messages ADD COLUMN IF NOT EXISTS attempt_id TEXT",
+        """
+        ALTER TABLE messages
+        ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'assistant_output'
+        """,
+        """
+        ALTER TABLE messages
+        ADD COLUMN IF NOT EXISTS state TEXT NOT NULL DEFAULT 'sealed'
+        """,
+        "ALTER TABLE messages ADD COLUMN IF NOT EXISTS artifact_id TEXT",
+        "ALTER TABLE messages ADD COLUMN IF NOT EXISTS supersedes_message_id BIGINT",
+        """
+        ALTER TABLE messages
+        ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL DEFAULT 'user'
+        """,
+        """
+        ALTER TABLE messages
+        ADD COLUMN IF NOT EXISTS metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb
+        """,
+        """
+        ALTER TABLE messages
+        ADD COLUMN IF NOT EXISTS updated_at DOUBLE PRECISION NOT NULL DEFAULT 0
+        """,
+        """
+        UPDATE messages SET kind = 'user_input'
+        WHERE role = 'user' AND kind = 'assistant_output'
+        """,
+        "UPDATE messages SET updated_at = created_at WHERE updated_at = 0",
+        """
+        CREATE TABLE IF NOT EXISTS conversation_turns (
+            id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL REFERENCES conversations(id),
+            tenant_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            client_message_id TEXT NOT NULL,
+            user_message_id BIGINT NOT NULL REFERENCES messages(id),
+            ordinal INTEGER NOT NULL,
+            active_attempt_id TEXT,
+            canonical_attempt_id TEXT,
+            created_at DOUBLE PRECISION NOT NULL,
+            updated_at DOUBLE PRECISION NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS conversation_attempts (
+            id TEXT PRIMARY KEY,
+            turn_id TEXT NOT NULL REFERENCES conversation_turns(id),
+            run_id TEXT,
+            attempt_no INTEGER NOT NULL,
+            retry_of_attempt_id TEXT REFERENCES conversation_attempts(id),
+            idempotency_key TEXT,
+            source TEXT NOT NULL DEFAULT 'native',
+            agent_id TEXT,
+            status TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            error_code TEXT NOT NULL DEFAULT '',
+            error_summary TEXT NOT NULL DEFAULT '',
+            version INTEGER NOT NULL DEFAULT 1,
+            started_at DOUBLE PRECISION NOT NULL,
+            finished_at DOUBLE PRECISION
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS conversation_actions (
+            id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL REFERENCES conversations(id),
+            turn_id TEXT NOT NULL REFERENCES conversation_turns(id),
+            attempt_id TEXT NOT NULL REFERENCES conversation_attempts(id),
+            type TEXT NOT NULL DEFAULT 'approval',
+            status TEXT NOT NULL,
+            thread_id TEXT NOT NULL,
+            skills_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+            preview_artifact_id TEXT,
+            preview_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+            decision TEXT,
+            decided_by TEXT,
+            decision_context_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+            idempotency_key TEXT,
+            version INTEGER NOT NULL DEFAULT 1,
+            created_at DOUBLE PRECISION NOT NULL,
+            decided_at DOUBLE PRECISION,
+            completed_at DOUBLE PRECISION
+        )
+        """,
+        """
+        CREATE UNIQUE INDEX idx_conversation_turns_client_message
+        ON conversation_turns(tenant_id, user_id, client_message_id)
+        """,
+        """
+        CREATE UNIQUE INDEX idx_conversation_turns_ordinal
+        ON conversation_turns(conversation_id, ordinal)
+        """,
+        """
+        CREATE UNIQUE INDEX idx_conversation_attempts_run_id
+        ON conversation_attempts(run_id)
+        WHERE run_id IS NOT NULL
+        """,
+        """
+        CREATE UNIQUE INDEX idx_conversation_attempts_number
+        ON conversation_attempts(turn_id, attempt_no)
+        """,
+        """
+        CREATE UNIQUE INDEX idx_conversation_attempts_retry_key
+        ON conversation_attempts(turn_id, idempotency_key)
+        WHERE idempotency_key IS NOT NULL
+        """,
+        """
+        CREATE UNIQUE INDEX idx_conversation_attempts_one_active
+        ON conversation_attempts(turn_id)
+        WHERE status IN ('queued', 'running', 'waiting_for_approval', 'resuming')
+        """,
+        """
+        CREATE UNIQUE INDEX idx_conversation_actions_idempotency
+        ON conversation_actions(attempt_id, idempotency_key)
+        WHERE idempotency_key IS NOT NULL
+        """,
+        """
+        CREATE UNIQUE INDEX idx_messages_one_streaming_per_attempt
+        ON messages(attempt_id)
+        WHERE attempt_id IS NOT NULL AND state = 'streaming'
+        """,
+    ),
 }
 
 
@@ -179,6 +438,8 @@ def run_sqlite_migrations(path: str | Path) -> list[int]:
         for version, statements in _SQLITE_MIGRATIONS.items():
             if version in applied:
                 continue
+            if version == 4:
+                _sqlite_prepare_conversation_projection(conn)
             for statement in statements:
                 conn.execute(statement)
             if version == 2:
@@ -393,6 +654,70 @@ def _postgres_add_multi_agent_run_columns(conn: Any) -> None:
         "CREATE INDEX IF NOT EXISTS idx_task_runs_conversation "
         "ON task_runs(tenant_id, conversation_id, started_at DESC)"
     )
+
+
+def _sqlite_prepare_conversation_projection(conn: sqlite3.Connection) -> None:
+    """先建立会话基础表，再为已有消息表补齐投影字段。"""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS conversations (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            agent TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            title TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            token_estimate INTEGER NOT NULL DEFAULT 0,
+            run_id TEXT,
+            agent_id TEXT,
+            created_at REAL NOT NULL,
+            turn_id TEXT,
+            attempt_id TEXT,
+            kind TEXT NOT NULL DEFAULT 'assistant_output',
+            state TEXT NOT NULL DEFAULT 'sealed',
+            artifact_id TEXT,
+            supersedes_message_id INTEGER,
+            visibility TEXT NOT NULL DEFAULT 'user',
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            updated_at REAL NOT NULL DEFAULT 0,
+            FOREIGN KEY(conversation_id) REFERENCES conversations(id)
+        )
+        """
+    )
+
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(messages)")}
+    additions = {
+        "turn_id": "TEXT",
+        "attempt_id": "TEXT",
+        "kind": "TEXT NOT NULL DEFAULT 'assistant_output'",
+        "state": "TEXT NOT NULL DEFAULT 'sealed'",
+        "artifact_id": "TEXT",
+        "supersedes_message_id": "INTEGER",
+        "visibility": "TEXT NOT NULL DEFAULT 'user'",
+        "metadata_json": "TEXT NOT NULL DEFAULT '{}'",
+        "updated_at": "REAL NOT NULL DEFAULT 0",
+    }
+    added_kind = "kind" not in columns
+    added_updated_at = "updated_at" not in columns
+    for name, column_type in additions.items():
+        if name not in columns:
+            conn.execute(f"ALTER TABLE messages ADD COLUMN {name} {column_type}")
+    if added_kind:
+        conn.execute("UPDATE messages SET kind = 'user_input' WHERE role = 'user'")
+    if added_updated_at:
+        conn.execute("UPDATE messages SET updated_at = created_at")
 
 
 def _log_schema_migrations(backend: str, versions: list[int]) -> None:

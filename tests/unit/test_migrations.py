@@ -10,13 +10,97 @@ import pytest
 
 from agentkit.core import migrations
 from agentkit.core.audit import SQLiteAuditLog
+from agentkit.core.memory.store import ConversationStore
 from agentkit.core.migrations import run_sqlite_migrations
+
+PROJECTION_TABLES = {
+    "conversation_turns",
+    "conversation_attempts",
+    "conversation_actions",
+}
+
+MESSAGE_PROJECTION_COLUMNS = {
+    "turn_id",
+    "attempt_id",
+    "kind",
+    "state",
+    "artifact_id",
+    "supersedes_message_id",
+    "visibility",
+    "metadata_json",
+    "updated_at",
+}
+
+
+def test_sqlite_v4_creates_conversation_projection_schema(tmp_path) -> None:
+    db_path = tmp_path / "runtime.sqlite"
+
+    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4]
+    with sqlite3.connect(db_path) as conn:
+        tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        message_columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
+
+    assert PROJECTION_TABLES <= tables
+    assert MESSAGE_PROJECTION_COLUMNS <= message_columns
+
+
+def test_sqlite_v4_upgrades_existing_v3_conversation_schema(tmp_path) -> None:
+    db_path = tmp_path / "runtime.sqlite"
+    _create_existing_v3_conversation_schema(db_path)
+
+    assert run_sqlite_migrations(db_path) == [4]
+    with sqlite3.connect(db_path) as conn:
+        tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        message_columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
+
+    assert PROJECTION_TABLES <= tables
+    assert MESSAGE_PROJECTION_COLUMNS <= message_columns
+
+
+def test_sqlite_store_schema_matches_v4_migration(tmp_path) -> None:
+    migrated_path = tmp_path / "migrated.sqlite"
+    direct_path = tmp_path / "direct.sqlite"
+    run_sqlite_migrations(migrated_path)
+    ConversationStore(direct_path)
+
+    with sqlite3.connect(migrated_path) as migrated, sqlite3.connect(direct_path) as direct:
+        for table in (*sorted(PROJECTION_TABLES), "messages"):
+            migrated_columns = [
+                tuple(row[1:6]) for row in migrated.execute(f"PRAGMA table_info({table})")
+            ]
+            direct_columns = [
+                tuple(row[1:6]) for row in direct.execute(f"PRAGMA table_info({table})")
+            ]
+            assert direct_columns == migrated_columns
+
+        projection_indexes = {
+            row[0]
+            for row in migrated.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND sql IS NOT NULL"
+            )
+            if row[0].startswith(("idx_conversation_", "idx_messages_one_streaming"))
+        }
+        direct_indexes = {
+            row[0]
+            for row in direct.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND sql IS NOT NULL"
+            )
+            if row[0].startswith(("idx_conversation_", "idx_messages_one_streaming"))
+        }
+
+    assert direct_indexes == projection_indexes
 
 
 def test_sqlite_migrations_bootstrap_and_record_version(tmp_path) -> None:
     db_path = tmp_path / "runtime.sqlite"
 
-    assert run_sqlite_migrations(db_path) == [1, 2, 3]
+    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4]
     assert run_sqlite_migrations(db_path) == []
 
     with sqlite3.connect(db_path) as conn:
@@ -47,7 +131,7 @@ def test_sqlite_migrations_bootstrap_and_record_version(tmp_path) -> None:
         "tool_idempotency_records",
         "workflow_artifacts",
     ]
-    assert versions == [(1,), (2,), (3,)]
+    assert versions == [(1,), (2,), (3,), (4,)]
     with sqlite3.connect(db_path) as conn:
         run_columns = {row[1] for row in conn.execute("PRAGMA table_info(task_runs)").fetchall()}
     assert {"agent_id", "parent_run_id", "conversation_id"} <= run_columns
@@ -79,7 +163,7 @@ def test_sqlite_migrations_accept_existing_audit_schema(tmp_path) -> None:
             """
         )
 
-    assert run_sqlite_migrations(db_path) == [1, 2, 3]
+    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4]
 
 
 def test_sqlite_migrations_record_applied_timestamp(tmp_path) -> None:
@@ -198,7 +282,7 @@ def test_sqlite_migrations_are_safe_during_concurrent_bootstrap(tmp_path) -> Non
 
     assert not any(caller.is_alive() for caller in callers)
     assert errors == []
-    assert sorted(results) == [[], [1, 2, 3]]
+    assert sorted(results) == [[], [1, 2, 3, 4]]
 
 
 def test_sqlite_migrations_close_connection(tmp_path, monkeypatch) -> None:
@@ -232,7 +316,7 @@ def test_sqlite_migrations_close_connection(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(migrations.sqlite3, "connect", tracking_connect)
 
-    assert run_sqlite_migrations(db_path) == [1, 2, 3]
+    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4]
     assert len(connections) == 1
     assert connections[0].closed is True
 
@@ -247,6 +331,7 @@ def test_sqlite_audit_log_bootstraps_migrations(tmp_path) -> None:
             (1,),
             (2,),
             (3,),
+            (4,),
         ]
 
 
@@ -284,7 +369,7 @@ def test_sqlite_v2_adopts_legacy_artifacts_without_losing_valid_rows(tmp_path) -
             ),
         )
 
-    assert run_sqlite_migrations(db_path) == [2, 3]
+    assert run_sqlite_migrations(db_path) == [2, 3, 4]
 
     with sqlite3.connect(db_path) as conn:
         preserved = conn.execute(
@@ -340,7 +425,7 @@ def test_sqlite_migrations_log_new_versions_once(tmp_path, caplog) -> None:
     db_path = tmp_path / "runtime.sqlite"
     caplog.set_level(logging.INFO, logger="agentkit.core.migrations")
 
-    assert run_sqlite_migrations(db_path) == [1, 2, 3]
+    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4]
 
     migration_records = [
         record for record in caplog.records if record.getMessage() == "schema_migrated"
@@ -349,6 +434,7 @@ def test_sqlite_migrations_log_new_versions_once(tmp_path, caplog) -> None:
         ("sqlite", 1),
         ("sqlite", 2),
         ("sqlite", 3),
+        ("sqlite", 4),
     ]
 
     caplog.clear()
@@ -388,5 +474,40 @@ def _create_legacy_v1_artifact_schema(db_path) -> None:
             );
             CREATE INDEX idx_workflow_artifacts_scope
             ON workflow_artifacts(tenant_id, run_id, created_at, artifact_id);
+            """
+        )
+
+
+def _create_existing_v3_conversation_schema(db_path) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at REAL NOT NULL
+            );
+            INSERT INTO schema_migrations (version, applied_at)
+            VALUES (1, 1.0), (2, 2.0), (3, 3.0);
+            CREATE TABLE conversations (
+                id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL,
+                agent TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                title TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                token_estimate INTEGER NOT NULL DEFAULT 0,
+                run_id TEXT,
+                agent_id TEXT,
+                created_at REAL NOT NULL,
+                FOREIGN KEY(conversation_id) REFERENCES conversations(id)
+            );
             """
         )

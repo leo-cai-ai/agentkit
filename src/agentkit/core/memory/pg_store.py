@@ -455,7 +455,16 @@ class PgConversationStore(ConversationStore):
                     token_estimate INTEGER NOT NULL DEFAULT 0,
                     run_id TEXT,
                     agent_id TEXT,
-                    created_at DOUBLE PRECISION NOT NULL
+                    created_at DOUBLE PRECISION NOT NULL,
+                    turn_id TEXT,
+                    attempt_id TEXT,
+                    kind TEXT NOT NULL DEFAULT 'assistant_output',
+                    state TEXT NOT NULL DEFAULT 'sealed',
+                    artifact_id TEXT,
+                    supersedes_message_id BIGINT,
+                    visibility TEXT NOT NULL DEFAULT 'user',
+                    metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    updated_at DOUBLE PRECISION NOT NULL DEFAULT 0
                 )
                 """
             )
@@ -466,6 +475,139 @@ class PgConversationStore(ConversationStore):
                 """
             )
             conn.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS agent_id TEXT")
+            conn.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS turn_id TEXT")
+            conn.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS attempt_id TEXT")
+            conn.execute(
+                "ALTER TABLE messages ADD COLUMN IF NOT EXISTS "
+                "kind TEXT NOT NULL DEFAULT 'assistant_output'"
+            )
+            conn.execute(
+                "ALTER TABLE messages ADD COLUMN IF NOT EXISTS "
+                "state TEXT NOT NULL DEFAULT 'sealed'"
+            )
+            conn.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS artifact_id TEXT")
+            conn.execute(
+                "ALTER TABLE messages ADD COLUMN IF NOT EXISTS supersedes_message_id BIGINT"
+            )
+            conn.execute(
+                "ALTER TABLE messages ADD COLUMN IF NOT EXISTS "
+                "visibility TEXT NOT NULL DEFAULT 'user'"
+            )
+            conn.execute(
+                "ALTER TABLE messages ADD COLUMN IF NOT EXISTS "
+                "metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb"
+            )
+            conn.execute(
+                "ALTER TABLE messages ADD COLUMN IF NOT EXISTS "
+                "updated_at DOUBLE PRECISION NOT NULL DEFAULT 0"
+            )
+            conn.execute(
+                "UPDATE messages SET kind = 'user_input' "
+                "WHERE role = 'user' AND kind = 'assistant_output'"
+            )
+            conn.execute("UPDATE messages SET updated_at = created_at WHERE updated_at = 0")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS conversation_turns (
+                    id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL REFERENCES conversations(id),
+                    tenant_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    client_message_id TEXT NOT NULL,
+                    user_message_id BIGINT NOT NULL REFERENCES messages(id),
+                    ordinal INTEGER NOT NULL,
+                    active_attempt_id TEXT,
+                    canonical_attempt_id TEXT,
+                    created_at DOUBLE PRECISION NOT NULL,
+                    updated_at DOUBLE PRECISION NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS conversation_attempts (
+                    id TEXT PRIMARY KEY,
+                    turn_id TEXT NOT NULL REFERENCES conversation_turns(id),
+                    run_id TEXT,
+                    attempt_no INTEGER NOT NULL,
+                    retry_of_attempt_id TEXT REFERENCES conversation_attempts(id),
+                    idempotency_key TEXT,
+                    source TEXT NOT NULL DEFAULT 'native',
+                    agent_id TEXT,
+                    status TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    error_code TEXT NOT NULL DEFAULT '',
+                    error_summary TEXT NOT NULL DEFAULT '',
+                    version INTEGER NOT NULL DEFAULT 1,
+                    started_at DOUBLE PRECISION NOT NULL,
+                    finished_at DOUBLE PRECISION
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS conversation_actions (
+                    id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL REFERENCES conversations(id),
+                    turn_id TEXT NOT NULL REFERENCES conversation_turns(id),
+                    attempt_id TEXT NOT NULL REFERENCES conversation_attempts(id),
+                    type TEXT NOT NULL DEFAULT 'approval',
+                    status TEXT NOT NULL,
+                    thread_id TEXT NOT NULL,
+                    skills_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    preview_artifact_id TEXT,
+                    preview_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    decision TEXT,
+                    decided_by TEXT,
+                    decision_context_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    idempotency_key TEXT,
+                    version INTEGER NOT NULL DEFAULT 1,
+                    created_at DOUBLE PRECISION NOT NULL,
+                    decided_at DOUBLE PRECISION,
+                    completed_at DOUBLE PRECISION
+                )
+                """
+            )
+            projection_indexes = (
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_turns_client_message
+                ON conversation_turns(tenant_id, user_id, client_message_id)
+                """,
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_turns_ordinal
+                ON conversation_turns(conversation_id, ordinal)
+                """,
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_attempts_run_id
+                ON conversation_attempts(run_id) WHERE run_id IS NOT NULL
+                """,
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_attempts_number
+                ON conversation_attempts(turn_id, attempt_no)
+                """,
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_attempts_retry_key
+                ON conversation_attempts(turn_id, idempotency_key)
+                WHERE idempotency_key IS NOT NULL
+                """,
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_attempts_one_active
+                ON conversation_attempts(turn_id)
+                WHERE status IN ('queued', 'running', 'waiting_for_approval', 'resuming')
+                """,
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_actions_idempotency
+                ON conversation_actions(attempt_id, idempotency_key)
+                WHERE idempotency_key IS NOT NULL
+                """,
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_one_streaming_per_attempt
+                ON messages(attempt_id)
+                WHERE attempt_id IS NOT NULL AND state = 'streaming'
+                """,
+            )
+            for statement in projection_indexes:
+                conn.execute(statement)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS conversation_summaries (
