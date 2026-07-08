@@ -225,8 +225,11 @@ class ConversationPersistenceService:
     ) -> None:
         if self._summarizer is None:
             return
+        projection = self._projection
+        if projection is None:
+            raise RuntimeError("ConversationProjectionService 未配置")
         all_messages = self._store.all_messages(conversation_id)
-        messages = self._projection.context_messages(
+        messages = projection.context_messages(
             conversation_id=conversation_id,
             exclude_turn_id=None,
             limit=max(2, len(all_messages)),

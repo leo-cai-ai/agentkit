@@ -156,10 +156,14 @@ blocked → 阻止或修订预算耗尽
 | Method | Path | Permission | 用途 |
 | --- | --- | --- | --- |
 | GET/POST | `/api/conversations` | `chat:use` | 列表/新建会话 |
-| GET | `/api/conversations/<id>/messages` | `chat:use` | 会话消息 |
+| GET | `/api/conversations/<id>/timeline` | `chat:use` | 按 Turn 返回全部 Attempt、Message 与 Action |
+| GET | `/api/conversations/timeline?client_message_id=<id>` | `chat:use` | SSE accepted 丢失后的幂等 Timeline 定位 |
+| GET | `/api/conversations/<id>/messages` | `chat:use` | 兼容只读消息列表；不承担恢复状态 |
+| POST | `/api/conversation-actions/<action_id>/decision` | `task:approve` | durable 审批决策与恢复 |
+| POST | `/api/conversation-actions/<action_id>/decision/stream` | `task:approve` | 流式审批决策与恢复 |
+| POST | `/api/conversation-turns/<turn_id>/attempts` | `chat:use` | 以 `retry_of_attempt_id` 创建 Attempt N+1 |
 | DELETE | `/api/conversations/<id>` | `chat:use` | 普通删除 |
 | POST | `/api/conversations/<id>/terminate-and-delete` | `chat:use` | 二次确认强删失败/待审批会话 |
-| POST | `/api/conversations/<id>/retry/stream` | `chat:use` | 失败任务重试 |
 | GET | `/api/runs`、`/api/runs/<id>` | `runs:view` | Run/事件查看 |
 | GET | `/api/registry` | `governance:view` | Agent-Skill-Tool Network 数据 |
 | POST | `/api/admin/reload` | `runtime:admin` | 清除 Runtime Cache 并重载 |
@@ -316,12 +320,20 @@ idempotency_failed
 idempotency_outcome_unknown
 ```
 
-### 6.5 Safety 与 Conversation
+### 6.5 Safety 与 Conversation Projection
 
 ```text
 safety_blocked
-conversation_retry_started
-conversation_retry_replace_missed
+conversation_turn_created
+conversation_attempt_created
+conversation_attempt_retried
+conversation_attempt_stage_changed
+conversation_message_sealed
+conversation_action_created
+conversation_action_decided
+conversation_action_completed
+conversation_action_invalidated
+conversation_projection_reconciled
 ```
 
 事件 Payload 以源码为准；它是可演进内部契约，不应让业务客户端依赖未文档化字段。
@@ -408,18 +420,23 @@ OTEL_EXPORTER_OTLP_ENDPOINT
 
 | 数据 | 作用域/主键 | Backend |
 | --- | --- | --- |
-| Conversation | tenant + agent + user + conversation | SQLite/PostgreSQL |
-| Message/Summary | conversation | SQLite/PostgreSQL |
+| Conversation/Turn | tenant + agent + user + conversation/client_message | SQLite/PostgreSQL |
+| Attempt | turn + attempt_no/retry idempotency key | SQLite/PostgreSQL |
+| Message/Revision | conversation + turn + attempt | SQLite/PostgreSQL |
+| Action | conversation + turn + attempt + version | SQLite/PostgreSQL |
+| Summary | conversation（仅 canonical Context） | SQLite/PostgreSQL |
 | 长期 Memory | tenant + agent + user | SQLite/PostgreSQL/pgvector |
 | RAG Chunk | tenant + collection + ACL | Chroma/Memory |
 | Run/Audit Event | tenant + run | Memory/SQLite/PostgreSQL |
 | Artifact | tenant + run + artifact | Memory/SQLite/PostgreSQL |
-| Checkpoint | tenant Runtime DB + thread | Memory/SQLite Checkpointer |
+| Checkpoint | tenant Runtime DB + thread | Memory/SQLite/PostgreSQL Checkpointer |
 | Idempotency | tenant + tool + key | SQLite/PostgreSQL |
 | Browser Profile | Profile Root + Site Key；部署时按租户/账号分根 | Filesystem |
 | Rate Limit Bucket | Process 或 SQLite File | Memory/SQLite |
 
 隔离说明见 [安全、多租户与可靠性](09_SECURITY_MULTI_TENANCY_AND_RELIABILITY.md)。
+
+生产环境的 `APPROVAL_CHECKPOINTER` 只能是 `sqlite` 或 `postgres`；多实例使用 `postgres`。Checkpoint 缺失时对应 Action 变为 `invalidated`、Attempt 变为 `interrupted`，Timeline 历史保留，Runtime 不自动重放原请求。
 
 ## 9. 测试能力映射
 

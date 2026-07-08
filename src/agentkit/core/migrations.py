@@ -1071,22 +1071,26 @@ def _sqlite_adopt_legacy_conversations(conn: sqlite3.Connection) -> None:
                 else None
             )
             candidate_run_id = user_run_id or assistant_run_id
-            duplicate_run = candidate_run_id is not None and conn.execute(
-                "SELECT 1 FROM conversation_attempts WHERE run_id = ? LIMIT 1",
-                (candidate_run_id,),
-            ).fetchone() is not None
-            run_id = None if duplicate_run else candidate_run_id
-            error_summary = (
-                f"duplicate legacy run: {candidate_run_id}" if duplicate_run else ""
+            duplicate_run = (
+                candidate_run_id is not None
+                and conn.execute(
+                    "SELECT 1 FROM conversation_attempts WHERE run_id = ? LIMIT 1",
+                    (candidate_run_id,),
+                ).fetchone()
+                is not None
             )
+            run_id = None if duplicate_run else candidate_run_id
+            error_summary = f"duplicate legacy run: {candidate_run_id}" if duplicate_run else ""
             succeeded = assistant_message is not None
             started_at = float(user_message[4])
-            finished_at = float(assistant_message[4]) if succeeded else started_at
+            finished_at = (
+                float(assistant_message[4]) if assistant_message is not None else started_at
+            )
             agent_id = (
-                str(assistant_message[3] or "").strip()
-                if assistant_message is not None
-                else ""
-            ) or str(user_message[3] or "").strip() or str(conversation_agent)
+                (str(assistant_message[3] or "").strip() if assistant_message is not None else "")
+                or str(user_message[3] or "").strip()
+                or str(conversation_agent)
+            )
 
             conn.execute(
                 """

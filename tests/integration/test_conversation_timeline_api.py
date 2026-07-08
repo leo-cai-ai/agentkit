@@ -40,9 +40,7 @@ def _sse_frames(response) -> list[dict]:
         if line.startswith("event: "):
             event = line.removeprefix("event: ")
         elif line.startswith("data: "):
-            frames.append(
-                {"event": event, "data": json.loads(line.removeprefix("data: "))}
-            )
+            frames.append({"event": event, "data": json.loads(line.removeprefix("data: "))})
     return frames
 
 
@@ -87,9 +85,7 @@ def test_stream_accepts_and_persists_turn_before_agent_failure(client, monkeypat
     frames = _sse_frames(response)
     assert frames[0]["event"] == "accepted"
     accepted = frames[0]["data"]
-    timeline = client.get(
-        f"/api/conversations/{accepted['conversation_id']}/timeline"
-    ).get_json()
+    timeline = client.get(f"/api/conversations/{accepted['conversation_id']}/timeline").get_json()
     assert timeline["turns"][0]["user_message"]["content"] == "你好"
 
 
@@ -134,9 +130,7 @@ def test_short_stream_failure_force_flushes_partial_before_attempt_failure(
     frames = _sse_frames(response)
     accepted = next(frame for frame in frames if frame["event"] == "accepted")["data"]
     assert any(frame["event"] == "error" for frame in frames)
-    timeline = client.get(
-        f"/api/conversations/{accepted['conversation_id']}/timeline"
-    ).get_json()
+    timeline = client.get(f"/api/conversations/{accepted['conversation_id']}/timeline").get_json()
     attempt = timeline["turns"][0]["attempts"][0]
     assert attempt["status"] == "failed"
     assert len(attempt["messages"]) == 1
@@ -181,9 +175,7 @@ def test_retry_endpoint_appends_attempt_and_keeps_first_attempt(client) -> None:
     assert response.status_code == 200
     assert frames[0]["event"] == "accepted"
     assert frames[0]["data"]["attempt_id"] != accepted.attempt_id
-    timeline = client.get(
-        f"/api/conversations/{accepted.conversation_id}/timeline"
-    ).get_json()
+    timeline = client.get(f"/api/conversations/{accepted.conversation_id}/timeline").get_json()
     assert len(timeline["turns"][0]["attempts"]) == 2
     assert timeline["turns"][0]["attempts"][0]["id"] == accepted.attempt_id
 
@@ -220,9 +212,9 @@ def test_duplicate_retry_command_does_not_restart_coordinator(client, monkeypatc
 
     assert first.status_code == second.status_code == 200
     assert calls == 1
-    assert _sse_frames(first)[0]["data"]["attempt_id"] == _sse_frames(second)[0]["data"][
-        "attempt_id"
-    ]
+    assert (
+        _sse_frames(first)[0]["data"]["attempt_id"] == _sse_frames(second)[0]["data"]["attempt_id"]
+    )
 
 
 def test_timeline_rejects_foreign_tenant_and_user_scope(client) -> None:
@@ -329,9 +321,7 @@ def test_old_retry_route_is_removed_and_messages_has_no_execution_recovery(clien
         f"/api/conversations/{accepted.conversation_id}/retry/stream",
         headers={"X-CSRF-Token": token},
     )
-    messages = client.get(
-        f"/api/conversations/{accepted.conversation_id}/messages"
-    ).get_json()
+    messages = client.get(f"/api/conversations/{accepted.conversation_id}/messages").get_json()
 
     assert old_retry.status_code == 404
     assert set(messages) == {"messages"}

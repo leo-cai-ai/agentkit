@@ -473,7 +473,7 @@ class ConversationProjectionService:
         lease_owner: str | None = None,
         lease_generation: int | None = None,
     ) -> int:
-        """单事务封口审批输出、Action 与 Attempt。"""
+        """单事务封口审批输出与 Attempt；失败时保留 durable 决策。"""
         if status not in _TERMINAL_STATUSES:
             raise ValueError("approval completion status must be terminal")
         self._validate_accepted(accepted, run_id=run_id)
@@ -512,7 +512,11 @@ class ConversationProjectionService:
                 attempt_id=scope["attempt_id"],
                 action_id=action_id,
                 agent_id=agent_id,
-                status="completed",
+                status=(
+                    "completed"
+                    if status is AttemptStatus.SUCCEEDED
+                    else str(scope["action_status"])
+                ),
             )
         return message_id
 

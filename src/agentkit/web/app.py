@@ -86,17 +86,13 @@ class _StreamingProjectionObserver:
             self._content += chunk
             try:
                 if self._message_id is None:
-                    attempt = self._runtime.conversations.get_attempt(
-                        self._accepted.attempt_id
-                    )
+                    attempt = self._runtime.conversations.get_attempt(self._accepted.attempt_id)
                     if attempt is None or not attempt.get("run_id"):
                         return
-                    self._message_id = (
-                        self._runtime.conversation_projection.open_streaming_output(
-                            accepted=self._accepted,
-                            run_id=str(attempt["run_id"]),
-                            agent_id=str(attempt.get("agent_id") or "general_agent"),
-                        )
+                    self._message_id = self._runtime.conversation_projection.open_streaming_output(
+                        accepted=self._accepted,
+                        run_id=str(attempt["run_id"]),
+                        agent_id=str(attempt.get("agent_id") or "general_agent"),
                     )
                 self._runtime.conversation_projection.checkpoint_streaming_output(
                     self._message_id,
@@ -508,7 +504,6 @@ def _task_request(
         "context",
         "message",
         "rejected_skills",
-        "retry_of_run_id",
         "roles",
         "text",
         "user_id",
@@ -737,9 +732,6 @@ def _prepare_retry_command(
         attempt_id=retry.attempt_id,
     )
     accepted = replace(resolved, created=retry.created)
-    source_attempt = next(
-        attempt for attempt in turn["attempts"] if str(attempt["id"]) == retry_of_attempt_id
-    )
     task = _chat_task_request(
         {"message": str(turn["user_message"]["content"])},
         runtime=runtime,
@@ -753,7 +745,6 @@ def _prepare_retry_command(
             "conversation_turn_id": accepted.turn_id,
             "conversation_attempt_id": accepted.attempt_id,
             "retry_of_attempt_id": retry_of_attempt_id,
-            "retry_of_run_id": str(source_attempt.get("run_id") or ""),
         },
     )
     return _PreparedChatCommand(task=task, accepted=accepted)

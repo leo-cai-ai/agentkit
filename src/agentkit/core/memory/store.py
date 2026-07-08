@@ -724,7 +724,7 @@ class ConversationStore:
         lease_owner: str | None = None,
         lease_generation: int | None = None,
     ) -> tuple[int, bool, dict[str, Any]]:
-        """原子封口审批输出、Action、Attempt，并在成功时设置 canonical。"""
+        """原子封口审批输出与 Attempt；仅成功执行才完成 Action。"""
         if message_state not in _TERMINAL_MESSAGE_STATES:
             raise ValueError("message state must be terminal")
         if attempt_status not in _TERMINAL_ATTEMPT_STATUSES:
@@ -785,7 +785,16 @@ class ConversationStore:
                 """,
                 (scope["attempt_id"],),
             ).fetchone()
-            if scope["action_status"] == "completed" and scope["attempt_status"] == attempt_status:
+            terminal_action_status = (
+                "completed"
+                if attempt_status == AttemptStatus.SUCCEEDED.value
+                else str(scope["action_status"])
+            )
+            if (
+                scope["action_status"] == terminal_action_status
+                and scope["attempt_status"] == attempt_status
+                and terminal_action_status in {"approved", "rejected", "completed"}
+            ):
                 terminal_output = conn.execute(
                     f"""
                     SELECT id, state FROM messages
@@ -801,6 +810,11 @@ class ConversationStore:
                 raise ConversationConflictError("approval action is not active")
             if scope["attempt_status"] not in _NON_TERMINAL_ATTEMPT_STATUSES:
                 raise ConversationConflictError("approval attempt is not active")
+            if attempt_status != AttemptStatus.SUCCEEDED.value and scope["action_status"] not in {
+                "approved",
+                "rejected",
+            }:
+                raise ConversationConflictError("failed approval has no durable decision")
 
             if output is None:
                 previous = conn.execute(
@@ -877,10 +891,19 @@ class ConversationStore:
             action_changed = conn.execute(
                 f"""
                 UPDATE conversation_actions
-                SET status = 'completed', version = version + 1, completed_at = {placeholder}
+                SET status = {placeholder}, version = version + 1,
+                    completed_at = CASE
+                        WHEN {placeholder} = 'completed' THEN {placeholder}
+                        ELSE completed_at
+                    END
                 WHERE id = {placeholder} AND status IN ('pending', 'approved', 'rejected')
                 """,
-                (resolved_now, action_id),
+                (
+                    terminal_action_status,
+                    terminal_action_status,
+                    resolved_now,
+                    action_id,
+                ),
             )
             if action_changed.rowcount != 1:
                 raise ConversationConflictError("approval action completion failed")

@@ -615,10 +615,7 @@ def test_sqlite_v5_duplicate_run_across_pairs_keeps_every_turn_projected(tmp_pat
         20.0,
         10.0,
     ]
-    before = [
-        (row["content"], row["run_id"])
-        for row in _read_rows(db_path, "messages")
-    ]
+    before = [(row["content"], row["run_id"]) for row in _read_rows(db_path, "messages")]
 
     assert run_sqlite_migrations(db_path) == [5]
 
@@ -629,10 +626,7 @@ def test_sqlite_v5_duplicate_run_across_pairs_keeps_every_turn_projected(tmp_pat
     ]
     assert attempts[1]["id"].startswith("legacy-attempt:")
     assert "duplicate legacy run" in attempts[1]["error_summary"]
-    assert [
-        (row["content"], row["run_id"])
-        for row in _read_rows(db_path, "messages")
-    ] == before
+    assert [(row["content"], row["run_id"]) for row in _read_rows(db_path, "messages")] == before
     _assert_projection_references_exist(db_path)
 
     snapshot = {
@@ -691,9 +685,10 @@ def test_sqlite_v5_existing_attempt_owns_run_and_legacy_pair_uses_synthetic(
     assert len(legacy_attempts) == 1
     assert legacy_attempts[0]["run_id"] is None
     assert "duplicate legacy run" in legacy_attempts[0]["error_summary"]
-    assert [
-        row["run_id"] for row in _read_rows(db_path, "messages")[-2:]
-    ] == ["run-occupied", "run-occupied"]
+    assert [row["run_id"] for row in _read_rows(db_path, "messages")[-2:]] == [
+        "run-occupied",
+        "run-occupied",
+    ]
     _assert_projection_references_exist(db_path)
 
 
@@ -702,8 +697,7 @@ def test_postgres_v5_uses_set_based_legacy_adoption_without_content_updates() ->
     normalized = [" ".join(statement.lower().split()) for statement in statements]
 
     assert any(
-        "insert into messages" in statement and "select" in statement
-        for statement in normalized
+        "insert into messages" in statement and "select" in statement for statement in normalized
     )
     assert any("insert into conversation_turns" in statement for statement in normalized)
     assert any("insert into conversation_attempts" in statement for statement in normalized)
@@ -711,15 +705,10 @@ def test_postgres_v5_uses_set_based_legacy_adoption_without_content_updates() ->
     assert any("on conflict" in statement for statement in normalized)
     assert not any("update messages set content" in statement for statement in normalized)
     attempt_statement = next(
-        statement
-        for statement in normalized
-        if "insert into conversation_attempts" in statement
+        statement for statement in normalized if "insert into conversation_attempts" in statement
     )
     assert "conversations.created_at as conversation_created_at" in attempt_statement
-    assert (
-        "order by conversation_created_at, conversation_id, id"
-        in attempt_statement
-    )
+    assert "order by conversation_created_at, conversation_id, id" in attempt_statement
     assert "order by created_at, id" not in attempt_statement
 
 
@@ -734,9 +723,9 @@ def test_postgres_v5_runner_executes_contract_under_advisory_lock(monkeypatch) -
         (migrations._POSTGRES_MIGRATION_LOCK_KEY,),
     )
     executed_sql = [sql for sql, _params in connection.calls]
-    assert [
-        sql for sql in executed_sql if sql in migrations._POSTGRES_V5_STATEMENTS
-    ] == list(migrations._POSTGRES_V5_STATEMENTS)
+    assert [sql for sql in executed_sql if sql in migrations._POSTGRES_V5_STATEMENTS] == list(
+        migrations._POSTGRES_V5_STATEMENTS
+    )
     assert connection.calls[-1][1][0] == 5
 
 

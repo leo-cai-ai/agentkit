@@ -81,9 +81,7 @@ def test_extracted_fact_is_recalled_in_new_conversation(tmp_path) -> None:
         run_id="r1",
         window_turns=6,
     )
-    second = persistence.create_conversation(
-        tenant_id="t1", agent_id="general_agent", user_id="u1"
-    )
+    second = persistence.create_conversation(tenant_id="t1", agent_id="general_agent", user_id="u1")
 
     context = ConversationContextService(store=store, memory_reader=memory).build(
         agent=_agent(agent_id="general_agent", rag_enabled=False),

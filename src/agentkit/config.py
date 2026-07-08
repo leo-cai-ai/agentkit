@@ -278,13 +278,11 @@ class Settings(BaseSettings):
 
 def validate_runtime_settings(settings: Settings) -> None:
     """在连接外部资源前拒绝生产环境中的非持久化审批状态。"""
-    if (
-        settings.runtime_environment == "production"
-        and settings.approval_checkpointer in {"memory", "none"}
-    ):
-        raise ValueError(
-            "production requires a durable approval checkpointer: sqlite or postgres"
-        )
+    if settings.runtime_environment == "production" and settings.approval_checkpointer in {
+        "memory",
+        "none",
+    }:
+        raise ValueError("production requires a durable approval checkpointer: sqlite or postgres")
 
 
 @lru_cache(maxsize=1)

@@ -301,13 +301,6 @@ class MultiAgentCoordinator:
             agent_id=GENERAL_AGENT_ID,
             conversation_id=conversation_id,
         )
-        retry_of_run_id = str(request.context.get("retry_of_run_id") or "")
-        if retry_of_run_id:
-            self._audit.record(
-                parent_run_id,
-                "conversation_retry_started",
-                {"retry_of_run_id": retry_of_run_id},
-            )
         attempt_bound = False
         try:
             self._projection.bind_run(
@@ -1314,14 +1307,6 @@ class MultiAgentCoordinator:
             if event.get("type") == "agent_route_decided":
                 return dict(event.get("payload") or {})
         return {"type": "general_delegate", "target_agent": None, "reason": ""}
-
-    def _retry_origin(self, run_id: str) -> str:
-        """从父 Run 审计中恢复跨审批暂停的可信重试关联。"""
-        for event in reversed(self._audit.events_for(run_id)):
-            if event.get("type") == "conversation_retry_started":
-                payload = dict(event.get("payload") or {})
-                return str(payload.get("retry_of_run_id") or "")
-        return ""
 
 
 __all__ = [

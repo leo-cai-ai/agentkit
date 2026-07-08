@@ -722,6 +722,66 @@ def test_postgres_finalize_approval_output_locks_action_and_updates_atomically(
     assert all("?" not in sql for sql, _ in calls)
 
 
+def test_postgres_failed_approval_output_preserves_approved_status(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class Result:
+        rowcount = 1
+
+        def __init__(self, row=None) -> None:
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class Connection:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+            if "FROM conversation_actions AS action" in sql:
+                return Result(
+                    (
+                        "attempt-1",
+                        "turn-1",
+                        "conversation-1",
+                        "tenant-a",
+                        "run-1",
+                        "xhs_growth",
+                        "approved",
+                        "resuming",
+                        None,
+                        0,
+                        None,
+                    )
+                )
+            if "kind = 'assistant_output'" in sql:
+                return Result(None)
+            if "ORDER BY id DESC LIMIT 1" in sql:
+                return Result((9,))
+            if "INSERT INTO messages" in sql:
+                return Result((10,))
+            return Result()
+
+    store = object.__new__(PgConversationStore)
+    store._settings = None
+    monkeypatch.setattr(store, "_connect", lambda: nullcontext(Connection()))
+
+    message_id, changed, _ = store.finalize_approval_output(
+        "action-1",
+        run_id="run-1",
+        agent_id="xhs_growth",
+        content="发布未完成",
+        message_state="failed",
+        attempt_status="failed",
+        artifact_id=None,
+        token_estimate=6,
+        now=100.0,
+    )
+
+    action_update = next(params for sql, params in calls if "UPDATE conversation_actions" in sql)
+    assert (message_id, changed) == (10, True)
+    assert action_update[:2] == ("approved", "approved")
+
+
 def test_postgres_rollover_approval_locks_old_action_and_creates_new_pending_action(
     monkeypatch,
 ) -> None:

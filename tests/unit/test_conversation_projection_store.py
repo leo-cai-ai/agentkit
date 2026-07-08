@@ -426,6 +426,62 @@ def test_finalize_approval_output_atomically_seals_message_action_and_attempt(tm
     )
 
 
+def test_failed_approval_output_preserves_durable_decision(tmp_path) -> None:
+    store, accepted = accepted_store(tmp_path)
+    store.bind_attempt_run(accepted.attempt_id, run_id="run-1", agent_id="xhs_growth")
+    _, action = store.persist_approval_request(
+        conversation_id=accepted.conversation_id,
+        turn_id=accepted.turn_id,
+        attempt_id=accepted.attempt_id,
+        agent_id="xhs_growth",
+        visible_content="审核稿",
+        thread_id="thread-1",
+        skills=["xhs.growth.campaign"],
+        preview={"title": "审核稿"},
+        preview_artifact_id=None,
+    )
+    decided = store.decide_action(
+        action.id,
+        decision="approved",
+        decided_by="u1",
+        decision_context={"roles": ["growth_manager"]},
+        idempotency_key="approve-1",
+        expected_version=action.version,
+    )
+
+    message_id, changed, _ = store.finalize_approval_output(
+        action.id,
+        run_id="run-1",
+        agent_id="xhs_growth",
+        content="发布未完成",
+        message_state="failed",
+        attempt_status="failed",
+        artifact_id=None,
+        token_estimate=6,
+        now=100.0,
+    )
+
+    assert decided.status is ActionStatus.APPROVED
+    assert changed is True
+    assert store.get_projection_message(message_id)["content"] == "发布未完成"
+    assert store.get_action(action.id)["status"] == "approved"
+    assert store.get_attempt(accepted.attempt_id)["status"] == "failed"
+
+    repeated_id, repeated_changed, _ = store.finalize_approval_output(
+        action.id,
+        run_id="run-1",
+        agent_id="xhs_growth",
+        content="发布未完成",
+        message_state="failed",
+        attempt_status="failed",
+        artifact_id=None,
+        token_estimate=6,
+        now=101.0,
+    )
+    assert repeated_id == message_id
+    assert repeated_changed is False
+
+
 def test_finalize_approval_output_rolls_back_every_record_on_action_failure(tmp_path) -> None:
     store, accepted = accepted_store(tmp_path)
     store.bind_attempt_run(accepted.attempt_id, run_id="run-1", agent_id="xhs_growth")
