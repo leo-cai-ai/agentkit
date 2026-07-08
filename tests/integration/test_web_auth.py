@@ -253,7 +253,7 @@ def test_authenticated_shell_preserves_structure_and_accessibility(client):
         'id="agent-directory"',
         "data-agent-mention-menu",
         'class="chat-thread ak-chat-thread"',
-        'role="log"',
+        "data-chat-timeline",
         'class="chat-input-row ak-chat-composer"',
         "data-chat-input",
         'class="ak-chat-composer-toolbar"',

@@ -28,6 +28,7 @@ let pendingDeleteConversationId = null;
 let pendingDeleteExecution = null;
 const HISTORY_COLLAPSED_KEY = "agentkit:chat-history-collapsed";
 const chatSessionGuard = window.AgentKitChatSession.createChatSessionGuard();
+const timelineHydrationGuard = window.AgentKitChatTimeline.createHydrationGuard();
 const TRACE_ATTENTION_STATES = new Set(["waiting_approval", "failed", "blocked"]);
 
 // Progressive tab enhancement: without JavaScript the anchors still navigate
@@ -664,7 +665,7 @@ function appendConnectionNotice(message) {
   scrollChatToBottom();
 }
 
-function applyConversationTimeline(timeline) {
+function applyConversationTimeline(timeline, { forceScroll = false } = {}) {
   const root = document.querySelector("[data-chat-timeline]");
   if (!root) return;
   currentConversationTimeline = timeline;
@@ -675,6 +676,7 @@ function applyConversationTimeline(timeline) {
   }
   window.AgentKitChatTimeline.render(root, timeline, {
     agentLabel,
+    forceScroll,
     onDecision: decideTimelineAction,
     onRetry: retryTimelineAttempt,
   });
@@ -690,53 +692,46 @@ async function loadConversationTimeline(
     resetChatThread("");
     return;
   }
-  const requestedConversationId = conversationId;
-  const requestToken = chatSessionGuard.begin(requestedConversationId);
+  chatSessionGuard.cancel();
   if (!preserveWhileLoading) showConversationNotice("Loading conversation...", "loading");
-  try {
-    const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/timeline`, {
-      signal: requestToken.signal,
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
-    if (
-      !chatSessionGuard.isCurrent(requestToken) ||
-      currentConversationId !== requestedConversationId
-    ) return;
-    applyConversationTimeline(data);
-  } catch (error) {
-    if (error.name === "AbortError") return;
-    if (
-      chatSessionGuard.isCurrent(requestToken) &&
-      currentConversationId === requestedConversationId
-    ) {
-      if (!preserveWhileLoading) {
-        showConversationNotice("无法加载会话，请稍后重试。", "error");
-      } else {
-        appendConnectionNotice("连接已中断，正在从已保存的会话恢复。");
-      }
+  const result = await fetchConversationTimeline(conversationId);
+  if (result === "error" && currentConversationId === conversationId) {
+    if (!preserveWhileLoading) {
+      showConversationNotice("无法加载会话，请稍后重试。", "error");
+    } else {
+      appendConnectionNotice("连接已中断，正在从已保存的会话恢复。");
     }
   }
 }
 
-// SSE 仍在读取时不能启动新的 session guard，否则会中断当前 POST。
-async function rehydrateConversationTimeline(conversationId) {
+async function fetchConversationTimeline(conversationId, { forceScroll = false } = {}) {
   if (!conversationId) return false;
+  const request = timelineHydrationGuard.begin(conversationId);
   try {
     const response = await fetch(
       `/api/conversations/${encodeURIComponent(conversationId)}/timeline`,
+      { signal: request.signal },
     );
-    if (!response.ok) return false;
+    if (!response.ok) return "error";
     const data = await response.json();
-    if (currentConversationId !== conversationId) return false;
-    applyConversationTimeline(data);
-    return true;
-  } catch {
-    if (currentConversationId === conversationId) {
-      appendConnectionNotice("连接已中断，正在从已保存的会话恢复。");
-    }
-    return false;
+    if (
+      currentConversationId !== conversationId ||
+      !timelineHydrationGuard.commit(request, data.version)
+    ) return "stale";
+    applyConversationTimeline(data, { forceScroll });
+    return "applied";
+  } catch (error) {
+    return error.name === "AbortError" ? "aborted" : "error";
   }
+}
+
+// SSE 仍在读取时不能启动新的 session guard，否则会中断当前 POST。
+async function rehydrateConversationTimeline(conversationId, { forceScroll = false } = {}) {
+  const result = await fetchConversationTimeline(conversationId, { forceScroll });
+  if (result === "error" && currentConversationId === conversationId) {
+    appendConnectionNotice("连接已中断，正在从已保存的会话恢复。");
+  }
+  return result === "applied";
 }
 
 async function startNewConversation() {
@@ -918,9 +913,9 @@ async function decideTimelineAction(command) {
         idempotency_key: window.crypto?.randomUUID?.() || `approval-${Date.now()}`,
       },
       {
-        onAccepted: () => void rehydrateConversationTimeline(conversationId),
-        onFinal: () => void rehydrateConversationTimeline(conversationId),
-        onError: () => void rehydrateConversationTimeline(conversationId),
+        onAccepted: () => void rehydrateConversationTimeline(conversationId, { forceScroll: true }),
+        onFinal: () => void rehydrateConversationTimeline(conversationId, { forceScroll: true }),
+        onError: () => void rehydrateConversationTimeline(conversationId, { forceScroll: true }),
       },
     );
   } catch (error) {
@@ -929,7 +924,7 @@ async function decideTimelineAction(command) {
     }
   } finally {
     if (currentConversationId === conversationId) {
-      await rehydrateConversationTimeline(conversationId);
+      await rehydrateConversationTimeline(conversationId, { forceScroll: true });
       await loadConversations("general_agent");
     }
   }
@@ -947,9 +942,9 @@ async function retryTimelineAttempt(command) {
         idempotency_key: window.crypto?.randomUUID?.() || `retry-${Date.now()}`,
       },
       {
-        onAccepted: () => void rehydrateConversationTimeline(conversationId),
-        onFinal: () => void rehydrateConversationTimeline(conversationId),
-        onError: () => void rehydrateConversationTimeline(conversationId),
+        onAccepted: () => void rehydrateConversationTimeline(conversationId, { forceScroll: true }),
+        onFinal: () => void rehydrateConversationTimeline(conversationId, { forceScroll: true }),
+        onError: () => void rehydrateConversationTimeline(conversationId, { forceScroll: true }),
       },
     );
   } catch (error) {
@@ -958,7 +953,7 @@ async function retryTimelineAttempt(command) {
     }
   } finally {
     if (currentConversationId === conversationId) {
-      await rehydrateConversationTimeline(conversationId);
+      await rehydrateConversationTimeline(conversationId, { forceScroll: true });
       await loadConversations("general_agent");
     }
   }
@@ -1648,7 +1643,7 @@ async function runUnifiedChatTurn(message, selectedAgent) {
         if (!chatSessionGuard.isCurrent(requestToken)) return;
         currentConversationId = accepted.conversation_id || currentConversationId;
         if (bubble && !streamed) bubble.p.textContent = "正在处理";
-        void rehydrateConversationTimeline(currentConversationId);
+        void rehydrateConversationTimeline(currentConversationId, { forceScroll: true });
       },
       onToken: (delta) => {
         if (!chatSessionGuard.isCurrent(requestToken)) return;
@@ -1661,12 +1656,16 @@ async function runUnifiedChatTurn(message, selectedAgent) {
         errored = msg;
         errorConversationId = details?.conversation_id || null;
         const conversationId = errorConversationId || currentConversationId;
-        if (conversationId) void rehydrateConversationTimeline(conversationId);
+        if (conversationId) {
+          void rehydrateConversationTimeline(conversationId, { forceScroll: true });
+        }
       },
       onFinal: (data) => {
         if (!chatSessionGuard.isCurrent(requestToken)) return;
         const conversationId = data?.conversation_id || currentConversationId;
-        if (conversationId) void rehydrateConversationTimeline(conversationId);
+        if (conversationId) {
+          void rehydrateConversationTimeline(conversationId, { forceScroll: true });
+        }
       },
     });
     if (!chatSessionGuard.isCurrent(requestToken)) return;
@@ -1701,7 +1700,7 @@ async function runUnifiedChatTurn(message, selectedAgent) {
   } finally {
     if (chatSessionGuard.isCurrent(requestToken)) {
       if (currentConversationId) {
-        await rehydrateConversationTimeline(currentConversationId);
+        await rehydrateConversationTimeline(currentConversationId, { forceScroll: true });
       } else {
         await loadConversationTimelineForClientMessage(clientMessageId);
       }
@@ -1716,9 +1715,14 @@ async function loadConversationTimelineForClientMessage(clientMessageId) {
     );
     if (!response.ok) return false;
     const timeline = await response.json();
-    currentConversationId = timeline.conversation?.id || currentConversationId;
-    if (!currentConversationId) return false;
-    applyConversationTimeline(timeline);
+    const conversationId = timeline.conversation?.id || currentConversationId;
+    if (!conversationId || (currentConversationId && currentConversationId !== conversationId)) {
+      return false;
+    }
+    currentConversationId = conversationId;
+    const request = timelineHydrationGuard.begin(conversationId);
+    if (!timelineHydrationGuard.commit(request, timeline.version)) return false;
+    applyConversationTimeline(timeline, { forceScroll: true });
     renderConversationHistory();
     return true;
   } catch {

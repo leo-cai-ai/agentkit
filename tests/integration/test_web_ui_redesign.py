@@ -338,6 +338,30 @@ def test_timeline_renderer_owns_attempt_revision_and_action_disclosures(client) 
     assert "handlers.onRetry" in source
 
 
+def test_timeline_hydration_rejects_stale_request_and_version_regressions(client) -> None:
+    source = client.get("/static/js/app.js").get_data(as_text=True)
+    renderer = client.get("/static/js/chat_timeline.js").get_data(as_text=True)
+
+    assert "createHydrationGuard" in renderer
+    assert "timelineHydrationGuard.begin(conversationId)" in source
+    assert "timelineHydrationGuard.commit(request, data.version)" in source
+    assert "signal: request.signal" in source
+    assert "forceScroll" in source
+
+
+def test_chat_history_is_not_a_live_region_and_preview_content_can_scroll(client) -> None:
+    login(client)
+    html = client.get("/chat").get_data(as_text=True)
+    css = client.get("/static/css/pages.css").get_data(as_text=True)
+
+    thread = html.split('id="chat-thread"', 1)[1].split(">", 1)[0]
+    assert 'role="log"' not in thread
+    assert 'aria-live="polite"' not in thread
+    assert "aria-relevant" not in thread
+    assert ".ak-action-preview-body" in css
+    assert "overflow-y: auto" in css
+
+
 def test_thinking_animation_is_stage_aware_and_reduced_motion_safe(client) -> None:
     source = client.get("/static/js/chat_timeline.js").get_data(as_text=True)
     css = client.get("/static/css/pages.css").get_data(as_text=True)

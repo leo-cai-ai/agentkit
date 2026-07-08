@@ -1559,6 +1559,23 @@ button.conversation-new {
   gap: var(--ak-sys-space-2);
 }
 
+.ak-timeline-live {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.ak-timeline-content {
+  display: contents;
+}
+
 .ak-timeline-turn + .ak-timeline-turn {
   margin-block-start: var(--ak-sys-space-5);
 }
@@ -1660,6 +1677,42 @@ button.conversation-new {
   color: var(--ak-sys-color-text-secondary);
   line-height: 1.5;
   overflow-wrap: anywhere;
+}
+
+.ak-action-preview-title {
+  color: var(--ak-sys-color-text-primary) !important;
+  font-size: 1rem;
+  font-weight: 750;
+}
+
+.ak-action-preview-summary,
+.ak-action-preview-meta,
+.ak-action-media-summary {
+  font-size: 0.8125rem;
+}
+
+.ak-action-preview-content {
+  min-inline-size: 0;
+  display: grid;
+  gap: var(--ak-sys-space-1);
+}
+
+.ak-action-preview-label {
+  color: var(--ak-sys-color-text-primary);
+  font-size: 0.75rem;
+}
+
+.ak-action-preview-body {
+  max-block-size: min(18rem, 38dvh);
+  padding: var(--ak-sys-space-3);
+  overflow-y: auto;
+  border: 1px solid var(--ak-sys-color-border-default);
+  border-radius: var(--ak-sys-radius-sm);
+  background: var(--ak-sys-color-bg-inset);
+  line-height: 1.65 !important;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  white-space: pre-wrap;
 }
 
 .ak-action-resolution {

@@ -70,6 +70,50 @@
     return null;
   }
 
+  function createHydrationGuard() {
+    const conversations = new Map();
+
+    return Object.freeze({
+      begin(conversationId) {
+        const key = String(conversationId || "");
+        const previous = conversations.get(key);
+        previous?.controller.abort();
+        const controller = new AbortController();
+        const state = {
+          controller,
+          sequence: Number(previous?.sequence || 0) + 1,
+          version: Number(previous?.version ?? -1),
+        };
+        conversations.set(key, state);
+        return Object.freeze({
+          conversationId: key,
+          sequence: state.sequence,
+          signal: controller.signal,
+        });
+      },
+
+      commit(request, version) {
+        const state = conversations.get(String(request?.conversationId || ""));
+        const nextVersion = Number(version ?? -1);
+        if (
+          !state ||
+          request?.signal?.aborted ||
+          state.sequence !== request?.sequence ||
+          !Number.isFinite(nextVersion) ||
+          nextVersion < state.version
+        ) {
+          return false;
+        }
+        state.version = nextVersion;
+        return true;
+      },
+
+      cancel(conversationId) {
+        conversations.get(String(conversationId || ""))?.controller.abort();
+      },
+    });
+  }
+
   function element(tagName, className = "", text = "") {
     const node = document.createElement(tagName);
     if (className) node.className = className;
@@ -77,7 +121,12 @@
     return node;
   }
 
-  function messageNode(message, handlers, roleOverride = "") {
+  function withTimelineKey(node, key) {
+    node.dataset.timelineKey = String(key);
+    return node;
+  }
+
+  function messageNode(message, handlers, roleOverride = "", key = "") {
     const role = roleOverride || (message?.role === "user" ? "user" : "assistant");
     const node = element("div", `chat-message ${role}`);
     const agentName = String(message?.agent_id || "general_agent");
@@ -88,13 +137,12 @@
     const body = element("div", "chat-body ak-timeline-message-body");
     body.appendChild(element("p", "", String(message.content || "")));
     node.appendChild(body);
+    if (key) withTimelineKey(node, key);
     return node;
   }
 
   function thinkingNode(attempt) {
     const node = element("div", "ak-thinking");
-    node.setAttribute("role", "status");
-    node.setAttribute("aria-live", "polite");
     const bars = element("span", "ak-thinking-bars");
     bars.setAttribute("aria-hidden", "true");
     for (let index = 0; index < 4; index += 1) bars.appendChild(element("i"));
@@ -114,8 +162,42 @@
 
   function appendActionPreview(container, action) {
     const preview = action?.preview || {};
-    const title = preview.title || preview.summary || preview.card_text || "";
-    if (title) container.appendChild(element("p", "ak-action-preview", String(title)));
+    if (preview.title != null && String(preview.title).trim()) {
+      container.appendChild(element("p", "ak-action-preview-title", String(preview.title)));
+    }
+    if (preview.summary != null && String(preview.summary).trim()) {
+      container.appendChild(element("p", "ak-action-preview-summary", String(preview.summary)));
+    }
+    if (preview.card_text != null && String(preview.card_text).trim()) {
+      const bodySection = element("section", "ak-action-preview-content");
+      bodySection.appendChild(element("strong", "ak-action-preview-label", "正文预览"));
+      bodySection.appendChild(element("p", "ak-action-preview-body", String(preview.card_text)));
+      container.appendChild(bodySection);
+    }
+
+    const metadata = [
+      ["内容形式", preview.media_strategy],
+      ["卡片样式", preview.card_style],
+      ["分页方式", preview.pagination_source],
+      ["媒体摘要", preview.media_summary],
+    ];
+    for (const [label, value] of metadata) {
+      if (value == null || !String(value).trim()) continue;
+      container.appendChild(element("p", "ak-action-preview-meta", `${label}：${value}`));
+    }
+    if (Array.isArray(preview.media_preview_urls) && preview.media_preview_urls.length) {
+      container.appendChild(element(
+        "p",
+        "ak-action-media-summary",
+        `媒体预览：${preview.media_preview_urls.length} 个文件`,
+      ));
+    } else if (Number.isFinite(Number(preview.media_count)) && Number(preview.media_count) > 0) {
+      container.appendChild(element(
+        "p",
+        "ak-action-media-summary",
+        `媒体预览：${Number(preview.media_count)} 个文件`,
+      ));
+    }
     const skills = Array.isArray(action?.skills) ? action.skills.filter(Boolean) : [];
     if (skills.length) {
       container.appendChild(element("p", "ak-action-skills", `涉及能力：${skills.join("、")}`));
@@ -123,7 +205,10 @@
   }
 
   function renderAction(action, handlers) {
-    const node = element("section", "ak-timeline-action");
+    const node = withTimelineKey(
+      element("section", "ak-timeline-action"),
+      `action:${action.id}`,
+    );
     node.dataset.actionStatus = String(action?.status || "");
     node.appendChild(element(
       "strong",
@@ -142,6 +227,8 @@
       reject.type = approve.type = "button";
       reject.dataset.timelineDecision = "rejected";
       approve.dataset.timelineDecision = "approved";
+      withTimelineKey(reject, `decision:${action.id}:rejected`);
+      withTimelineKey(approve, `decision:${action.id}:approved`);
       reject.addEventListener("click", () => handlers.onDecision?.({
         actionId: String(action.id || ""),
         decision: "rejected",
@@ -158,47 +245,86 @@
     return node;
   }
 
-  function splitReviewMessages(messages) {
+  function reviewMessageLayout(messages) {
+    const byId = new Map(messages.map((message) => [String(message.id), message]));
     const revisions = messages.filter((message) => message.kind === "assistant_revision");
-    if (!revisions.length) return { regularMessages: messages, latestRevision: null, olderRevisions: [] };
-    const revisionIds = new Set(revisions.map((message) => Number(message.id)));
-    for (const revision of revisions) {
-      if (revision.supersedes_message_id != null) {
-        revisionIds.add(Number(revision.supersedes_message_id));
+    const supersededByRevision = new Set(
+      revisions
+        .filter((message) => message.supersedes_message_id != null)
+        .map((message) => String(message.supersedes_message_id)),
+    );
+    const hiddenMessageIds = new Set();
+    const olderByLatestId = new Map();
+
+    for (const latestRevision of revisions) {
+      if (supersededByRevision.has(String(latestRevision.id))) continue;
+      const olderRevisions = [];
+      const seen = new Set();
+      let previousId = latestRevision.supersedes_message_id;
+      while (previousId != null && !seen.has(String(previousId))) {
+        seen.add(String(previousId));
+        const previous = byId.get(String(previousId));
+        if (!previous) break;
+        olderRevisions.unshift(previous);
+        hiddenMessageIds.add(String(previous.id));
+        previousId = previous.supersedes_message_id;
+      }
+      if (olderRevisions.length) {
+        olderByLatestId.set(String(latestRevision.id), olderRevisions);
       }
     }
-    const reviewMessages = messages.filter((message) => revisionIds.has(Number(message.id)));
-    return {
-      regularMessages: messages.filter((message) => !revisionIds.has(Number(message.id))),
-      latestRevision: reviewMessages.at(-1) || revisions.at(-1),
-      olderRevisions: reviewMessages.slice(0, -1),
-    };
+    return { hiddenMessageIds, olderByLatestId };
   }
 
   function appendAttemptContent(container, turn, attempt, handlers) {
     const messages = Array.isArray(attempt.messages) ? attempt.messages : [];
-    const { regularMessages, latestRevision, olderRevisions } = splitReviewMessages(messages);
-    for (const message of regularMessages) {
-      container.appendChild(messageNode(message, handlers));
-    }
-    if (latestRevision) container.appendChild(messageNode(latestRevision, handlers));
-    if (olderRevisions.length) {
-      const revisions = element("details", "ak-revision-disclosure");
-      revisions.appendChild(element("summary", "", `查看较早的 ${olderRevisions.length} 个版本`));
-      const revisionList = element("div", "ak-revision-list");
-      for (const message of olderRevisions) {
-        revisionList.appendChild(messageNode(message, handlers));
+    const { hiddenMessageIds, olderByLatestId } = reviewMessageLayout(messages);
+    for (const message of messages) {
+      if (hiddenMessageIds.has(String(message.id))) continue;
+      container.appendChild(messageNode(
+        message,
+        handlers,
+        "",
+        `message:${attempt.id}:${message.id}`,
+      ));
+      const olderRevisions = olderByLatestId.get(String(message.id)) || [];
+      if (olderRevisions.length) {
+        const revisionKey = `revisions:${attempt.id}:${message.id}`;
+        const revisions = withTimelineKey(
+          element("details", "ak-revision-disclosure"),
+          revisionKey,
+        );
+        revisions.appendChild(withTimelineKey(
+          element("summary", "", `查看较早的 ${olderRevisions.length} 个版本`),
+          `${revisionKey}:summary`,
+        ));
+        const revisionList = element("div", "ak-revision-list");
+        for (const olderRevision of olderRevisions) {
+          revisionList.appendChild(messageNode(
+            olderRevision,
+            handlers,
+            "",
+            `message:${attempt.id}:${olderRevision.id}`,
+          ));
+        }
+        revisions.appendChild(revisionList);
+        container.appendChild(revisions);
       }
-      revisions.appendChild(revisionList);
-      container.appendChild(revisions);
     }
 
     const actions = Array.isArray(attempt.actions) ? attempt.actions : [];
     const latestAction = actions.at(-1);
     if (latestAction) container.appendChild(renderAction(latestAction, handlers));
     if (actions.length > 1) {
-      const olderActions = element("details", "ak-revision-disclosure ak-action-history");
-      olderActions.appendChild(element("summary", "", `查看较早的 ${actions.length - 1} 次审批`));
+      const actionHistoryKey = `action-history:${attempt.id}`;
+      const olderActions = withTimelineKey(
+        element("details", "ak-revision-disclosure ak-action-history"),
+        actionHistoryKey,
+      );
+      olderActions.appendChild(withTimelineKey(
+        element("summary", "", `查看较早的 ${actions.length - 1} 次审批`),
+        `${actionHistoryKey}:summary`,
+      ));
       for (const action of actions.slice(0, -1)) {
         olderActions.appendChild(renderAction(action, handlers));
       }
@@ -218,6 +344,7 @@
       const retry = element("button", "secondary ak-attempt-retry", "重新尝试");
       retry.type = "button";
       retry.dataset.timelineRetry = String(attempt.id || "");
+      withTimelineKey(retry, `retry:${attempt.id}`);
       retry.addEventListener("click", () => handlers.onRetry?.({
         turnId: String(turn.id || ""),
         attemptId: String(attempt.id || ""),
@@ -232,45 +359,128 @@
     // 后端投影明确标记旧 Attempt；前端不自行推测 canonical 状态。
     const collapsed = attempt.collapsed !== false;
     if (collapsed) {
-      const disclosure = element("details", "ak-attempt-disclosure");
+      const attemptKey = `attempt:${attempt.id}`;
+      const disclosure = withTimelineKey(
+        element("details", "ak-attempt-disclosure"),
+        attemptKey,
+      );
       disclosure.dataset.attemptStatus = status;
-      disclosure.appendChild(element(
-        "summary",
-        "",
-        `第 ${Number(attempt.attempt_no || 1)} 次尝试 ${statusLabel}`,
+      disclosure.appendChild(withTimelineKey(
+        element(
+          "summary",
+          "",
+          `第 ${Number(attempt.attempt_no || 1)} 次尝试 ${statusLabel}`,
+        ),
+        `${attemptKey}:summary`,
       ));
       const content = element("div", "ak-attempt-content");
       appendAttemptContent(content, turn, attempt, handlers);
       disclosure.appendChild(content);
       return disclosure;
     }
-    const node = element("section", "ak-attempt");
+    const node = withTimelineKey(element("section", "ak-attempt"), `attempt:${attempt.id}`);
     node.dataset.attemptStatus = status;
     node.setAttribute("aria-label", `第 ${Number(attempt.attempt_no || 1)} 次尝试 ${statusLabel}`);
     appendAttemptContent(node, turn, attempt, handlers);
     return node;
   }
 
+  function latestAnnouncement(timeline) {
+    const latestTurn = timelineTurns(timeline).at(-1);
+    const attempt = latestTurn?.attempts?.at(-1);
+    if (!attempt) return null;
+    const status = String(attempt.status || "");
+    const text = THINKING_ATTEMPT_STATUSES.has(status)
+      ? thinkingLabel(attempt.stage)
+      : status === "waiting_for_approval"
+        ? "等待你的确认"
+        : attempt.error_summary || ATTEMPT_STATUS_LABELS[status] || "状态已更新";
+    return {
+      key: `${attempt.id}:${status}:${attempt.stage || ""}`,
+      text,
+    };
+  }
+
+  function timelineShell(root) {
+    const children = Array.from(root.children || []);
+    let live = children.find((child) => child.dataset?.timelineLive != null);
+    let content = children.find((child) => child.dataset?.timelineContent != null);
+    if (!live || !content) {
+      live = element("div", "ak-timeline-live");
+      live.dataset.timelineLive = "";
+      live.setAttribute("role", "status");
+      live.setAttribute("aria-live", "polite");
+      live.setAttribute("aria-atomic", "true");
+      content = element("div", "ak-timeline-content");
+      content.dataset.timelineContent = "";
+      root.replaceChildren(live, content);
+    }
+    return { content, live };
+  }
+
+  function captureRenderState(root, content, forceScroll) {
+    const distanceFromBottom = root.scrollHeight - root.scrollTop - root.clientHeight;
+    const active = document.activeElement;
+    return {
+      focusKey: content.contains(active) ? active?.dataset?.timelineKey || "" : "",
+      openKeys: new Set(
+        Array.from(content.querySelectorAll("details[open][data-timeline-key]"))
+          .map((node) => node.dataset.timelineKey),
+      ),
+      scrollToBottom: Boolean(forceScroll) || distanceFromBottom <= 80,
+      scrollTop: root.scrollTop,
+    };
+  }
+
+  function restoreRenderState(root, content, state) {
+    const keyedNodes = Array.from(content.querySelectorAll("[data-timeline-key]"));
+    for (const node of keyedNodes) {
+      if (
+        String(node.tagName).toLowerCase() === "details" &&
+        state.openKeys.has(node.dataset.timelineKey)
+      ) {
+        node.open = true;
+      }
+    }
+    const focusTarget = keyedNodes.find((node) => node.dataset.timelineKey === state.focusKey);
+    focusTarget?.focus({ preventScroll: true });
+    root.scrollTop = state.scrollToBottom ? root.scrollHeight : state.scrollTop;
+  }
+
   function render(root, timeline, handlers = {}) {
     if (!root) return;
+    const { content, live } = timelineShell(root);
+    const state = captureRenderState(root, content, handlers.forceScroll);
     const fragment = document.createDocumentFragment();
     for (const turn of timelineTurns(timeline)) {
       const turnNode = element("section", "ak-timeline-turn");
       turnNode.dataset.turnId = String(turn.id || "");
       // 用户消息属于 Turn，只渲染一次，绝不复制到各个 Attempt。
       if (turn.user_message) {
-        turnNode.appendChild(messageNode(turn.user_message, handlers, "user"));
+        turnNode.appendChild(messageNode(
+          turn.user_message,
+          handlers,
+          "user",
+          `turn-message:${turn.id}`,
+        ));
       }
       for (const attempt of turn.attempts || []) {
         turnNode.appendChild(renderAttempt(turn, attempt, handlers));
       }
       fragment.appendChild(turnNode);
     }
-    root.replaceChildren(fragment);
-    root.scrollTop = root.scrollHeight;
+    content.replaceChildren(fragment);
+    restoreRenderState(root, content, state);
+
+    const announcement = latestAnnouncement(timeline);
+    if (announcement && root.dataset.timelineAnnouncementKey !== announcement.key) {
+      root.dataset.timelineAnnouncementKey = announcement.key;
+      live.textContent = announcement.text;
+    }
   }
 
   window.AgentKitChatTimeline = Object.freeze({
+    createHydrationGuard,
     thinkingLabel,
     hasActiveAttempt,
     latestRetryableAttempt,
