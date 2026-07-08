@@ -5,11 +5,13 @@ from agentkit.runtime.conversation_persistence import (
     ConversationPersistenceService,
     ExtractingMemoryWriter,
 )
+from agentkit.runtime.conversation_projection import ConversationProjectionService
+from agentkit.runtime.conversation_projection_models import AttemptStatus
 
 
 class FakeMemoryWriter:
     def __init__(self) -> None:
-        self.calls = []
+        self.calls: list[dict] = []
 
     def record(self, **kwargs) -> None:
         self.calls.append(kwargs)
@@ -23,220 +25,224 @@ class RecordingAudit:
         self.events.append((run_id, event_type, payload))
 
 
-def test_persistence_writes_only_explicit_scope(tmp_path) -> None:
-    store = ConversationStore(tmp_path / "memory.sqlite")
-    memory = FakeMemoryWriter()
-    service = ConversationPersistenceService(store=store, memory_writer=memory)
-    conversation_id = service.create_conversation(
-        tenant_id="t1",
-        agent_id="customer_service",
-        user_id="u1",
-        title="查询订单",
-    )
+class RecordingSummarizer:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.calls: list[dict] = []
 
-    service.record_turn(
+    def fold(self, **kwargs) -> str:
+        self.calls.append(kwargs)
+        if self.fail:
+            raise RuntimeError("summary unavailable")
+        return "canonical summary"
+
+
+def _project_turn(
+    projection: ConversationProjectionService,
+    *,
+    conversation_id: str | None,
+    client_message_id: str,
+    user_message: str,
+    assistant_message: str,
+    run_id: str,
+    status: AttemptStatus,
+):
+    accepted = projection.accept_user_message(
         tenant_id="t1",
-        agent_id="customer_service",
         user_id="u1",
         conversation_id=conversation_id,
+        client_message_id=client_message_id,
+        content=user_message,
+        title=user_message,
+    )
+    projection.bind_run(accepted.attempt_id, run_id=run_id, agent_id="general_agent")
+    projection.project_output(
+        accepted=accepted,
+        run_id=run_id,
+        agent_id="customer_service",
+        content=assistant_message,
+        status=status,
+    )
+    return accepted
+
+
+def _services(tmp_path, **persistence_kwargs):
+    store = ConversationStore(tmp_path / "conversation.sqlite")
+    projection = ConversationProjectionService(store=store)
+    persistence = ConversationPersistenceService(
+        store=store,
+        projection=projection,
+        **persistence_kwargs,
+    )
+    return store, projection, persistence
+
+
+def test_finalize_canonical_turn_reads_projection_without_writing_messages(tmp_path) -> None:
+    memory = FakeMemoryWriter()
+    store, projection, persistence = _services(tmp_path, memory_writer=memory)
+    accepted = _project_turn(
+        projection,
+        conversation_id=None,
+        client_message_id="client-1",
         user_message="查询订单",
-        assistant_message="<think>隐藏推理</think>已查询",
+        assistant_message="已查询",
+        run_id="r1",
+        status=AttemptStatus.SUCCEEDED,
+    )
+    before = store.all_messages(accepted.conversation_id)
+
+    persistence.finalize_canonical_turn(
+        tenant_id="t1",
+        agent_id="general_agent",
+        user_id="u1",
+        conversation_id=accepted.conversation_id,
+        turn_id=accepted.turn_id,
         run_id="r1",
         window_turns=6,
     )
 
-    messages = store.all_messages(conversation_id)
-    assert [(item["role"], item["content"]) for item in messages] == [
-        ("user", "查询订单"),
-        ("assistant", "已查询"),
+    assert store.all_messages(accepted.conversation_id) == before
+    assert memory.calls == [
+        {
+            "tenant_id": "t1",
+            "agent_id": "general_agent",
+            "user_id": "u1",
+            "conversation_id": accepted.conversation_id,
+            "user_message": "查询订单",
+            "assistant_message": "已查询",
+            "run_id": "r1",
+        }
     ]
-    assert memory.calls[0]["agent_id"] == "customer_service"
 
 
-def test_general_conversation_records_the_actual_reply_agent(tmp_path) -> None:
-    store = ConversationStore(tmp_path / "memory.sqlite")
-    service = ConversationPersistenceService(store=store)
-    conversation_id = service.create_conversation(
-        tenant_id="t1", agent_id="general_agent", user_id="u1"
-    )
-
-    service.record_turn(
-        tenant_id="t1",
-        agent_id="general_agent",
-        assistant_agent_id="hr_recruiter",
-        user_id="u1",
-        conversation_id=conversation_id,
-        user_message="@招聘 分析候选人",
-        assistant_message="候选人符合要求",
-        run_id="parent-run",
-        window_turns=6,
-    )
-
-    messages = store.all_messages(conversation_id)
-    assert messages[0]["agent_id"] is None
-    assert messages[1]["agent_id"] == "hr_recruiter"
-
-
-def test_retry_replaces_the_logical_turn_without_adding_messages(tmp_path) -> None:
-    store = ConversationStore(tmp_path / "memory.sqlite")
+def test_finalize_uses_only_latest_successful_canonical_turn_for_memory(tmp_path) -> None:
     memory = FakeMemoryWriter()
-    service = ConversationPersistenceService(store=store, memory_writer=memory)
-    conversation_id = service.create_conversation(
-        tenant_id="t1", agent_id="general_agent", user_id="u1"
+    _, projection, persistence = _services(tmp_path, memory_writer=memory)
+    failed = _project_turn(
+        projection,
+        conversation_id=None,
+        client_message_id="client-failed",
+        user_message="失败问题",
+        assistant_message="失败输出",
+        run_id="r-failed",
+        status=AttemptStatus.FAILED,
     )
-    service.record_turn(
+    succeeded = _project_turn(
+        projection,
+        conversation_id=failed.conversation_id,
+        client_message_id="client-success",
+        user_message="成功问题",
+        assistant_message="成功输出",
+        run_id="r-success",
+        status=AttemptStatus.SUCCEEDED,
+    )
+
+    persistence.finalize_canonical_turn(
         tenant_id="t1",
         agent_id="general_agent",
-        assistant_agent_id="xhs_growth",
         user_id="u1",
-        conversation_id=conversation_id,
-        user_message="原始问题",
-        assistant_message="旧失败结果",
+        conversation_id=succeeded.conversation_id,
+        turn_id=succeeded.turn_id,
+        run_id="r-success",
+        window_turns=6,
+    )
+
+    assert memory.calls[0]["user_message"] == "成功问题"
+    assert memory.calls[0]["assistant_message"] == "成功输出"
+    assert "失败输出" not in repr(memory.calls)
+
+
+def test_finalize_rejects_cross_user_scope(tmp_path) -> None:
+    _, projection, persistence = _services(tmp_path)
+    accepted = _project_turn(
+        projection,
+        conversation_id=None,
+        client_message_id="client-1",
+        user_message="查询订单",
+        assistant_message="已查询",
         run_id="r1",
-        outcome="not_completed",
-        window_turns=6,
-    )
-    original = store.all_messages(conversation_id)
-    original_ids = [row["id"] for row in original]
-    store.upsert_summary(
-        conversation_id=conversation_id,
-        summary_text="旧摘要",
-        covered_through_message_id=original[-1]["id"],
+        status=AttemptStatus.SUCCEEDED,
     )
 
-    service.record_turn(
-        tenant_id="t1",
-        agent_id="general_agent",
-        assistant_agent_id="xhs_growth",
-        user_id="u1",
-        conversation_id=conversation_id,
-        user_message="原始问题",
-        assistant_message="新成功结果",
-        run_id="r2",
-        retry_of_run_id="r1",
-        outcome="succeeded",
-        window_turns=6,
-    )
-
-    messages = store.all_messages(conversation_id)
-    assert [row["id"] for row in messages] == original_ids
-    assert [(row["role"], row["content"], row["run_id"]) for row in messages] == [
-        ("user", "原始问题", "r2"),
-        ("assistant", "新成功结果", "r2"),
-    ]
-    assert messages[1]["agent_id"] == "xhs_growth"
-    assert store.get_summary(conversation_id) is None
-    assert [call["run_id"] for call in memory.calls] == ["r2"]
-
-
-def test_retry_without_a_unique_old_turn_appends_and_records_audit_warning(
-    tmp_path,
-) -> None:
-    store = ConversationStore(tmp_path / "memory.sqlite")
-    audit = RecordingAudit()
-    service = ConversationPersistenceService(store=store, audit=audit)
-    conversation_id = service.create_conversation(
-        tenant_id="t1", agent_id="general_agent", user_id="u1"
-    )
-
-    service.record_turn(
-        tenant_id="t1",
-        agent_id="general_agent",
-        user_id="u1",
-        conversation_id=conversation_id,
-        user_message="原始问题",
-        assistant_message="补写结果",
-        run_id="r2",
-        retry_of_run_id="missing-run",
-        outcome="not_completed",
-        window_turns=6,
-    )
-
-    assert store.count_messages(conversation_id) == 2
-    assert audit.events == [
-        (
-            "r2",
-            "conversation_retry_replace_missed",
-            {
-                "conversation_id": conversation_id,
-                "retry_of_run_id": "missing-run",
-            },
-        )
-    ]
-
-
-def test_only_succeeded_turns_are_written_to_long_term_memory(tmp_path) -> None:
-    store = ConversationStore(tmp_path / "memory.sqlite")
-    memory = FakeMemoryWriter()
-    service = ConversationPersistenceService(store=store, memory_writer=memory)
-    conversation_id = service.create_conversation(
-        tenant_id="t1", agent_id="general_agent", user_id="u1"
-    )
-
-    service.record_turn(
-        tenant_id="t1",
-        agent_id="general_agent",
-        user_id="u1",
-        conversation_id=conversation_id,
-        user_message="需要更多资料",
-        assistant_message="请补充时间范围",
-        run_id="r1",
-        outcome="action_required",
-        window_turns=6,
-    )
-
-    assert memory.calls == []
-
-
-def test_persistence_rejects_cross_user_write(tmp_path) -> None:
-    store = ConversationStore(tmp_path / "memory.sqlite")
-    service = ConversationPersistenceService(store=store)
-    conversation_id = service.create_conversation(
-        tenant_id="t1", agent_id="customer_service", user_id="u1"
-    )
-
-    try:
-        service.record_turn(
-            tenant_id="t1",
-            agent_id="customer_service",
-            user_id="u2",
-            conversation_id=conversation_id,
-            user_message="越权写入",
-            assistant_message="不允许",
-            run_id="r1",
-            window_turns=6,
-        )
-    except ValueError as exc:
-        assert "不属于当前" in str(exc)
-    else:
-        raise AssertionError("必须拒绝跨用户写入")
-
-
-def test_persistence_rejects_write_to_inactive_conversation(tmp_path) -> None:
-    store = ConversationStore(tmp_path / "memory.sqlite")
-    service = ConversationPersistenceService(store=store)
-    conversation_id = service.create_conversation(
-        tenant_id="t1", agent_id="general_agent", user_id="u1"
-    )
-    with store._connect() as conn:
-        conn.execute(
-            "UPDATE conversations SET status = ? WHERE id = ?",
-            ("deleting", conversation_id),
-        )
-
-    with pytest.raises(ValueError, match="会话当前不可写入"):
-        service.record_turn(
+    with pytest.raises(ValueError, match="不属于当前"):
+        persistence.finalize_canonical_turn(
             tenant_id="t1",
             agent_id="general_agent",
-            user_id="u1",
-            conversation_id=conversation_id,
-            user_message="不要写入",
-            assistant_message="不会写入",
+            user_id="other-user",
+            conversation_id=accepted.conversation_id,
+            turn_id=accepted.turn_id,
             run_id="r1",
             window_turns=6,
         )
 
-    assert store.all_messages(conversation_id) == []
+
+def test_summary_receives_only_canonical_context_messages(tmp_path) -> None:
+    summarizer = RecordingSummarizer()
+    store, projection, persistence = _services(tmp_path, summarizer=summarizer)
+    failed = _project_turn(
+        projection,
+        conversation_id=None,
+        client_message_id="client-failed",
+        user_message="失败问题",
+        assistant_message="失败输出",
+        run_id="r-failed",
+        status=AttemptStatus.FAILED,
+    )
+    succeeded = _project_turn(
+        projection,
+        conversation_id=failed.conversation_id,
+        client_message_id="client-success",
+        user_message="成功问题",
+        assistant_message="成功输出",
+        run_id="r-success",
+        status=AttemptStatus.SUCCEEDED,
+    )
+
+    persistence.finalize_canonical_turn(
+        tenant_id="t1",
+        agent_id="general_agent",
+        user_id="u1",
+        conversation_id=succeeded.conversation_id,
+        turn_id=succeeded.turn_id,
+        run_id="r-success",
+        window_turns=0,
+    )
+
+    turns = summarizer.calls[0]["turns"]
+    assert [item["content"] for item in turns] == ["失败问题", "成功问题", "成功输出"]
+    assert "失败输出" not in repr(turns)
+    assert store.get_summary(succeeded.conversation_id)["summary_text"] == "canonical summary"
+
+
+def test_summary_failure_is_best_effort_and_audited(tmp_path) -> None:
+    audit = RecordingAudit()
+    summarizer = RecordingSummarizer(fail=True)
+    _, projection, persistence = _services(
+        tmp_path,
+        summarizer=summarizer,
+        audit=audit,
+    )
+    accepted = _project_turn(
+        projection,
+        conversation_id=None,
+        client_message_id="client-1",
+        user_message="hello",
+        assistant_message="world",
+        run_id="r1",
+        status=AttemptStatus.SUCCEEDED,
+    )
+
+    persistence.finalize_canonical_turn(
+        tenant_id="t1",
+        agent_id="general_agent",
+        user_id="u1",
+        conversation_id=accepted.conversation_id,
+        turn_id=accepted.turn_id,
+        run_id="r1",
+        window_turns=0,
+    )
+
+    assert audit.events[0][1] == "memory_summary_failed"
 
 
 class FakeExtractor:
@@ -308,44 +314,3 @@ def test_extracting_memory_writer_is_best_effort() -> None:
         assistant_message="已记住",
         run_id="r1",
     )
-
-
-def test_summary_failure_does_not_rollback_persisted_turn(tmp_path) -> None:
-    class BrokenSummarizer:
-        def fold(self, **kwargs) -> str:
-            raise RuntimeError("summary unavailable")
-
-    class RecordingAudit:
-        def __init__(self) -> None:
-            self.events = []
-
-        def record(self, run_id, event_type, payload) -> None:
-            self.events.append((run_id, event_type, payload))
-
-    store = ConversationStore(tmp_path / "memory.sqlite")
-    audit = RecordingAudit()
-    service = ConversationPersistenceService(
-        store=store,
-        summarizer=BrokenSummarizer(),
-        audit=audit,
-    )
-    conversation_id = service.create_conversation(
-        tenant_id="t1", agent_id="customer_service", user_id="u1"
-    )
-
-    service.record_turn(
-        tenant_id="t1",
-        agent_id="customer_service",
-        user_id="u1",
-        conversation_id=conversation_id,
-        user_message="hello",
-        assistant_message="world",
-        run_id="r1",
-        window_turns=0,
-    )
-
-    assert [item["content"] for item in store.all_messages(conversation_id)] == [
-        "hello",
-        "world",
-    ]
-    assert audit.events[0][1] == "memory_summary_failed"

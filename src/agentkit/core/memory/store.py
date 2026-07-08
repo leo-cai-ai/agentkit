@@ -688,6 +688,209 @@ class ConversationStore:
             )
         return True, scope
 
+    def finalize_approval_output(
+        self,
+        action_id: str,
+        *,
+        run_id: str,
+        agent_id: str,
+        content: str,
+        message_state: str,
+        attempt_status: str,
+        artifact_id: str | None,
+        token_estimate: int,
+        error_code: str = "",
+        error_summary: str = "",
+        now: float | None = None,
+    ) -> tuple[int, bool, dict[str, Any]]:
+        """原子封口审批输出、Action、Attempt，并在成功时设置 canonical。"""
+        if message_state not in _TERMINAL_MESSAGE_STATES:
+            raise ValueError("message state must be terminal")
+        if attempt_status not in _TERMINAL_ATTEMPT_STATUSES:
+            raise ValueError("attempt status must be terminal")
+        resolved_now = round(time.time() if now is None else now, 3)
+        placeholder = self._projection_placeholder
+        columns = (
+            "attempt_id",
+            "turn_id",
+            "conversation_id",
+            "tenant_id",
+            "run_id",
+            "agent_id",
+            "action_status",
+            "attempt_status",
+        )
+        with self._connect() as conn:
+            self._begin_projection_write(conn)
+            row = conn.execute(
+                f"""
+                SELECT attempt.id, attempt.turn_id, turn.conversation_id,
+                       turn.tenant_id, attempt.run_id,
+                       COALESCE(attempt.agent_id, conversation.agent),
+                       action.status, attempt.status
+                FROM conversation_actions AS action
+                JOIN conversation_attempts AS attempt ON attempt.id = action.attempt_id
+                JOIN conversation_turns AS turn ON turn.id = attempt.turn_id
+                JOIN conversations AS conversation ON conversation.id = turn.conversation_id
+                WHERE action.id = {placeholder}{self._projection_lock_suffix}
+                """,
+                (action_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(action_id)
+            scope = _projection_row(columns, row)
+            if str(scope["run_id"] or "") != run_id:
+                raise ConversationConflictError("approval attempt is bound to another run")
+
+            output = conn.execute(
+                f"""
+                SELECT id, state FROM messages
+                WHERE attempt_id = {placeholder} AND kind = 'assistant_output'
+                  AND state = 'streaming'
+                ORDER BY id DESC LIMIT 1{self._projection_lock_suffix}
+                """,
+                (scope["attempt_id"],),
+            ).fetchone()
+            if (
+                scope["action_status"] == "completed"
+                and scope["attempt_status"] == attempt_status
+            ):
+                terminal_output = conn.execute(
+                    f"""
+                    SELECT id, state FROM messages
+                    WHERE attempt_id = {placeholder} AND kind = 'assistant_output'
+                    ORDER BY id DESC LIMIT 1{self._projection_lock_suffix}
+                    """,
+                    (scope["attempt_id"],),
+                ).fetchone()
+                if terminal_output is None:
+                    raise ConversationConflictError("completed approval has no final output")
+                return int(terminal_output[0]), False, scope
+            if scope["action_status"] not in {"pending", "approved", "rejected"}:
+                raise ConversationConflictError("approval action is not active")
+            if scope["attempt_status"] not in _NON_TERMINAL_ATTEMPT_STATUSES:
+                raise ConversationConflictError("approval attempt is not active")
+
+            if output is None:
+                previous = conn.execute(
+                    f"""
+                    SELECT id FROM messages
+                    WHERE attempt_id = {placeholder} AND role = 'assistant'
+                      AND visibility = 'user'
+                    ORDER BY id DESC LIMIT 1{self._projection_lock_suffix}
+                    """,
+                    (scope["attempt_id"],),
+                ).fetchone()
+                cursor = conn.execute(
+                    f"""
+                    INSERT INTO messages (
+                        conversation_id, role, content, token_estimate, run_id,
+                        agent_id, created_at, turn_id, attempt_id, kind, state,
+                        artifact_id, supersedes_message_id, updated_at
+                    ) VALUES (
+                        {placeholder}, 'assistant', {placeholder}, {placeholder},
+                        {placeholder}, {placeholder}, {placeholder}, {placeholder},
+                        {placeholder}, 'assistant_output', {placeholder}, {placeholder},
+                        {placeholder}, {placeholder}
+                    ){self._projection_returning_id}
+                    """,
+                    (
+                        scope["conversation_id"],
+                        content,
+                        token_estimate,
+                        run_id,
+                        agent_id,
+                        resolved_now,
+                        scope["turn_id"],
+                        scope["attempt_id"],
+                        message_state,
+                        artifact_id,
+                        int(previous[0]) if previous is not None else None,
+                        resolved_now,
+                    ),
+                )
+                if self._projection_returning_id:
+                    inserted = cursor.fetchone()
+                    if inserted is None:
+                        raise ConversationConflictError("approval output insert failed")
+                    message_id = int(inserted[0])
+                else:
+                    message_id = int(cursor.lastrowid or 0)
+            else:
+                if str(output[1]) != "streaming":
+                    raise ConversationConflictError("approval output is already sealed")
+                message_id = int(output[0])
+                sealed = conn.execute(
+                    f"""
+                    UPDATE messages
+                    SET content = {placeholder}, token_estimate = {placeholder},
+                        run_id = {placeholder}, agent_id = {placeholder},
+                        state = {placeholder}, artifact_id = {placeholder},
+                        updated_at = {placeholder}
+                    WHERE id = {placeholder} AND state = 'streaming'
+                    """,
+                    (
+                        content,
+                        token_estimate,
+                        run_id,
+                        agent_id,
+                        message_state,
+                        artifact_id,
+                        resolved_now,
+                        message_id,
+                    ),
+                )
+                if sealed.rowcount != 1:
+                    raise ConversationConflictError("approval output seal failed")
+
+            action_changed = conn.execute(
+                f"""
+                UPDATE conversation_actions
+                SET status = 'completed', version = version + 1, completed_at = {placeholder}
+                WHERE id = {placeholder} AND status IN ('pending', 'approved', 'rejected')
+                """,
+                (resolved_now, action_id),
+            )
+            if action_changed.rowcount != 1:
+                raise ConversationConflictError("approval action completion failed")
+            attempt_changed = conn.execute(
+                f"""
+                UPDATE conversation_attempts
+                SET status = {placeholder}, error_code = {placeholder},
+                    error_summary = {placeholder}, version = version + 1,
+                    finished_at = {placeholder}
+                WHERE id = {placeholder}
+                  AND status IN ('queued', 'running', 'waiting_for_approval', 'resuming')
+                """,
+                (
+                    attempt_status,
+                    error_code,
+                    error_summary,
+                    resolved_now,
+                    scope["attempt_id"],
+                ),
+            )
+            if attempt_changed.rowcount != 1:
+                raise ConversationConflictError("approval attempt completion failed")
+            canonical = (
+                f", canonical_attempt_id = {placeholder}"
+                if attempt_status == AttemptStatus.SUCCEEDED.value
+                else ""
+            )
+            turn_params: list[Any] = [resolved_now]
+            if attempt_status == AttemptStatus.SUCCEEDED.value:
+                turn_params.append(scope["attempt_id"])
+            turn_params.append(scope["turn_id"])
+            conn.execute(
+                f"""
+                UPDATE conversation_turns
+                SET active_attempt_id = NULL, updated_at = {placeholder}{canonical}
+                WHERE id = {placeholder}
+                """,
+                tuple(turn_params),
+            )
+        return message_id, True, scope
+
     def get_attempt_scope(self, attempt_id: str) -> dict[str, Any] | None:
         """返回审计与指标所需的安全 Attempt 作用域。"""
         columns = (

@@ -689,6 +689,68 @@ def test_postgres_finalize_projection_uses_row_lock_and_sets_canonical(monkeypat
     assert all("?" not in sql for sql, _ in calls)
 
 
+def test_postgres_finalize_approval_output_locks_action_and_updates_atomically(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class Result:
+        rowcount = 1
+
+        def __init__(self, row=None) -> None:
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class Connection:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+            if "FROM conversation_actions AS action" in sql:
+                return Result(
+                    (
+                        "attempt-1",
+                        "turn-1",
+                        "conversation-1",
+                        "tenant-a",
+                        "run-1",
+                        "xhs_growth",
+                        "pending",
+                        "waiting_for_approval",
+                    )
+                )
+            if "kind = 'assistant_output'" in sql:
+                return Result(None)
+            if "ORDER BY id DESC LIMIT 1" in sql:
+                return Result((9,))
+            if "INSERT INTO messages" in sql:
+                return Result((10,))
+            return Result()
+
+    store = object.__new__(PgConversationStore)
+    store._settings = None
+    monkeypatch.setattr(store, "_connect", lambda: nullcontext(Connection()))
+
+    message_id, changed, scope = store.finalize_approval_output(
+        "action-1",
+        run_id="run-1",
+        agent_id="xhs_growth",
+        content="审批后完成",
+        message_state="sealed",
+        attempt_status="succeeded",
+        artifact_id=None,
+        token_estimate=6,
+        now=100.0,
+    )
+
+    assert (message_id, changed, scope["attempt_id"]) == (10, True, "attempt-1")
+    assert "FOR UPDATE" in calls[0][0]
+    assert any("state = 'streaming'" in sql for sql, _ in calls)
+    assert any("UPDATE conversation_actions" in sql for sql, _ in calls)
+    assert any("canonical_attempt_id = %s" in sql for sql, _ in calls)
+    assert all("?" not in sql for sql, _ in calls)
+
+
 def test_postgres_timeline_projection_batches_attempt_children(monkeypatch) -> None:
     calls: list[tuple[str, tuple[object, ...]]] = []
 

@@ -54,6 +54,7 @@ from agentkit.runtime.conversation_persistence import (
     ConversationPersistenceService,
     ExtractingMemoryWriter,
 )
+from agentkit.runtime.conversation_projection import ConversationProjectionService
 from agentkit.runtime.conversation_runs import ConversationRunStateResolver
 from agentkit.runtime.declarative_catalog import (
     load_catalog,
@@ -84,6 +85,7 @@ class AgentKitRuntime:
     context_invoker: ContextInvocationService
     conversation_deletion: ConversationDeletionService
     conversation_runs: ConversationRunStateResolver
+    conversation_projection: ConversationProjectionService
     manifest: dict[str, Any] | None = None
     # 迁移期间保留属性形状，但不再存在第二套 Chat Runtime。
     chat_service: MultiAgentCoordinator | None = None
@@ -233,6 +235,10 @@ def build_runtime(
     )
     strategies = _build_strategies(checkpointer)
     conversation_store = build_conversation_store(settings, db_path)
+    conversation_projection = ConversationProjectionService(
+        store=conversation_store,
+        audit=audit,
+    )
     conversation_runs = ConversationRunStateResolver(
         audit=audit,
         timeout_seconds=float(settings.autonomy_timeout_seconds),
@@ -261,12 +267,13 @@ def build_runtime(
         else None
     )
     conversation_context = ConversationContextService(
-        store=conversation_store,
+        store=conversation_projection,
         memory_reader=memory,
         knowledge_service=knowledge,
     )
     conversation_persistence = ConversationPersistenceService(
         store=conversation_store,
+        projection=conversation_projection,
         memory_writer=ExtractingMemoryWriter(
             extractor=MemoryExtractor(
                 context_invoker=context_invoker,
@@ -334,6 +341,7 @@ def build_runtime(
         context_invoker=context_invoker,
         conversation_context=conversation_context,
         conversation_persistence=conversation_persistence,
+        conversation_projection=conversation_projection,
     )
     strategy_names = ("direct", "workflow", "batch", "parallel", "react", "plan_execute")
     return AgentKitRuntime(
@@ -348,6 +356,7 @@ def build_runtime(
         context_invoker=context_invoker,
         conversation_deletion=conversation_deletion,
         conversation_runs=conversation_runs,
+        conversation_projection=conversation_projection,
         manifest=manifest,
         chat_service=chat_service,
     )

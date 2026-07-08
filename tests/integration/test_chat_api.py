@@ -367,7 +367,7 @@ def test_empty_orphaned_conversation_returns_reconciled_execution(client) -> Non
     assert runtime.gateway.audit.get_run(parent_id)["status"] == "failed"
 
 
-def test_retry_creates_a_new_run_in_the_same_conversation(client) -> None:
+def test_legacy_retry_preserves_failed_messages_and_appends_new_projection(client) -> None:
     from agentkit.web.app import get_runtime
 
     token = _login(client)
@@ -412,9 +412,16 @@ def test_retry_creates_a_new_run_in_the_same_conversation(client) -> None:
     assert final["run_id"] != old_run_id
     assert runtime.gateway.audit.get_run(old_run_id)["status"] == "failed"
     messages = runtime.conversations.all_messages(conversation_id)
-    assert len(messages) == 2
-    assert {row["run_id"] for row in messages} == {final["run_id"]}
-    assert messages[0]["content"] == "你好"
+    assert len(messages) == 4
+    assert [(row["content"], row["run_id"]) for row in messages[:2]] == [
+        ("你好", old_run_id),
+        ("旧失败结果", old_run_id),
+    ]
+    assert (messages[2]["role"], messages[2]["run_id"]) == ("user", None)
+    assert (messages[3]["role"], messages[3]["run_id"]) == (
+        "assistant",
+        final["run_id"],
+    )
 
 
 def test_regular_chat_cannot_inject_retry_run_relationship(client) -> None:
@@ -465,6 +472,62 @@ def test_regular_chat_cannot_inject_retry_run_relationship(client) -> None:
     messages = runtime.conversations.all_messages(conversation_id)
     assert len(messages) == 4
     assert [row["content"] for row in messages[:2]] == ["旧问题", "旧结果"]
+
+
+def test_duplicate_client_message_does_not_start_or_fail_another_run(client) -> None:
+    from agentkit.web.app import get_runtime
+
+    token = _login(client)
+    runtime = get_runtime()
+    tenant_id = str(runtime.tenant_config["tenant_id"])
+    accepted = runtime.conversation_projection.accept_user_message(
+        tenant_id=tenant_id,
+        user_id="console-admin",
+        conversation_id=None,
+        client_message_id="duplicate-client",
+        content="你好",
+        title="你好",
+    )
+    first_run = runtime.gateway.audit.start_run(
+        tenant_id=tenant_id,
+        user_id="console-admin",
+        text="你好",
+        agent_id="general_agent",
+        conversation_id=accepted.conversation_id,
+    )
+    runtime.conversation_projection.bind_run(
+        accepted.attempt_id,
+        run_id=first_run,
+        agent_id="general_agent",
+    )
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "conversation_id": accepted.conversation_id,
+            "client_message_id": "duplicate-client",
+            "message": "你好",
+        },
+        headers={"X-CSRF-Token": token},
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["run_id"] == first_run
+    assert body["response"]["status"] == "running"
+    timeline = runtime.conversation_projection.timeline(
+        conversation_id=accepted.conversation_id,
+        tenant_id=tenant_id,
+        user_id="console-admin",
+    )
+    assert timeline.turns[0]["attempts"][0]["status"] == "running"
+    assert len(
+        runtime.gateway.audit.runs_for_conversation(
+            conversation_id=accepted.conversation_id,
+            tenant_id=tenant_id,
+            user_id="console-admin",
+        )
+    ) == 1
 
 
 def test_reconciled_conversation_requires_termination_endpoint(client) -> None:

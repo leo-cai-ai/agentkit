@@ -9,7 +9,12 @@ from typing import Any
 
 from agentkit.runtime.conversation_context import ConversationContextService
 from agentkit.runtime.conversation_persistence import ConversationPersistenceService
-from agentkit.runtime.conversation_runs import conversation_outcome
+from agentkit.runtime.conversation_projection import ConversationProjectionService
+from agentkit.runtime.conversation_projection_models import (
+    AcceptedTurn,
+    AttemptStage,
+    AttemptStatus,
+)
 
 from .audit import TERMINAL_RUN_STATUSES
 from .context.models import ContextRenderRequest
@@ -193,6 +198,7 @@ class MultiAgentCoordinator:
         context_invoker: Any,
         conversation_context: ConversationContextService,
         conversation_persistence: ConversationPersistenceService,
+        conversation_projection: ConversationProjectionService,
     ) -> None:
         self._tenant_id = tenant_id
         self._tenant_selector = tenant_selector
@@ -203,16 +209,17 @@ class MultiAgentCoordinator:
         self._context_invoker = context_invoker
         self._conversation_context = conversation_context
         self._conversation_persistence = conversation_persistence
+        self._projection = conversation_projection
 
     def handle(self, request: TaskRequest) -> TaskResponse:
-        conversation_id = str(request.context.get("conversation_id") or "")
-        if not conversation_id:
-            conversation_id = self._conversation_persistence.create_conversation(
-                tenant_id=self._tenant_id,
-                agent_id=GENERAL_AGENT_ID,
-                user_id=request.user_id,
-                title=request.text[:60],
-            )
+        conversation_id = str(request.context["conversation_id"])
+        turn_id = str(request.context["conversation_turn_id"])
+        attempt_id = str(request.context["conversation_attempt_id"])
+        accepted = self._projection.resolve_accepted(
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            attempt_id=attempt_id,
+        )
         parent_run_id = self._audit.start_run(
             tenant_id=self._tenant_id,
             user_id=request.user_id,
@@ -227,23 +234,37 @@ class MultiAgentCoordinator:
                 "conversation_retry_started",
                 {"retry_of_run_id": retry_of_run_id},
             )
+        attempt_bound = False
         try:
+            self._projection.bind_run(
+                attempt_id,
+                run_id=parent_run_id,
+                agent_id=GENERAL_AGENT_ID,
+            )
+            attempt_bound = True
+            self._projection.set_stage(attempt_id, AttemptStage.UNDERSTANDING_REQUEST)
             return self._handle_started(
                 request=request,
-                conversation_id=conversation_id,
+                accepted=accepted,
                 parent_run_id=parent_run_id,
             )
         except Exception as exc:
-            self._fail_parent_run(parent_run_id, exc)
+            self._fail_parent_run(
+                parent_run_id,
+                attempt_id,
+                exc,
+                fail_attempt=attempt_bound,
+            )
             raise
 
     def _handle_started(
         self,
         *,
         request: TaskRequest,
-        conversation_id: str,
+        accepted: AcceptedTurn,
         parent_run_id: str,
     ) -> TaskResponse:
+        conversation_id = accepted.conversation_id
         from .safety import REFUSAL_MESSAGE, build_safety_guard
 
         safety = build_safety_guard().inspect_input(request.text)
@@ -251,7 +272,7 @@ class MultiAgentCoordinator:
             self._audit.record(parent_run_id, "safety_blocked", safety.to_audit())
             return self._finish_general(
                 request=request,
-                conversation_id=conversation_id,
+                accepted=accepted,
                 parent_run_id=parent_run_id,
                 status="blocked",
                 message=REFUSAL_MESSAGE,
@@ -268,13 +289,15 @@ class MultiAgentCoordinator:
             run_id=parent_run_id,
             message=request.text,
             roles=request.roles,
+            exclude_turn_id=accepted.turn_id,
         )
+        self._projection.set_stage(accepted.attempt_id, AttemptStage.ROUTING_AGENT)
         try:
             mention = self._mentions.parse(request.text)
         except AgentMentionError as exc:
             return self._finish_general(
                 request=request,
-                conversation_id=conversation_id,
+                accepted=accepted,
                 parent_run_id=parent_run_id,
                 status="needs_clarification",
                 message=f"{exc}。当前可用：{self._available_agent_text()}",
@@ -324,7 +347,7 @@ class MultiAgentCoordinator:
                 self._audit.record(parent_run_id, "agent_route_decided", route)
                 return self._finish_general(
                     request=request,
-                    conversation_id=conversation_id,
+                    accepted=accepted,
                     parent_run_id=parent_run_id,
                     status="needs_clarification",
                     message=(
@@ -349,12 +372,13 @@ class MultiAgentCoordinator:
         if decision["action"] == "delegate":
             return self._delegate(
                 request=request,
-                conversation_id=conversation_id,
+                accepted=accepted,
                 parent_run_id=parent_run_id,
                 decision=decision,
                 route=route,
             )
 
+        self._projection.set_stage(accepted.attempt_id, AttemptStage.EXECUTING_AGENT)
         answer = self._answer(
             request=request,
             run_id=parent_run_id,
@@ -365,7 +389,7 @@ class MultiAgentCoordinator:
         status = "needs_clarification" if decision["action"] == "clarify" else "completed"
         return self._finish_general(
             request=request,
-            conversation_id=conversation_id,
+            accepted=accepted,
             parent_run_id=parent_run_id,
             status=status,
             message=answer,
@@ -399,7 +423,13 @@ class MultiAgentCoordinator:
         conversation_id = str(child_run.get("conversation_id") or "")
         target_agent = str(child_run.get("agent_id") or "")
         self._directory.profile(target_agent)
+        accepted, action_id = self._accepted_for_thread(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            thread_id=thread_id,
+        )
         try:
+            self._projection.set_stage(accepted.attempt_id, AttemptStage.EXECUTING_AGENT)
             return self._resume_started(
                 thread_id=thread_id,
                 user_id=user_id,
@@ -412,9 +442,26 @@ class MultiAgentCoordinator:
                 parent_run_id=parent_run_id,
                 conversation_id=conversation_id,
                 target_agent=target_agent,
+                accepted=accepted,
+                action_id=action_id,
             )
         except Exception as exc:
-            self._fail_parent_run(parent_run_id, exc)
+            action_failed = False
+            try:
+                self._projection.fail_approval(
+                    action_id,
+                    error_code=type(exc).__name__,
+                    error_summary="审批恢复流程异常退出",
+                )
+                action_failed = True
+            except Exception:  # noqa: BLE001 - 清理失败不得遮蔽原始业务异常
+                pass
+            self._fail_parent_run(
+                parent_run_id,
+                accepted.attempt_id,
+                exc,
+                fail_attempt=not action_failed,
+            )
             raise
 
     def _resume_started(
@@ -431,6 +478,8 @@ class MultiAgentCoordinator:
         parent_run_id: str,
         conversation_id: str,
         target_agent: str,
+        accepted: AcceptedTurn,
+        action_id: str,
     ) -> TaskResponse:
         child = self._gateway.resume(
             thread_id,
@@ -458,22 +507,14 @@ class MultiAgentCoordinator:
                 {"status": "waiting_for_approval", "child_run_id": child.run_id},
             )
         else:
-            original_request = TaskRequest(
+            self._project_terminal(
+                accepted=accepted,
                 user_id=user_id,
-                roles=list(roles),
-                text=str(parent_run.get("text") or ""),
-                context={
-                    "conversation_id": conversation_id,
-                    "retry_of_run_id": self._retry_origin(parent_run_id),
-                },
-            )
-            self._persist_turn(
-                request=original_request,
-                conversation_id=conversation_id,
                 run_id=parent_run_id,
                 assistant_agent_id=target_agent,
                 status=child.status,
                 output=child.output,
+                approval_action_id=action_id,
             )
             self._audit.record(
                 parent_run_id,
@@ -554,11 +595,13 @@ class MultiAgentCoordinator:
         self,
         *,
         request: TaskRequest,
-        conversation_id: str,
+        accepted: AcceptedTurn,
         parent_run_id: str,
         decision: dict[str, Any],
         route: dict[str, Any],
     ) -> TaskResponse:
+        conversation_id = accepted.conversation_id
+        self._projection.set_stage(accepted.attempt_id, AttemptStage.EXECUTING_AGENT)
         target_agent = str(decision["target_agent"])
         target = self._directory.profile(target_agent)
         task_text = str(decision.get("task") or request.text).strip()
@@ -571,6 +614,7 @@ class MultiAgentCoordinator:
             run_id=parent_run_id,
             message=task_text,
             roles=request.roles,
+            exclude_turn_id=accepted.turn_id,
         )
         child_request = TaskRequest(
             user_id=request.user_id,
@@ -602,15 +646,46 @@ class MultiAgentCoordinator:
         }
         self._audit.record(parent_run_id, "agent_delegated", delegation)
         if child.status == "waiting_for_approval":
+            self._projection.set_stage(
+                accepted.attempt_id,
+                AttemptStage.PREPARING_APPROVAL,
+            )
+            approval = child.output.get("approval", {})
+            if not isinstance(approval, dict):
+                approval = {}
+            governance_approval = child.governance.get("approval", {})
+            if not isinstance(governance_approval, dict):
+                governance_approval = {}
+            approval = {**governance_approval, **approval}
+            preview = approval.get("preview", {})
+            preview = dict(preview) if isinstance(preview, dict) else {}
+            preview.setdefault(
+                "content",
+                format_task_output_text(status=child.status, output=child.output),
+            )
+            skills = approval.get("skills", [])
+            self._projection.request_approval(
+                accepted=accepted,
+                run_id=parent_run_id,
+                agent_id=target_agent,
+                thread_id=child.thread_id,
+                skills=[str(item) for item in skills] if isinstance(skills, list) else [],
+                preview=preview,
+                preview_artifact_id=(
+                    str(approval["preview_artifact_id"])
+                    if approval.get("preview_artifact_id")
+                    else None
+                ),
+            )
             self._audit.record(
                 parent_run_id,
                 "run_paused",
                 {"status": "waiting_for_approval", "child_run_id": child.run_id},
             )
         else:
-            self._persist_turn(
-                request=request,
-                conversation_id=conversation_id,
+            self._project_terminal(
+                accepted=accepted,
+                user_id=request.user_id,
                 run_id=parent_run_id,
                 assistant_agent_id=target_agent,
                 status=child.status,
@@ -637,22 +712,21 @@ class MultiAgentCoordinator:
         self,
         *,
         request: TaskRequest,
-        conversation_id: str,
+        accepted: AcceptedTurn,
         parent_run_id: str,
         status: str,
         message: str,
         route: dict[str, Any],
     ) -> TaskResponse:
         output = {"message": message}
-        if status != "blocked":
-            self._persist_turn(
-                request=request,
-                conversation_id=conversation_id,
-                run_id=parent_run_id,
-                assistant_agent_id=GENERAL_AGENT_ID,
-                status=status,
-                output=output,
-            )
+        self._project_terminal(
+            accepted=accepted,
+            user_id=request.user_id,
+            run_id=parent_run_id,
+            assistant_agent_id=GENERAL_AGENT_ID,
+            status=status,
+            output=output,
+        )
         self._audit.record(parent_run_id, "run_finished", {"status": status})
         return TaskResponse(
             status=status,
@@ -661,57 +735,143 @@ class MultiAgentCoordinator:
             thread_id="",
             agent=GENERAL_AGENT_ID,
             strategy="direct",
-            conversation_id=conversation_id,
+            conversation_id=accepted.conversation_id,
             governance={"route": route},
             audit_events=self._audit.events_for(parent_run_id),
         )
 
-    def _persist_turn(
+    def _project_terminal(
         self,
         *,
-        request: TaskRequest,
-        conversation_id: str,
+        accepted: AcceptedTurn,
+        user_id: str,
         run_id: str,
         assistant_agent_id: str,
         status: str,
         output: dict[str, Any],
+        approval_action_id: str | None = None,
     ) -> None:
+        terminal_status = self._attempt_status(status)
+        self._projection.set_stage(accepted.attempt_id, AttemptStage.FINALIZING)
+        content = format_task_output_text(status=status, output=output)
+        if approval_action_id is not None:
+            self._projection.project_approval_output(
+                accepted=accepted,
+                action_id=approval_action_id,
+                run_id=run_id,
+                agent_id=assistant_agent_id,
+                content=content,
+                status=terminal_status,
+            )
+        else:
+            self._projection.project_output(
+                accepted=accepted,
+                run_id=run_id,
+                agent_id=assistant_agent_id,
+                content=content,
+                status=terminal_status,
+            )
+        if terminal_status is not AttemptStatus.SUCCEEDED:
+            return
         general = self._directory.profile(GENERAL_AGENT_ID)
-        assistant_message = format_task_output_text(status=status, output=output)
-        self._conversation_persistence.record_turn(
+        self._conversation_persistence.finalize_canonical_turn(
             tenant_id=self._tenant_id,
             agent_id=GENERAL_AGENT_ID,
-            assistant_agent_id=assistant_agent_id,
-            user_id=request.user_id,
-            conversation_id=conversation_id,
-            user_message=request.text,
-            assistant_message=assistant_message,
+            user_id=user_id,
+            conversation_id=accepted.conversation_id,
+            turn_id=accepted.turn_id,
             run_id=run_id,
             window_turns=general.context_policy.memory.window_turns,
-            retry_of_run_id=str(request.context.get("retry_of_run_id") or ""),
-            outcome=conversation_outcome(status),
         )
 
-    def _fail_parent_run(self, run_id: str, exc: Exception) -> None:
+    def _fail_parent_run(
+        self,
+        run_id: str,
+        attempt_id: str,
+        exc: Exception,
+        *,
+        fail_attempt: bool = True,
+    ) -> None:
         """异常退出时保证 General 父运行进入失败终态。"""
-        current = self._audit.get_run(run_id)
+        try:
+            current = self._audit.get_run(run_id)
+        except Exception:  # noqa: BLE001 - 清理失败不得遮蔽原始业务异常
+            return
         if current is None or current.get("status") in TERMINAL_RUN_STATUSES:
             return
-        self._audit.record(
-            run_id,
-            "run_failed",
-            {
-                "error_type": type(exc).__name__,
-                "reason": "General Agent 协调流程异常退出",
-            },
-        )
-        self._audit.record(run_id, "run_finished", {"status": "failed"})
+        try:
+            self._audit.record(
+                run_id,
+                "run_failed",
+                {
+                    "error_type": type(exc).__name__,
+                    "reason": "General Agent 协调流程异常退出",
+                },
+            )
+        except Exception:  # noqa: BLE001 - 清理失败不得遮蔽原始业务异常
+            pass
+        if fail_attempt:
+            try:
+                self._projection.fail_attempt(
+                    attempt_id,
+                    error_code=type(exc).__name__,
+                    error_summary="General Agent 协调流程异常退出",
+                )
+            except Exception:  # noqa: BLE001 - 清理失败不得遮蔽原始业务异常
+                pass
+        try:
+            self._audit.record(run_id, "run_finished", {"status": "failed"})
+        except Exception:  # noqa: BLE001 - 清理失败不得遮蔽原始业务异常
+            pass
+
+    @staticmethod
+    def _attempt_status(status: str) -> AttemptStatus:
+        if status == "completed":
+            return AttemptStatus.SUCCEEDED
+        if status in {"blocked", "needs_clarification", "rejected"}:
+            return AttemptStatus.REJECTED
+        if status == "cancelled":
+            return AttemptStatus.CANCELLED
+        if status == "interrupted":
+            return AttemptStatus.INTERRUPTED
+        return AttemptStatus.FAILED
 
     def _available_agent_text(self) -> str:
         return "、".join(
             f"@{card['aliases'][0] if card['aliases'] else card['label']}"
             for card in self._directory.business_cards()
         )
+
+    def _accepted_for_thread(
+        self,
+        *,
+        conversation_id: str,
+        user_id: str,
+        thread_id: str,
+    ) -> tuple[AcceptedTurn, str]:
+        """从 durable Action 定位原 Attempt，恢复时绝不创建第二条用户消息。"""
+        timeline = self._projection.timeline(
+            conversation_id=conversation_id,
+            tenant_id=self._tenant_id,
+            user_id=user_id,
+        )
+        for turn in timeline.turns:
+            for attempt in turn["attempts"]:
+                if any(action.get("thread_id") == thread_id for action in attempt["actions"]):
+                    action = next(
+                        item
+                        for item in attempt["actions"]
+                        if item.get("thread_id") == thread_id
+                    )
+                    return (
+                        self._projection.resolve_accepted(
+                            conversation_id=conversation_id,
+                            turn_id=str(turn["id"]),
+                            attempt_id=str(attempt["id"]),
+                        ),
+                        str(action["id"]),
+                    )
+        raise KeyError(f"审批线程缺少 durable Action: {thread_id}")
 
     def _route_event(self, run_id: str) -> dict[str, Any]:
         for event in self._audit.events_for(run_id):

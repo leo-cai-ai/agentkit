@@ -115,6 +115,29 @@ def test_context_projection_excludes_active_turn(tmp_path) -> None:
     assert messages == []
 
 
+def test_resolve_accepted_restores_trusted_user_message_id(tmp_path) -> None:
+    service, accepted = projection_fixture(tmp_path)
+
+    resolved = service.resolve_accepted(
+        conversation_id=accepted.conversation_id,
+        turn_id=accepted.turn_id,
+        attempt_id=accepted.attempt_id,
+    )
+
+    assert resolved == replace(accepted, created=False)
+
+
+def test_resolve_accepted_rejects_mismatched_scope(tmp_path) -> None:
+    service, accepted = projection_fixture(tmp_path)
+
+    with pytest.raises(ValueError, match="accepted turn"):
+        service.resolve_accepted(
+            conversation_id="forged-conversation",
+            turn_id=accepted.turn_id,
+            attempt_id=accepted.attempt_id,
+        )
+
+
 def test_streaming_observer_and_project_output_reuse_one_message(tmp_path) -> None:
     service, accepted = projection_fixture(tmp_path)
 

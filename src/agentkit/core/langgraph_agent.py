@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import uuid
 from collections.abc import Callable
 from dataclasses import replace
@@ -16,7 +15,6 @@ from agentkit.runtime.conversation_context import (
     ConversationContextService,
 )
 from agentkit.runtime.conversation_persistence import ConversationPersistenceService
-from agentkit.runtime.conversation_runs import conversation_outcome
 
 from .artifacts import ArtifactStore, InMemoryArtifactStore
 from .audit import InMemoryAuditLog, PostgresAuditLog, SQLiteAuditLog
@@ -281,7 +279,6 @@ class UnifiedAgentGraph:
         graph.add_node("post_execution_approval", self._post_execution_approval)
         graph.add_node("deferred_approval", self._deferred_approval)
         graph.add_node("review_output", self._review_output)
-        graph.add_node("persist_turn", self._persist_turn)
         graph.add_node("finalize", self._finalize)
         graph.add_edge(START, "start_run")
         graph.add_edge("start_run", "load_agent")
@@ -296,8 +293,7 @@ class UnifiedAgentGraph:
         graph.add_edge("execute_strategy", "post_execution_approval")
         graph.add_edge("post_execution_approval", "deferred_approval")
         graph.add_edge("deferred_approval", "review_output")
-        graph.add_edge("review_output", "persist_turn")
-        graph.add_edge("persist_turn", "finalize")
+        graph.add_edge("review_output", "finalize")
         graph.add_edge("finalize", END)
         return graph.compile(checkpointer=self._checkpointer)
 
@@ -619,32 +615,6 @@ class UnifiedAgentGraph:
         result = state.get("result")
         if result is not None:
             self._audit.record(state["run_id"], "output_reviewed", {"status": result.status})
-        return {}
-
-    def _persist_turn(self, state: UnifiedAgentState) -> dict[str, Any]:
-        if self._conversation_persistence is None:
-            return {}
-        result = state.get("result")
-        conversation_id = str(state["request"].context.get("conversation_id") or "")
-        if (
-            result is None
-            or "agent" not in state
-            or not conversation_id
-            or result.status == "waiting_for_approval"
-        ):
-            return {}
-        self._conversation_persistence.record_turn(
-            tenant_id=self._tenant_id,
-            agent_id=state["agent"].name,
-            user_id=state["request"].user_id,
-            conversation_id=conversation_id,
-            user_message=state["request"].text,
-            assistant_message=json.dumps(result.output, ensure_ascii=False, default=str),
-            run_id=state["run_id"],
-            window_turns=state["agent"].context_policy.memory.window_turns,
-            retry_of_run_id=str(state["request"].context.get("retry_of_run_id") or ""),
-            outcome=conversation_outcome(result.status),
-        )
         return {}
 
     def _finalize(self, state: UnifiedAgentState) -> dict[str, Any]:

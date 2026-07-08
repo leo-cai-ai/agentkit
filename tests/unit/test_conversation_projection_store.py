@@ -15,6 +15,7 @@ _PROJECTION_READ_API = (
     "get_projection_message",
     "get_attempt_output",
     "finalize_attempt_output",
+    "finalize_approval_output",
     "get_attempt_scope",
     "timeline_turns",
     "find_conversation_by_client_message",
@@ -386,6 +387,128 @@ def test_different_action_decision_conflicts_and_joint_transition_rolls_back(
             (accepted.turn_id,),
         ).fetchone()
     assert turn[0] is None
+
+
+def test_finalize_approval_output_atomically_seals_message_action_and_attempt(tmp_path) -> None:
+    store, accepted = accepted_store(tmp_path)
+    store.bind_attempt_run(accepted.attempt_id, run_id="run-1", agent_id="xhs_growth")
+    _, action = store.persist_approval_request(
+        conversation_id=accepted.conversation_id,
+        turn_id=accepted.turn_id,
+        attempt_id=accepted.attempt_id,
+        agent_id="xhs_growth",
+        visible_content="审核稿",
+        thread_id="thread-1",
+        skills=[],
+        preview={},
+        preview_artifact_id=None,
+    )
+
+    message_id, changed, _ = store.finalize_approval_output(
+        action.id,
+        run_id="run-1",
+        agent_id="xhs_growth",
+        content="审批后完成",
+        message_state="sealed",
+        attempt_status="succeeded",
+        artifact_id=None,
+        token_estimate=6,
+        now=100.0,
+    )
+
+    assert changed is True
+    assert store.get_projection_message(message_id)["content"] == "审批后完成"
+    assert store.get_action(action.id)["status"] == "completed"
+    assert store.get_attempt(accepted.attempt_id)["status"] == "succeeded"
+    assert store.timeline_turns(accepted.conversation_id)[0]["canonical_attempt_id"] == (
+        accepted.attempt_id
+    )
+
+
+def test_finalize_approval_output_rolls_back_every_record_on_action_failure(tmp_path) -> None:
+    store, accepted = accepted_store(tmp_path)
+    store.bind_attempt_run(accepted.attempt_id, run_id="run-1", agent_id="xhs_growth")
+    _, action = store.persist_approval_request(
+        conversation_id=accepted.conversation_id,
+        turn_id=accepted.turn_id,
+        attempt_id=accepted.attempt_id,
+        agent_id="xhs_growth",
+        visible_content="审核稿",
+        thread_id="thread-1",
+        skills=[],
+        preview={},
+        preview_artifact_id=None,
+    )
+    before = store.messages_for_attempt(accepted.attempt_id)
+    with store._connect() as conn:
+        conn.execute(
+            """
+            CREATE TRIGGER reject_action_completion
+            BEFORE UPDATE ON conversation_actions
+            WHEN NEW.status = 'completed'
+            BEGIN SELECT RAISE(ABORT, 'injected action failure'); END
+            """
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected action failure"):
+        store.finalize_approval_output(
+            action.id,
+            run_id="run-1",
+            agent_id="xhs_growth",
+            content="不得部分提交",
+            message_state="sealed",
+            attempt_status="succeeded",
+            artifact_id=None,
+            token_estimate=6,
+        )
+
+    assert store.messages_for_attempt(accepted.attempt_id) == before
+    assert store.get_action(action.id)["status"] == "pending"
+    assert store.get_attempt(accepted.attempt_id)["status"] == "waiting_for_approval"
+
+
+def test_finalize_approval_output_appends_after_sealed_pre_approval_draft(tmp_path) -> None:
+    store, accepted = accepted_store(tmp_path)
+    store.bind_attempt_run(accepted.attempt_id, run_id="run-1", agent_id="xhs_growth")
+    draft_id = store.open_active_attempt_message(
+        conversation_id=accepted.conversation_id,
+        turn_id=accepted.turn_id,
+        attempt_id=accepted.attempt_id,
+        role="assistant",
+        kind="assistant_output",
+        content="审批前草稿",
+        agent_id="xhs_growth",
+    )
+    _, action = store.persist_approval_request(
+        conversation_id=accepted.conversation_id,
+        turn_id=accepted.turn_id,
+        attempt_id=accepted.attempt_id,
+        agent_id="xhs_growth",
+        visible_content="审核修订稿",
+        thread_id="thread-1",
+        skills=[],
+        preview={},
+        preview_artifact_id=None,
+    )
+
+    final_id, changed, _ = store.finalize_approval_output(
+        action.id,
+        run_id="run-1",
+        agent_id="xhs_growth",
+        content="审批后完成",
+        message_state="sealed",
+        attempt_status="succeeded",
+        artifact_id=None,
+        token_estimate=6,
+    )
+
+    assert changed is True
+    assert final_id != draft_id
+    assert [row["content"] for row in store.messages_for_attempt(accepted.attempt_id)] == [
+        "审批前草稿",
+        "审核修订稿",
+        "审批后完成",
+    ]
 
 
 def test_accept_turn_is_idempotent_and_persists_input_before_run(tmp_path) -> None:

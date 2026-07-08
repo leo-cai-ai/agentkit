@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from agentkit.core.llm_client import strip_reasoning_tags
 from agentkit.core.memory.extractor import MemoryExtractor
 from agentkit.core.memory.retrieval import MemoryRetriever
 from agentkit.core.memory.summarizer import Summarizer
@@ -23,31 +22,7 @@ class ConversationWriter(Protocol):
 
     def get_conversation(self, conversation_id: str) -> dict[str, Any] | None: ...
 
-    def add_message(
-        self,
-        *,
-        conversation_id: str,
-        role: str,
-        content: str,
-        token_estimate: int = 0,
-        run_id: str | None = None,
-        agent_id: str | None = None,
-    ) -> int: ...
-
     def all_messages(self, conversation_id: str) -> list[dict[str, Any]]: ...
-
-    def replace_turn_messages(
-        self,
-        *,
-        conversation_id: str,
-        previous_run_id: str,
-        run_id: str,
-        user_content: str,
-        user_token_estimate: int,
-        assistant_content: str,
-        assistant_token_estimate: int,
-        assistant_agent_id: str,
-    ) -> bool: ...
 
     def get_summary(self, conversation_id: str) -> dict[str, Any] | None: ...
 
@@ -59,6 +34,18 @@ class ConversationWriter(Protocol):
         covered_through_message_id: int,
         token_estimate: int = 0,
     ) -> None: ...
+
+
+class ProjectionReader(Protocol):
+    def timeline(self, *, conversation_id: str, tenant_id: str, user_id: str) -> Any: ...
+
+    def context_messages(
+        self,
+        *,
+        conversation_id: str,
+        exclude_turn_id: str | None,
+        limit: int,
+    ) -> list[dict[str, Any]]: ...
 
 
 class AuditWriter(Protocol):
@@ -127,18 +114,20 @@ class ExtractingMemoryWriter:
 
 
 class ConversationPersistenceService:
-    """只负责持久化明确作用域内的一轮对话。"""
+    """只在成功投影封口后更新 canonical 摘要与长期记忆。"""
 
     def __init__(
         self,
         *,
         store: ConversationWriter,
+        projection: ProjectionReader | None = None,
         memory_writer: MemoryWriter | None = None,
         summarizer: Summarizer | None = None,
         audit: AuditWriter | None = None,
         tokenizer: TokenEstimator | None = None,
     ) -> None:
         self._store = store
+        self._projection = projection
         self._memory = memory_writer
         self._summarizer = summarizer
         self._audit = audit
@@ -159,21 +148,19 @@ class ConversationPersistenceService:
             title=title,
         )
 
-    def record_turn(
+    def finalize_canonical_turn(
         self,
         *,
         tenant_id: str,
         agent_id: str,
         user_id: str,
         conversation_id: str,
-        user_message: str,
-        assistant_message: str,
+        turn_id: str,
         run_id: str,
         window_turns: int,
-        assistant_agent_id: str | None = None,
-        retry_of_run_id: str = "",
-        outcome: str = "succeeded",
     ) -> None:
+        if self._projection is None:
+            raise RuntimeError("ConversationProjectionService 未配置")
         conversation = self._store.get_conversation(conversation_id)
         if conversation is None:
             raise ValueError(f"未知 conversation_id: {conversation_id}")
@@ -186,54 +173,39 @@ class ConversationPersistenceService:
         if conversation.get("status") != "active":
             raise ValueError("会话当前不可写入")
 
-        assistant_text = strip_reasoning_tags(assistant_message)
-        actual_assistant_agent = assistant_agent_id or agent_id
-        replaced = False
-        if retry_of_run_id:
-            replaced = self._store.replace_turn_messages(
-                conversation_id=conversation_id,
-                previous_run_id=retry_of_run_id,
-                run_id=run_id,
-                user_content=user_message,
-                user_token_estimate=self._tokenizer.estimate(user_message),
-                assistant_content=assistant_text,
-                assistant_token_estimate=self._tokenizer.estimate(assistant_text),
-                assistant_agent_id=actual_assistant_agent,
-            )
-        if not replaced:
-            if user_message:
-                self._store.add_message(
-                    conversation_id=conversation_id,
-                    role="user",
-                    content=user_message,
-                    token_estimate=self._tokenizer.estimate(user_message),
-                    run_id=run_id,
-                )
-            self._store.add_message(
-                conversation_id=conversation_id,
-                role="assistant",
-                content=assistant_text,
-                token_estimate=self._tokenizer.estimate(assistant_text),
-                run_id=run_id,
-                agent_id=actual_assistant_agent,
-            )
-            if retry_of_run_id and self._audit is not None:
-                self._audit.record(
-                    run_id,
-                    "conversation_retry_replace_missed",
-                    {
-                        "conversation_id": conversation_id,
-                        "retry_of_run_id": retry_of_run_id,
-                    },
-                )
-        if outcome == "succeeded" and self._memory is not None:
+        timeline = self._projection.timeline(
+            conversation_id=conversation_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+        turn = next((item for item in timeline.turns if item["id"] == turn_id), None)
+        if turn is None:
+            raise ValueError("Turn 不属于当前会话")
+        canonical_id = str(turn.get("canonical_attempt_id") or "")
+        canonical = next(
+            (item for item in turn["attempts"] if item["id"] == canonical_id),
+            None,
+        )
+        if canonical is None or canonical.get("status") != "succeeded":
+            raise ValueError("Turn 尚无成功 canonical Attempt")
+        assistant_messages = [
+            item
+            for item in canonical["messages"]
+            if item.get("role") == "assistant" and item.get("state") == "sealed"
+        ]
+        if not assistant_messages:
+            raise ValueError("成功 canonical Attempt 缺少封存输出")
+        user_message = str(turn["user_message"]["content"])
+        assistant_message = str(assistant_messages[-1]["content"])
+
+        if self._memory is not None:
             self._memory.record(
                 tenant_id=tenant_id,
                 agent_id=agent_id,
                 user_id=user_id,
                 conversation_id=conversation_id,
                 user_message=user_message,
-                assistant_message=assistant_text,
+                assistant_message=assistant_message,
                 run_id=run_id,
             )
         self._update_summary(
@@ -253,27 +225,31 @@ class ConversationPersistenceService:
     ) -> None:
         if self._summarizer is None:
             return
-        messages = self._store.all_messages(conversation_id)
+        all_messages = self._store.all_messages(conversation_id)
+        messages = self._projection.context_messages(
+            conversation_id=conversation_id,
+            exclude_turn_id=None,
+            limit=max(2, len(all_messages)),
+        )
         keep_messages = max(0, int(window_turns)) * 2
         foldable = messages[:-keep_messages] if keep_messages else messages
-        current = self._store.get_summary(conversation_id)
-        covered = int(current.get("covered_through_message_id", 0)) if current else 0
-        turns = [message for message in foldable if int(message.get("id", 0)) > covered]
-        if not turns:
+        if not foldable:
             return
         try:
             summary = self._summarizer.fold(
                 tenant_id=tenant_id,
                 run_id=run_id,
-                existing_summary=str(current.get("summary_text", "")) if current else "",
+                # canonical 集合可能因 Retry 改变，重算可避免旧失败内容残留。
+                existing_summary="",
                 turns=[
-                    {"role": str(item["role"]), "content": str(item["content"])} for item in turns
+                    {"role": str(item["role"]), "content": str(item["content"])}
+                    for item in foldable
                 ],
             )
             self._store.upsert_summary(
                 conversation_id=conversation_id,
                 summary_text=summary,
-                covered_through_message_id=int(turns[-1]["id"]),
+                covered_through_message_id=max(int(item["id"]) for item in all_messages),
                 token_estimate=self._tokenizer.estimate(summary),
             )
         except Exception as exc:  # noqa: BLE001 - 摘要是非事务性辅助能力

@@ -12,6 +12,8 @@ from agentkit.runtime.conversation_persistence import (
     ConversationPersistenceService,
     ExtractingMemoryWriter,
 )
+from agentkit.runtime.conversation_projection import ConversationProjectionService
+from agentkit.runtime.conversation_projection_models import AttemptStatus
 from tests.context_support import SpyContextInvoker
 from tests.unit.test_conversation_context import _agent
 
@@ -23,8 +25,10 @@ def _services(tmp_path, invoker: SpyContextInvoker):
         embeddings=FakeEmbeddingProvider(dim=128),
         min_score=0.05,
     )
+    projection = ConversationProjectionService(store=store)
     persistence = ConversationPersistenceService(
         store=store,
+        projection=projection,
         memory_writer=ExtractingMemoryWriter(
             extractor=MemoryExtractor(
                 context_invoker=invoker,
@@ -37,33 +41,54 @@ def _services(tmp_path, invoker: SpyContextInvoker):
             tenant_selector="company_alpha",
         ),
     )
-    return store, memory, persistence
+    return store, memory, persistence, projection
+
+
+def _project_success(projection, *, message: str, response: str):
+    accepted = projection.accept_user_message(
+        tenant_id="t1",
+        user_id="u1",
+        conversation_id=None,
+        client_message_id="client-1",
+        content=message,
+        title=message,
+    )
+    projection.bind_run(accepted.attempt_id, run_id="r1", agent_id="general_agent")
+    projection.project_output(
+        accepted=accepted,
+        run_id="r1",
+        agent_id="customer_service",
+        content=response,
+        status=AttemptStatus.SUCCEEDED,
+    )
+    return accepted
 
 
 def test_extracted_fact_is_recalled_in_new_conversation(tmp_path) -> None:
     invoker = SpyContextInvoker(["the user's name is Sam"])
-    store, memory, persistence = _services(tmp_path, invoker)
-    first = persistence.create_conversation(
-        tenant_id="t1", agent_id="customer_service", user_id="u1"
+    store, memory, persistence, projection = _services(tmp_path, invoker)
+    first = _project_success(
+        projection,
+        message="Hi, my name is Sam",
+        response="Hi Sam",
     )
-    persistence.record_turn(
+    persistence.finalize_canonical_turn(
         tenant_id="t1",
-        agent_id="customer_service",
+        agent_id="general_agent",
         user_id="u1",
-        conversation_id=first,
-        user_message="Hi, my name is Sam",
-        assistant_message="Hi Sam",
+        conversation_id=first.conversation_id,
+        turn_id=first.turn_id,
         run_id="r1",
         window_turns=6,
     )
     second = persistence.create_conversation(
-        tenant_id="t1", agent_id="customer_service", user_id="u1"
+        tenant_id="t1", agent_id="general_agent", user_id="u1"
     )
 
     context = ConversationContextService(store=store, memory_reader=memory).build(
-        agent=_agent(agent_id="customer_service", rag_enabled=False),
+        agent=_agent(agent_id="general_agent", rag_enabled=False),
         tenant_id="t1",
-        agent_id="customer_service",
+        agent_id="general_agent",
         user_id="u1",
         conversation_id=second,
         run_id="r2",
@@ -75,23 +100,24 @@ def test_extracted_fact_is_recalled_in_new_conversation(tmp_path) -> None:
 
 def test_persistence_updates_summary_through_context_pack(tmp_path) -> None:
     invoker = SpyContextInvoker([], "SUMMARY")
-    store, _memory, persistence = _services(tmp_path, invoker)
-    conversation_id = persistence.create_conversation(
-        tenant_id="t1", agent_id="customer_service", user_id="u1"
+    store, _memory, persistence, projection = _services(tmp_path, invoker)
+    accepted = _project_success(
+        projection,
+        message="需要归档的旧消息",
+        response="已处理",
     )
 
-    persistence.record_turn(
+    persistence.finalize_canonical_turn(
         tenant_id="t1",
-        agent_id="customer_service",
+        agent_id="general_agent",
         user_id="u1",
-        conversation_id=conversation_id,
-        user_message="需要归档的旧消息",
-        assistant_message="已处理",
+        conversation_id=accepted.conversation_id,
+        turn_id=accepted.turn_id,
         run_id="r1",
         window_turns=0,
     )
 
-    summary = store.get_summary(conversation_id)
+    summary = store.get_summary(accepted.conversation_id)
     assert summary is not None
     assert summary["summary_text"] == "SUMMARY"
     assert invoker.requests[-1].context_id == "runtime.memory-summary"

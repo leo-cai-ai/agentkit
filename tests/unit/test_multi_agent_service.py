@@ -7,30 +7,22 @@ import pytest
 from agentkit.core.audit import InMemoryAuditLog
 from agentkit.core.context.errors import ContextOutputInvalidError
 from agentkit.core.contracts import TaskRequest, TaskResponse
+from agentkit.core.memory.store import ConversationStore
 from agentkit.core.multi_agent import AgentDirectory, MultiAgentCoordinator
 from agentkit.core.registry import AgentRegistry
 from agentkit.runtime.conversation_context import AgentConversationContext
+from agentkit.runtime.conversation_persistence import ConversationPersistenceService
+from agentkit.runtime.conversation_projection import ConversationProjectionService
 from tests.unit.test_multi_agent import _profile
-
-
-class FakePersistence:
-    def __init__(self) -> None:
-        self.created: list[dict] = []
-        self.turns: list[dict] = []
-
-    def create_conversation(self, **kwargs) -> str:
-        self.created.append(kwargs)
-        return "conversation-1"
-
-    def record_turn(self, **kwargs) -> None:
-        self.turns.append(kwargs)
 
 
 class FakeContextService:
     def __init__(self) -> None:
+        self.builds: list[dict] = []
         self.delegations: list[dict] = []
 
     def build(self, **kwargs) -> AgentConversationContext:
+        self.builds.append(kwargs)
         return AgentConversationContext(
             conversation_id=kwargs["conversation_id"],
             summary="用户正在讨论招聘",
@@ -96,7 +88,14 @@ class FakeGateway:
             parent_run_id=str(request.context["parent_run_id"]),
             conversation_id=str(request.context["trace_conversation_id"]),
         )
-        self.audit.record(child_run, "run_finished", {"status": self.status})
+        if self.status == "waiting_for_approval":
+            self.audit.record(
+                child_run,
+                "run_paused",
+                {"status": self.status, "thread_id": "child-thread"},
+            )
+        else:
+            self.audit.record(child_run, "run_finished", {"status": self.status})
         return TaskResponse(
             status=self.status,
             output=dict(self.output),
@@ -126,7 +125,8 @@ class FakeGateway:
         )
 
 
-def _service(
+def _projection_service(
+    tmp_path,
     decision: dict | None = None,
     *,
     child_status: str = "completed",
@@ -145,7 +145,9 @@ def _service(
         },
     )
     audit = InMemoryAuditLog()
-    persistence = FakePersistence()
+    store = ConversationStore(tmp_path / "conversation.sqlite")
+    projection = ConversationProjectionService(store=store, audit=audit)
+    persistence = ConversationPersistenceService(store=store, projection=projection)
     contexts = FakeContextService()
     invoker = FakeInvoker(decision)
     gateway = FakeGateway(audit, status=child_status, output=child_output)
@@ -158,351 +160,325 @@ def _service(
         context_invoker=invoker,
         conversation_context=contexts,
         conversation_persistence=persistence,
+        conversation_projection=projection,
     )
-    return service, gateway, audit, invoker, contexts, persistence
+    return service, gateway, audit, invoker, contexts, projection
 
 
-def test_general_agent_owns_conversation_and_answers_normal_message() -> None:
-    service, gateway, audit, invoker, contexts, persistence = _service()
-
-    response = service.handle(
-        TaskRequest(user_id="u1", roles=["employee"], text="你好", context={})
+def _prepared_request(
+    projection: ConversationProjectionService,
+    *,
+    message: str,
+    client_message_id: str,
+    conversation_id: str | None = None,
+    roles: list[str] | None = None,
+) -> TaskRequest:
+    accepted = projection.accept_user_message(
+        tenant_id="tenant-a",
+        user_id="u1",
+        conversation_id=conversation_id,
+        client_message_id=client_message_id,
+        content=message,
+        title=message[:60],
+    )
+    return TaskRequest(
+        user_id="u1",
+        roles=roles or ["employee"],
+        text=message,
+        context={
+            "conversation_id": accepted.conversation_id,
+            "conversation_turn_id": accepted.turn_id,
+            "conversation_attempt_id": accepted.attempt_id,
+        },
     )
 
+
+def _timeline(projection, conversation_id):
+    return projection.timeline(
+        conversation_id=conversation_id,
+        tenant_id="tenant-a",
+        user_id="u1",
+    )
+
+
+def test_general_agent_consumes_prepared_turn_and_projects_canonical_answer(tmp_path) -> None:
+    service, gateway, audit, invoker, contexts, projection = _projection_service(tmp_path)
+    request = _prepared_request(
+        projection,
+        message="你好",
+        client_message_id="client-general",
+    )
+
+    response = service.handle(request)
+
+    turn = _timeline(projection, response.conversation_id).turns[0]
+    attempt = turn["attempts"][0]
     assert response.status == "completed"
     assert response.agent == "general_agent"
-    assert response.conversation_id == "conversation-1"
-    assert response.output["message"].startswith("我是 General Agent")
+    assert attempt["status"] == "succeeded"
+    assert attempt["stage"] == "finalizing"
+    assert turn["canonical_attempt_id"] == attempt["id"]
+    assert attempt["messages"][0]["content"] == response.output["message"]
+    assert contexts.builds[0]["exclude_turn_id"] == turn["id"]
     assert gateway.requests == []
-    assert len(invoker.json_calls) == 1
-    assert len(invoker.streaming_calls) == 1
-    assert persistence.created[0]["agent_id"] == "general_agent"
-    assert persistence.turns[0]["assistant_agent_id"] == "general_agent"
-    assert audit.get_run(response.run_id)["agent_id"] == "general_agent"
+    assert len(invoker.json_calls) == len(invoker.streaming_calls) == 1
+    assert audit.get_run(response.run_id)["status"] == "completed"
 
 
-def test_retry_relationship_and_user_outcome_reach_conversation_persistence() -> None:
-    service, _gateway, _audit, _invoker, _contexts, persistence = _service()
+def test_handle_requires_trusted_prepared_projection_ids(tmp_path) -> None:
+    service, *_ = _projection_service(tmp_path)
 
-    response = service.handle(
-        TaskRequest(
-            user_id="u1",
-            roles=["employee"],
-            text="你好",
-            context={
-                "conversation_id": "conversation-existing",
-                "retry_of_run_id": "run-old",
-            },
+    with pytest.raises(KeyError, match="conversation_turn_id"):
+        service.handle(
+            TaskRequest(
+                user_id="u1",
+                roles=[],
+                text="你好",
+                context={"conversation_id": "prepared-conversation"},
+            )
         )
+
+
+def test_explicit_mention_propagates_projection_ids_to_business_agent(tmp_path) -> None:
+    service, gateway, _, invoker, contexts, projection = _projection_service(tmp_path)
+    request = _prepared_request(
+        projection,
+        message="@招聘 分析候选人",
+        client_message_id="client-delegate",
+        roles=["recruiter"],
     )
 
-    assert response.status == "completed"
-    assert persistence.turns[0]["retry_of_run_id"] == "run-old"
-    assert persistence.turns[0]["outcome"] == "succeeded"
+    response = service.handle(request)
 
-
-def test_explicit_mention_skips_router_and_creates_child_run() -> None:
-    service, gateway, audit, invoker, contexts, persistence = _service()
-
-    response = service.handle(
-        TaskRequest(
-            user_id="u1",
-            roles=["recruiter"],
-            text="@招聘 分析候选人",
-            context={"conversation_id": "conversation-existing"},
-        )
-    )
-
-    assert invoker.json_calls == []
-    assert response.agent == "hr_recruiter"
-    assert response.governance["route"]["type"] == "explicit_mention"
-    assert response.governance["delegation"]["child_run_id"]
     delegated = gateway.requests[0]
-    assert delegated.text == "分析候选人"
-    assert delegated.context["agent"] == "hr_recruiter"
+    turn = _timeline(projection, response.conversation_id).turns[0]
+    attempt = turn["attempts"][0]
+    assert invoker.json_calls == []
+    assert delegated.context["conversation_turn_id"] == turn["id"]
+    assert delegated.context["conversation_attempt_id"] == attempt["id"]
     assert "conversation_id" not in delegated.context
-    child = audit.get_run(response.governance["delegation"]["child_run_id"])
-    assert child["parent_run_id"] == response.run_id
-    assert persistence.turns[0]["assistant_agent_id"] == "hr_recruiter"
+    assert delegated.context["trace_conversation_id"] == response.conversation_id
+    assert contexts.delegations[0]["exclude_turn_id"] == turn["id"]
+    assert attempt["status"] == "succeeded"
+    assert attempt["messages"][0]["agent_id"] == "hr_recruiter"
 
 
-def test_general_agent_propagates_blocked_child_status() -> None:
-    service, gateway, audit, invoker, contexts, persistence = _service(child_status="blocked")
-
-    response = service.handle(
-        TaskRequest(
-            user_id="u1",
-            roles=["growth_manager"],
-            text="@招聘 审核这份内容",
-            context={"conversation_id": "conversation-existing"},
-        )
-    )
-
-    assert response.status == "blocked"
-    assert response.governance["delegation"]["status"] == "blocked"
-    assert audit.get_run(response.run_id)["status"] == "blocked"
-
-
-def test_delegated_business_output_persists_same_user_facing_summary() -> None:
-    output = {
-        "platform": "xiaohongshu",
-        "topic": "AI时代的副业",
-        "workflow_status": "completed",
-        "publish": {"status": "published"},
-    }
-    service, _gateway, _audit, _invoker, _contexts, persistence = _service(
-        {
-            "action": "delegate",
-            "target_agent": "customer_service",
-            "task": "研究并发布小红书内容",
-            "reason": "测试业务委派",
-            "confidence": "high",
-        },
-        child_output=output,
-    )
-
-    service.handle(
-        TaskRequest(
-            user_id="u1",
-            roles=["growth_manager"],
-            text="研究并发布小红书内容",
-            context={"conversation_id": "conversation-existing"},
-        )
-    )
-
-    assert persistence.turns[0]["assistant_message"] == (
-        "已完成“AI时代的副业”主题研究、文案审核与发布。"
-    )
-    assert not persistence.turns[0]["assistant_message"].startswith("{")
-
-
-def test_general_router_can_delegate_without_explicit_mention() -> None:
-    service, gateway, audit, invoker, contexts, persistence = _service(
-        {
-            "action": "delegate",
-            "target_agent": "customer_service",
-            "task": "查询订单 O-1 的物流",
-            "reason": "属于订单物流能力",
-            "confidence": "high",
-        }
-    )
-
-    response = service.handle(
-        TaskRequest(
-            user_id="u1",
-            roles=["support"],
-            text="我的 O-1 怎么还没到",
-            context={},
-        )
-    )
-
-    assert response.agent == "customer_service"
-    assert response.governance["route"]["type"] == "general_delegate"
-    assert gateway.requests[0].text == "查询订单 O-1 的物流"
-    assert contexts.delegations[0]["agent"].name == "customer_service"
-    assert gateway.requests[0].context["agent_context"]["knowledge"] == ["招聘制度"]
-
-
-def test_invalid_router_output_stops_without_fake_execution() -> None:
-    service, gateway, audit, invoker, contexts, persistence = _service()
+def test_route_failure_projects_visible_terminal_clarification(tmp_path) -> None:
+    service, gateway, _, invoker, _, projection = _projection_service(tmp_path)
 
     def fail_route(_request) -> None:
         raise ContextOutputInvalidError(
-            "runtime.agent-route: 输出不符合 Schema: 'task' is required",
+            "runtime.agent-route: 输出不符合 Schema",
             context_id="runtime.agent-route",
         )
 
     invoker.invoke_json = fail_route
-    response = service.handle(
-        TaskRequest(
-            user_id="u1",
-            roles=["employee"],
-            text="研究小红书热门内容",
-            context={},
-        )
+    request = _prepared_request(
+        projection,
+        message="研究小红书热门内容",
+        client_message_id="client-route-fail",
     )
 
+    response = service.handle(request)
+
+    attempt = _timeline(projection, response.conversation_id).turns[0]["attempts"][0]
     assert response.status == "needs_clarification"
-    assert response.governance["route"]["type"] == "route_failed"
-    assert "未调用任何 Agent、Skill 或 Tool" in response.output["message"]
+    assert attempt["status"] == "rejected"
+    assert "未调用任何 Agent、Skill 或 Tool" in attempt["messages"][0]["content"]
     assert gateway.requests == []
-    assert invoker.streaming_calls == []
-    assert any(event["type"] == "agent_route_failed" for event in audit.events_for(response.run_id))
 
 
-def test_approval_resume_returns_to_the_original_general_conversation() -> None:
-    service, gateway, audit, invoker, contexts, persistence = _service()
-    parent = audit.start_run(
-        tenant_id="tenant-a",
-        user_id="u1",
-        text="@招聘 发出录用通知",
-        agent_id="general_agent",
-        conversation_id="conversation-approval",
-    )
-    child = audit.start_run(
-        tenant_id="tenant-a",
-        user_id="u1",
-        text="发出录用通知",
-        agent_id="hr_recruiter",
-        parent_run_id=parent,
-        conversation_id="conversation-approval",
-    )
-    audit.record(
-        parent,
-        "agent_route_decided",
-        {
-            "type": "explicit_mention",
-            "action": "delegate",
-            "target_agent": "hr_recruiter",
-            "reason": "用户显式指定",
-            "confidence": "high",
-        },
-    )
-    audit.record(
-        child,
-        "run_paused",
-        {"status": "waiting_for_approval", "thread_id": "approval-thread"},
-    )
-
-    response = service.resume(
-        "approval-thread",
-        user_id="u1",
-        roles=["recruiter"],
-        approved_skills=["offer.send"],
-    )
-
-    assert response.run_id == parent
-    assert response.conversation_id == "conversation-approval"
-    assert response.agent == "hr_recruiter"
-    assert persistence.turns[0]["user_message"] == "@招聘 发出录用通知"
-    assert persistence.turns[0]["assistant_agent_id"] == "hr_recruiter"
-
-
-def test_retry_relationship_survives_approval_pause_and_resume() -> None:
-    service, _gateway, audit, _invoker, _contexts, persistence = _service()
-    parent = audit.start_run(
-        tenant_id="tenant-a",
-        user_id="u1",
-        text="@招聘 发出录用通知",
-        agent_id="general_agent",
-        conversation_id="conversation-approval",
-    )
-    child = audit.start_run(
-        tenant_id="tenant-a",
-        user_id="u1",
-        text="发出录用通知",
-        agent_id="hr_recruiter",
-        parent_run_id=parent,
-        conversation_id="conversation-approval",
-    )
-    audit.record(
-        parent,
-        "conversation_retry_started",
-        {"retry_of_run_id": "run-old"},
-    )
-    audit.record(
-        child,
-        "run_paused",
-        {"status": "waiting_for_approval", "thread_id": "approval-retry"},
-    )
-
-    service.resume(
-        "approval-retry",
-        user_id="u1",
-        roles=["recruiter"],
-        approved_skills=["offer.send"],
-    )
-
-    assert persistence.turns[0]["retry_of_run_id"] == "run-old"
-
-
-def test_context_failure_finishes_parent_run_without_persisting_turn() -> None:
-    service, _, audit, _, contexts, persistence = _service()
+def test_context_failure_preserves_user_input_and_failed_attempt(tmp_path) -> None:
+    service, _, audit, _, contexts, projection = _projection_service(tmp_path)
 
     def fail_context(**kwargs):
-        raise RuntimeError("context storage unavailable")
+        raise RuntimeError("context down")
 
     contexts.build = fail_context
+    request = _prepared_request(
+        projection,
+        message="你好",
+        client_message_id="client-context-fail",
+    )
 
-    with pytest.raises(RuntimeError, match="context storage unavailable"):
-        service.handle(
-            TaskRequest(
-                user_id="u1",
-                roles=["employee"],
-                text="你好",
-                context={"conversation_id": "conversation-failed"},
-            )
-        )
+    with pytest.raises(RuntimeError, match="context down"):
+        service.handle(request)
 
-    runs = audit.runs_for_conversation(
-        conversation_id="conversation-failed",
+    timeline = projection.timeline_for_client_message(
         tenant_id="tenant-a",
         user_id="u1",
+        client_message_id="client-context-fail",
     )
-    assert len(runs) == 1
-    assert runs[0]["status"] == "failed"
-    assert [event["type"] for event in audit.events_for(runs[0]["run_id"])][-2:] == [
-        "run_failed",
-        "run_finished",
-    ]
-    assert persistence.turns == []
+    assert timeline.turns[0]["user_message"]["content"] == "你好"
+    assert timeline.turns[0]["attempts"][0]["status"] == "failed"
+    run = audit.runs_for_conversation(
+        conversation_id=timeline.conversation["id"],
+        tenant_id="tenant-a",
+        user_id="u1",
+    )[0]
+    assert run["status"] == "failed"
 
 
-def test_delegation_failure_finishes_parent_run_without_persisting_turn() -> None:
-    service, gateway, audit, _, _, persistence = _service()
+def test_delegation_failure_preserves_input_and_fails_attempt(tmp_path) -> None:
+    service, gateway, _, _, _, projection = _projection_service(tmp_path)
 
     def fail_delegation(request):
         raise RuntimeError("child execution failed")
 
     gateway.handle_delegated = fail_delegation
+    request = _prepared_request(
+        projection,
+        message="@招聘 分析候选人",
+        client_message_id="client-delegation-fail",
+    )
 
     with pytest.raises(RuntimeError, match="child execution failed"):
-        service.handle(
-            TaskRequest(
-                user_id="u1",
-                roles=["employee"],
-                text="@招聘 分析候选人",
-                context={"conversation_id": "conversation-failed"},
-            )
-        )
+        service.handle(request)
 
-    runs = audit.runs_for_conversation(
-        conversation_id="conversation-failed",
-        tenant_id="tenant-a",
-        user_id="u1",
-    )
-    assert len(runs) == 1
-    assert runs[0]["status"] == "failed"
-    assert persistence.turns == []
+    attempt = _timeline(projection, request.context["conversation_id"]).turns[0]["attempts"][0]
+    assert attempt["status"] == "failed"
 
 
-def test_resume_failure_finishes_waiting_parent_run() -> None:
-    service, gateway, audit, _, _, persistence = _service()
-    parent_id = audit.start_run(
-        tenant_id="tenant-a",
+def test_general_llm_failure_preserves_input_and_fails_attempt(tmp_path) -> None:
+    service, _, _, invoker, _, projection = _projection_service(tmp_path)
+
+    def fail_answer(_request):
+        raise RuntimeError("llm down")
+
+    invoker.invoke_streaming = fail_answer
+    request = _prepared_request(
+        projection,
+        message="解释一下",
+        client_message_id="client-llm-fail",
+    )
+
+    with pytest.raises(RuntimeError, match="llm down"):
+        service.handle(request)
+
+    turn = _timeline(projection, request.context["conversation_id"]).turns[0]
+    assert turn["user_message"]["content"] == "解释一下"
+    assert turn["attempts"][0]["status"] == "failed"
+
+
+def test_child_failed_status_projects_terminal_failure(tmp_path) -> None:
+    service, _, _, _, _, projection = _projection_service(
+        tmp_path,
+        child_status="failed",
+        child_output={"reason": "tool failed"},
+    )
+    request = _prepared_request(
+        projection,
+        message="@招聘 分析候选人",
+        client_message_id="client-tool-fail",
+    )
+
+    response = service.handle(request)
+
+    attempt = _timeline(projection, response.conversation_id).turns[0]["attempts"][0]
+    assert response.status == "failed"
+    assert attempt["status"] == "failed"
+    assert attempt["messages"][0]["content"]
+
+
+def test_waiting_approval_is_durable_before_response(tmp_path) -> None:
+    service, _, _, _, _, projection = _projection_service(
+        tmp_path,
+        child_status="waiting_for_approval",
+        child_output={
+            "approval": {
+                "skills": ["candidate.rank"],
+                "preview": {"title": "候选人审批预览"},
+            }
+        },
+    )
+    request = _prepared_request(
+        projection,
+        message="@招聘 发布录用通知",
+        client_message_id="client-approval",
+    )
+
+    response = service.handle(request)
+
+    attempt = _timeline(projection, response.conversation_id).turns[0]["attempts"][0]
+    action = attempt["actions"][0]
+    assert response.status == "waiting_for_approval"
+    assert attempt["status"] == "waiting_for_approval"
+    assert action["status"] == "pending"
+    assert action["preview"]["title"] == "候选人审批预览"
+    assert action["preview"]["content"]
+
+
+def test_approval_projection_failure_preserves_input_and_fails_attempt(tmp_path) -> None:
+    service, _, _, _, _, projection = _projection_service(
+        tmp_path,
+        child_status="waiting_for_approval",
+        child_output={"approval": {"skills": ["candidate.rank"], "preview": {}}},
+    )
+    request = _prepared_request(
+        projection,
+        message="@招聘 发布录用通知",
+        client_message_id="client-approval-fail",
+    )
+
+    def fail_approval(**kwargs):
+        raise RuntimeError("approval store down")
+
+    projection.request_approval = fail_approval
+
+    with pytest.raises(RuntimeError, match="approval store down"):
+        service.handle(request)
+
+    turn = _timeline(projection, request.context["conversation_id"]).turns[0]
+    assert turn["user_message"]["content"] == "@招聘 发布录用通知"
+    assert turn["attempts"][0]["status"] == "failed"
+
+
+def test_resume_projects_final_output_without_second_user_message(tmp_path) -> None:
+    service, _, _, _, _, projection = _projection_service(
+        tmp_path,
+        child_status="waiting_for_approval",
+        child_output={
+            "approval": {
+                "skills": ["candidate.rank"],
+                "preview": {"title": "候选人审批预览"},
+            }
+        },
+    )
+    request = _prepared_request(
+        projection,
+        message="@招聘 发布录用通知",
+        client_message_id="client-resume",
+    )
+    waiting = service.handle(request)
+
+    resumed = service.resume(
+        waiting.thread_id,
         user_id="u1",
-        text="@招聘 发出录用通知",
-        agent_id="general_agent",
-        conversation_id="conversation-approval-failed",
+        roles=["recruiter"],
+        approved_skills=["candidate.rank"],
     )
-    child_id = audit.start_run(
-        tenant_id="tenant-a",
-        user_id="u1",
-        text="发出录用通知",
-        agent_id="hr_recruiter",
-        parent_run_id=parent_id,
-        conversation_id="conversation-approval-failed",
+
+    timeline = _timeline(projection, resumed.conversation_id)
+    attempt = timeline.turns[0]["attempts"][0]
+    assert resumed.status == "completed"
+    assert len(timeline.turns) == 1
+    assert attempt["status"] == "succeeded"
+    assert attempt["messages"][-1]["content"] == "审批后已执行"
+    assert attempt["actions"][0]["status"] == "completed"
+
+
+def test_resume_failure_fails_existing_attempt(tmp_path) -> None:
+    service, gateway, audit, _, _, projection = _projection_service(
+        tmp_path,
+        child_status="waiting_for_approval",
+        child_output={"approval": {"skills": ["candidate.rank"], "preview": {}}},
     )
-    audit.record(
-        child_id,
-        "run_paused",
-        {"status": "waiting_for_approval", "thread_id": "approval-failed"},
+    request = _prepared_request(
+        projection,
+        message="@招聘 发布录用通知",
+        client_message_id="client-resume-fail",
     )
-    audit.record(
-        parent_id,
-        "run_paused",
-        {"status": "waiting_for_approval", "child_run_id": child_id},
-    )
+    waiting = service.handle(request)
 
     def fail_resume(thread_id, **kwargs):
         raise RuntimeError("child resume failed")
@@ -511,15 +487,63 @@ def test_resume_failure_finishes_waiting_parent_run() -> None:
 
     with pytest.raises(RuntimeError, match="child resume failed"):
         service.resume(
-            "approval-failed",
+            waiting.thread_id,
             user_id="u1",
-            roles=["employee"],
-            approved_skills=["offer.send"],
+            roles=["recruiter"],
+            approved_skills=["candidate.rank"],
         )
 
-    assert audit.get_run(parent_id)["status"] == "failed"
-    assert [event["type"] for event in audit.events_for(parent_id)][-2:] == [
-        "run_failed",
-        "run_finished",
-    ]
-    assert persistence.turns == []
+    attempt = _timeline(projection, waiting.conversation_id).turns[0]["attempts"][0]
+    assert attempt["status"] == "failed"
+    assert attempt["actions"][0]["status"] == "invalidated"
+    assert audit.get_run(waiting.run_id)["status"] == "failed"
+
+
+def test_bind_conflict_preserves_original_attempt_and_exception(tmp_path) -> None:
+    service, _, audit, _, _, projection = _projection_service(tmp_path)
+    request = _prepared_request(
+        projection,
+        message="你好",
+        client_message_id="client-bind-conflict",
+    )
+    projection.bind_run(
+        request.context["conversation_attempt_id"],
+        run_id="first-run",
+        agent_id="general_agent",
+    )
+
+    with pytest.raises(ValueError, match="already bound"):
+        service.handle(request)
+
+    attempt = _timeline(projection, request.context["conversation_id"]).turns[0]["attempts"][0]
+    assert attempt["status"] == "running"
+    assert attempt["run_id"] == "first-run"
+    duplicate_run = next(
+        run
+        for run in audit.runs_for_conversation(
+            conversation_id=request.context["conversation_id"],
+            tenant_id="tenant-a",
+            user_id="u1",
+        )
+        if run["run_id"] != "first-run"
+    )
+    assert duplicate_run["status"] == "failed"
+
+
+def test_blocked_general_result_is_projected(tmp_path) -> None:
+    service, _, _, _, _, projection = _projection_service(
+        tmp_path,
+        child_status="blocked",
+    )
+    request = _prepared_request(
+        projection,
+        message="@招聘 审核这份内容",
+        client_message_id="client-blocked",
+    )
+
+    response = service.handle(request)
+
+    attempt = _timeline(projection, response.conversation_id).turns[0]["attempts"][0]
+    assert response.status == "blocked"
+    assert attempt["status"] == "rejected"
+    assert attempt["messages"][0]["content"]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import replace
 from datetime import datetime
 from functools import lru_cache
@@ -536,7 +537,79 @@ def _run_chat(
             decision_context={"principal": principal.to_public_dict()},
         )
     else:
+        accepted = runtime.conversation_projection.accept_user_message(
+            tenant_id=str(runtime.tenant_config["tenant_id"]),
+            user_id=task.user_id,
+            conversation_id=conversation_id or None,
+            client_message_id=str(payload.get("client_message_id") or uuid.uuid4()),
+            content=task.text,
+            title=task.text[:60],
+        )
+        if not accepted.created:
+            return _existing_chat_response(runtime, task, accepted)
+        task = replace(
+            task,
+            context={
+                **task.context,
+                "conversation_id": accepted.conversation_id,
+                "conversation_turn_id": accepted.turn_id,
+                "conversation_attempt_id": accepted.attempt_id,
+            },
+        )
         response = runtime.chat_service.handle(task)
+    return _web_response(response)
+
+
+def _existing_chat_response(
+    runtime: AgentKitRuntime,
+    task: TaskRequest,
+    accepted: Any,
+) -> dict[str, Any]:
+    """幂等重复提交只返回已有投影，绝不启动第二个 Run。"""
+    timeline = runtime.conversation_projection.timeline(
+        conversation_id=accepted.conversation_id,
+        tenant_id=str(runtime.tenant_config["tenant_id"]),
+        user_id=task.user_id,
+    )
+    turn = next(item for item in timeline.turns if item["id"] == accepted.turn_id)
+    attempt = next(item for item in turn["attempts"] if item["id"] == accepted.attempt_id)
+    attempt_status = str(attempt["status"])
+    response_status = {
+        "queued": "running",
+        "running": "running",
+        "resuming": "running",
+        "waiting_for_approval": "waiting_for_approval",
+        "succeeded": "completed",
+    }.get(attempt_status, attempt_status)
+    actions = list(attempt["actions"])
+    latest_message = attempt["messages"][-1] if attempt["messages"] else None
+    if response_status == "waiting_for_approval" and actions:
+        output = {
+            "approval": {
+                "skills": list(actions[-1].get("skills") or []),
+                "preview": dict(actions[-1].get("preview") or {}),
+            }
+        }
+    else:
+        output = {
+            "message": (
+                str(latest_message["content"])
+                if latest_message is not None
+                else "请求已保存，正在处理中。"
+            )
+        }
+    run_id = str(attempt.get("run_id") or "")
+    response = TaskResponse(
+        status=response_status,
+        output=output,
+        run_id=run_id,
+        thread_id=str(actions[-1].get("thread_id") or "") if actions else "",
+        agent=str(attempt.get("agent_id") or "general_agent"),
+        strategy="",
+        conversation_id=accepted.conversation_id,
+        governance={"idempotent_replay": True},
+        audit_events=runtime.gateway.audit.events_for(run_id) if run_id else [],
+    )
     return _web_response(response)
 
 

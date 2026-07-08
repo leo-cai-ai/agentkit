@@ -386,6 +386,78 @@ class ConversationProjectionService:
         if not changed and str(attempt["status"]) != AttemptStatus.FAILED.value:
             raise ValueError("attempt cannot transition to failed")
 
+    def project_approval_output(
+        self,
+        *,
+        accepted: AcceptedTurn,
+        action_id: str,
+        run_id: str,
+        agent_id: str,
+        content: str,
+        status: AttemptStatus,
+        artifact_id: str | None = None,
+    ) -> int:
+        """单事务封口审批输出、Action 与 Attempt。"""
+        if status not in _TERMINAL_STATUSES:
+            raise ValueError("approval completion status must be terminal")
+        self._validate_accepted(accepted, run_id=run_id)
+        message_state = {
+            AttemptStatus.SUCCEEDED: "sealed",
+            AttemptStatus.INTERRUPTED: "interrupted",
+        }.get(status, "failed")
+        message_id, changed, scope = self._store.finalize_approval_output(
+            action_id,
+            run_id=run_id,
+            agent_id=agent_id,
+            content=content,
+            message_state=message_state,
+            attempt_status=status.value,
+            artifact_id=artifact_id,
+            token_estimate=self._tokenizer.estimate(content),
+        )
+        if changed:
+            self._audit_event(
+                run_id,
+                "conversation_message_sealed",
+                conversation_id=scope["conversation_id"],
+                turn_id=scope["turn_id"],
+                attempt_id=scope["attempt_id"],
+                message_id=message_id,
+                agent_id=agent_id,
+                status=status.value,
+            )
+            self._audit_event(
+                run_id,
+                "conversation_action_completed",
+                conversation_id=scope["conversation_id"],
+                turn_id=scope["turn_id"],
+                attempt_id=scope["attempt_id"],
+                action_id=action_id,
+                agent_id=agent_id,
+                status="completed",
+            )
+        return message_id
+
+    def fail_approval(
+        self,
+        action_id: str,
+        *,
+        error_code: str,
+        error_summary: str,
+    ) -> None:
+        """恢复异常时原子失效 Action，并把仍活动的 Attempt 置为失败。"""
+        changed = self._store.transition_action_attempt(
+            action_id,
+            expected_action={"pending", "approved", "rejected"},
+            action_status="invalidated",
+            expected_attempt=_ACTIVE_STATUSES,
+            attempt_status=AttemptStatus.FAILED.value,
+            error_code=error_code,
+            error_summary=error_summary,
+        )
+        if not changed:
+            raise ValueError("approval action cannot transition to failed")
+
     def retry_attempt(
         self,
         *,
@@ -497,6 +569,29 @@ class ConversationProjectionService:
             conversation_id=conversation_id,
             exclude_turn_id=exclude_turn_id,
             limit=limit,
+        )
+
+    def resolve_accepted(
+        self,
+        *,
+        conversation_id: str,
+        turn_id: str,
+        attempt_id: str,
+    ) -> AcceptedTurn:
+        """从服务端投影恢复可信 Turn 引用，不接收客户端提供的 Message ID。"""
+        scope = self._store.get_attempt_scope(attempt_id)
+        if scope is None or (
+            str(scope["attempt_id"]) != attempt_id
+            or str(scope["turn_id"]) != turn_id
+            or str(scope["conversation_id"]) != conversation_id
+        ):
+            raise ValueError("accepted turn IDs do not belong to one projection scope")
+        return AcceptedTurn(
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            attempt_id=attempt_id,
+            user_message_id=int(scope["user_message_id"]),
+            created=False,
         )
 
     def _validate_accepted(
