@@ -2,7 +2,7 @@
 
 ## 1. 本章定位
 
-Agent 定义“谁可以做什么”，Skill 定义“业务能力怎样完成”，Tool 定义“怎样访问外部系统”。MCP 是 Tool 的一种执行后端，不是绕过 AgentKit 治理的第二套 Agent 系统。
+Agent 定义“谁可以做什么”，Skill 定义“业务能力怎样完成”，Tool 定义“怎样访问外部系统”。MCP 是 Tool 的一种执行后端，始终使用 AgentKit 的统一治理，并不是第二套 Agent 系统。
 
 ```mermaid
 flowchart LR
@@ -237,7 +237,7 @@ sequenceDiagram
     E-->>S: 受审计结果
 ```
 
-因此 MCP Server 不能绕过 Agent Skill 白名单、业务 RBAC、副作用审批、幂等、超时和审计。
+因此 MCP Server 始终受 Agent Skill 白名单、业务 RBAC、副作用审批、幂等、超时和审计约束。
 
 ## 9. `ToolExecutor` 治理顺序
 

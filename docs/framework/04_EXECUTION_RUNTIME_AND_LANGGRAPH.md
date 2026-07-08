@@ -374,9 +374,9 @@ flowchart LR
 
 统一图在审批节点调用公开的 `langgraph.types.interrupt`。Resume 使用 `Command(resume=True)`，同时把批准/拒绝决策写回原 `TaskRequest.context`，使后续 ToolExecutor 能校验已批准副作用。
 
-### 12.3 v2 不是 LangGraph 2.0
+### 12.3 v2 是 LangGraph 1.x 的输出协议
 
-`invoke_graph_v2` 调用 `graph.invoke(..., version="v2")` 并只把 `GraphOutput.value` 的字典状态交给业务层。这里的 v2 是 LangGraph 1.1+ 输出协议，不代表项目依赖 LangGraph 2.0。业务代码不读取旧的 `__interrupt__` 私有形状。
+`invoke_graph_v2` 调用 `graph.invoke(..., version="v2")` 并只把 `GraphOutput.value` 的字典状态交给业务层。这里的 v2 是 LangGraph 1.1+ 输出协议，与依赖包的主版本号无关；当前项目依赖仍是 LangGraph 1.x。业务代码不读取旧的 `__interrupt__` 私有形状。
 
 ## 13. Artifact 交接
 

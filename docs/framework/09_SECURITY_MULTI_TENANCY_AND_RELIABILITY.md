@@ -125,7 +125,7 @@ Chat/Task 请求中的 `roles` 不能被直接信任。Web 入口按以下来源
 5. Side Effect 是否得到显式批准。
 6. 幂等键是否安全。
 
-MCP Tool 仍经过同一个 ToolExecutor；换成 MCP Backend 不会绕过上层治理。
+MCP Tool 仍经过同一个 ToolExecutor；换成 MCP Backend 后，上层治理保持不变。
 
 ## 8. Content Safety
 

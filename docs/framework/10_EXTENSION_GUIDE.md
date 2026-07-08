@@ -662,7 +662,7 @@ python -m ruff format --check .
 | --- | --- | --- |
 | 在 Agent Prompt 写 API 调用步骤 | 无 Schema/Timeout/Audit | 创建 Tool |
 | Handler 直接调用未注册 LLM | 绕过 Context/Cost | 使用 ContextInvocationService |
-| MCP 结果直接返回模型 | 绕过 Tool Schema/脱敏 | 经 ToolBackend/ToolExecutor |
+| MCP 结果直接返回模型 | 越过 Tool Schema/脱敏 | 经 ToolBackend/ToolExecutor |
 | 每个 Node 都拆 Agent | 上下文和治理复杂化 | 保持 Runtime Node |
 | Skill Budget 大于 Agent | 权限上限倒置 | 启动时拒绝 |
 | 通过增大 Prompt 修复缺参 | Token 增长且不稳定 | Schema + Input Resolver |
