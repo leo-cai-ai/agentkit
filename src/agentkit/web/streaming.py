@@ -18,6 +18,7 @@ streams. SSE frames:
 from __future__ import annotations
 
 import json
+import logging
 import queue
 import threading
 from collections.abc import Callable, Iterator
@@ -27,6 +28,7 @@ from agentkit.core import llm_client
 
 _DONE = "__done__"
 _DEFAULT_QUEUE_SIZE = 256
+_LOG = logging.getLogger(__name__)
 
 
 class StreamCancelled(RuntimeError):
@@ -41,6 +43,9 @@ def sse_frame(event: str, data: Any) -> str:
 def stream_response(
     produce: Callable[[], dict[str, Any]],
     *,
+    initial_events: tuple[tuple[str, dict[str, Any]], ...] = (),
+    token_observer: Callable[[str], None] | None = None,
+    continue_on_disconnect: bool = False,
     max_queue_size: int = _DEFAULT_QUEUE_SIZE,
     stream_tokens: bool = True,
     error_context: dict[str, Any] | None = None,
@@ -56,26 +61,31 @@ def stream_response(
     events: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=max(1, int(max_queue_size)))
     cancelled = threading.Event()
 
-    def put_event(item: tuple[str, Any]) -> None:
+    def put_event(item: tuple[str, Any]) -> bool:
         while not cancelled.is_set():
             try:
                 events.put(item, timeout=0.25)
-                return
+                return True
             except queue.Full:
                 continue
+        if continue_on_disconnect:
+            return False
         raise StreamCancelled()
 
     def emit(chunk: str) -> None:
-        put_event(("token", chunk))
-
-    def drop_or_cancel(_chunk: str) -> None:
-        if cancelled.is_set():
+        if token_observer is not None:
+            try:
+                token_observer(chunk)
+            except Exception:  # noqa: BLE001 - observer 不得中断客户端输出
+                _LOG.exception("stream token observer failed")
+        if stream_tokens:
+            put_event(("token", chunk))
+        elif cancelled.is_set() and not continue_on_disconnect:
             raise StreamCancelled()
 
     def worker() -> None:
         try:
-            token_sink = emit if stream_tokens else drop_or_cancel
-            with llm_client.stream_sink(token_sink):
+            with llm_client.stream_sink(emit):
                 result = produce()
             put_event(("final", result))
         except StreamCancelled:
@@ -101,6 +111,8 @@ def stream_response(
     # Prelude comment flushes headers and defeats proxy buffering early.
     try:
         yield ": stream-open\n\n"
+        for event, data in initial_events:
+            yield sse_frame(event, data)
         while True:
             kind, data = events.get()
             if kind == _DONE:

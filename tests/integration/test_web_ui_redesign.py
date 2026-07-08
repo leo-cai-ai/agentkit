@@ -199,7 +199,11 @@ def test_chat_has_conversation_recovery_and_two_stage_delete_controls(client) ->
     assert "data-conversation-execution-trace" not in html
     assert "data-conversation-state-delete" not in html
     assert "data-conversation-delete-stage" in html
-    assert "/retry/stream" in js
+    assert "/api/conversation-turns/${encodeURIComponent(command.turnId)}/attempts" in js
+    assert "/api/conversations/${encodeURIComponent(conversationId)}/timeline" in js
+    assert "/retry/stream" not in js
+    assert "handlers.onAccepted?.(parsed.data)" in js
+    assert 'bubble.p.textContent = "Thinking…"' in js
     assert 'outcome: "processing"' in js
     assert 'operation: "retry"' in js
     assert "正在重新运行上一次请求，请稍候。" in js
@@ -316,7 +320,7 @@ def test_xhs_approval_preview_renders_native_pagination_source_text(client) -> N
 
 def test_history_messages_render_normalized_content_not_business_json(client) -> None:
     script = client.get("/static/js/app.js").get_data(as_text=True)
-    start = script.index("async function loadConversationMessages(")
+    start = script.index("async function loadConversationTimeline(")
     end = script.index("async function refreshConversationExecution(", start)
     body = script[start:end]
     assert "msg.content" in body

@@ -27,6 +27,7 @@ let chatBusy = false;
 let pendingDeleteConversationId = null;
 let pendingDeleteExecution = null;
 let currentConversationExecution = null;
+let currentRetryCommand = null;
 const HISTORY_COLLAPSED_KEY = "agentkit:chat-history-collapsed";
 const chatSessionGuard = window.AgentKitChatSession.createChatSessionGuard();
 const TRACE_ATTENTION_STATES = new Set(["waiting_approval", "failed", "blocked"]);
@@ -478,7 +479,8 @@ async function streamSse(url, payload, handlers = {}) {
       buffer = buffer.slice(index + 2);
       const parsed = parseSseFrame(frame);
       if (!parsed) continue;
-      if (parsed.event === "token") handlers.onToken?.(parsed.data.delta || "");
+      if (parsed.event === "accepted") handlers.onAccepted?.(parsed.data);
+      else if (parsed.event === "token") handlers.onToken?.(parsed.data.delta || "");
       else if (parsed.event === "final") {
         finalData = parsed.data;
         handlers.onFinal?.(parsed.data);
@@ -703,7 +705,51 @@ async function loadConversations(agent) {
   renderConversationHistory();
 }
 
-async function loadConversationMessages(
+function executionFromTimeline(timeline, operation = "") {
+  const turns = timeline?.turns || [];
+  const turn = turns.at(-1);
+  const attempt = turn?.attempts?.at(-1);
+  if (!attempt) return { status: "idle", operation };
+  const attemptStatus = String(attempt.status || "idle");
+  const status = ["queued", "running", "resuming"].includes(attemptStatus)
+    ? "running"
+    : attemptStatus === "succeeded"
+      ? "completed"
+      : attemptStatus;
+  const retryable = ["failed", "interrupted", "rejected", "cancelled"].includes(
+    attemptStatus,
+  );
+  return {
+    status,
+    operation,
+    retryable,
+    outcome: ["queued", "running", "resuming"].includes(attemptStatus)
+      ? "processing"
+      : attemptStatus === "succeeded"
+        ? "succeeded"
+        : attemptStatus === "waiting_for_approval"
+          ? "action_required"
+          : retryable
+            ? "not_completed"
+            : "idle",
+    reason: attempt.error_summary || "",
+    requires_second_delete_confirmation:
+      retryable || attemptStatus === "waiting_for_approval",
+  };
+}
+
+function messagesFromTimeline(timeline) {
+  const messages = [];
+  for (const turn of timeline?.turns || []) {
+    messages.push(turn.user_message);
+    for (const attempt of turn.attempts || []) {
+      for (const message of attempt.messages || []) messages.push(message);
+    }
+  }
+  return messages;
+}
+
+async function loadConversationTimeline(
   conversationId,
   { operation = "", preserveWhileLoading = false } = {},
 ) {
@@ -716,7 +762,7 @@ async function loadConversationMessages(
   const requestToken = chatSessionGuard.begin(requestedConversationId);
   if (!preserveWhileLoading) showConversationNotice("Loading conversation...", "loading");
   try {
-    const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/messages`, {
+    const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/timeline`, {
       signal: requestToken.signal,
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -725,13 +771,16 @@ async function loadConversationMessages(
       !chatSessionGuard.isCurrent(requestToken) ||
       currentConversationId !== requestedConversationId
     ) return;
-    renderConversationExecution({
-      ...(data.execution || { status: "idle" }),
-      ...(operation ? { operation } : {}),
-    });
-    const messages = data.messages || [];
+    const execution = executionFromTimeline(data, operation);
+    renderConversationExecution(execution);
+    const latestTurn = data.turns?.at(-1);
+    const latestAttempt = latestTurn?.attempts?.at(-1);
+    currentRetryCommand = execution.retryable && latestTurn && latestAttempt
+      ? { turnId: latestTurn.id, attemptId: latestAttempt.id }
+      : null;
+    const messages = messagesFromTimeline(data);
     if (!messages.length) {
-      showConversationNotice(emptyConversationNotice(data.execution));
+      showConversationNotice(emptyConversationNotice(execution));
       return;
     }
     const thread = document.getElementById("chat-thread");
@@ -759,15 +808,12 @@ async function loadConversationMessages(
 async function refreshConversationExecution(conversationId, operation = "") {
   try {
     const response = await fetch(
-      `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
+      `/api/conversations/${encodeURIComponent(conversationId)}/timeline`,
     );
     if (!response.ok) return false;
     const data = await response.json();
     if (currentConversationId !== conversationId) return false;
-    renderConversationExecution({
-      ...(data.execution || { status: "idle" }),
-      ...(operation ? { operation } : {}),
-    });
+    renderConversationExecution(executionFromTimeline(data, operation));
     return true;
   } catch {
     return false;
@@ -835,11 +881,11 @@ async function openConversationDeleteDialog(conversationId) {
   dialog.querySelector("[data-conversation-delete-cancel]")?.focus();
   try {
     const response = await fetch(
-      `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
+      `/api/conversations/${encodeURIComponent(conversationId)}/timeline`,
     );
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(body.error || "无法读取会话状态");
-    pendingDeleteExecution = body.execution || { status: "idle" };
+    pendingDeleteExecution = executionFromTimeline(body);
     if (currentConversationId === conversationId) {
       currentConversationExecution = pendingDeleteExecution;
     }
@@ -941,7 +987,8 @@ async function terminateAndDeleteConversation(conversationId) {
 }
 
 async function retryConversation(conversationId) {
-  if (!conversationId || chatBusy) return;
+  if (!conversationId || !currentRetryCommand || chatBusy) return;
+  const command = { ...currentRetryCommand };
   setChatBusy(true);
   renderConversationExecution({
     ...(currentConversationExecution || {}),
@@ -953,11 +1000,23 @@ async function retryConversation(conversationId) {
   });
   try {
     await streamSse(
-      `/api/conversations/${encodeURIComponent(conversationId)}/retry/stream`,
-      {},
+      `/api/conversation-turns/${encodeURIComponent(command.turnId)}/attempts`,
+      {
+        retry_of_attempt_id: command.attemptId,
+        idempotency_key: window.crypto?.randomUUID?.() || `retry-${Date.now()}`,
+      },
+      {
+        onAccepted: () => renderConversationExecution({
+          status: "running",
+          outcome: "processing",
+          operation: "retry",
+          reason: "Thinking…",
+          retryable: false,
+        }),
+      },
     );
     if (currentConversationId !== conversationId) return;
-    await loadConversationMessages(conversationId, {
+    await loadConversationTimeline(conversationId, {
       operation: "retry",
       preserveWhileLoading: true,
     });
@@ -978,6 +1037,10 @@ async function retryConversation(conversationId) {
     }
   } finally {
     if (currentConversationId === conversationId) {
+      await loadConversationTimeline(conversationId, {
+        operation: "retry",
+        preserveWhileLoading: true,
+      });
       setChatBusy(conversationOutcome(currentConversationExecution) === "processing");
     }
   }
@@ -1741,6 +1804,17 @@ async function runUnifiedChatTurn(message, selectedAgent) {
   try {
     const finalData = await streamSse("/api/chat/stream", requestPayload, {
       signal: requestToken.signal,
+      onAccepted: (accepted) => {
+        if (!chatSessionGuard.isCurrent(requestToken)) return;
+        currentConversationId = accepted.conversation_id || currentConversationId;
+        if (bubble && !streamed) bubble.p.textContent = "Thinking…";
+        renderConversationExecution({
+          status: "running",
+          outcome: "processing",
+          reason: "Thinking…",
+          retryable: false,
+        });
+      },
       onToken: (delta) => {
         if (!chatSessionGuard.isCurrent(requestToken)) return;
         streamed += delta;
@@ -1806,6 +1880,12 @@ async function runUnifiedChatTurn(message, selectedAgent) {
     setExecutionState("Failed");
     setAgentStatus(selectedAgent, "failed");
     updateTraceFromView({ status: "failed" });
+  } finally {
+    if (chatSessionGuard.isCurrent(requestToken) && currentConversationId) {
+      await loadConversationTimeline(currentConversationId, {
+        preserveWhileLoading: true,
+      });
+    }
   }
 }
 
@@ -1943,7 +2023,7 @@ function bindConversationHistory() {
     clearPendingResult();
     setExecutionState("历史会话");
     renderConversationHistory();
-    await loadConversationMessages(currentConversationId);
+    await loadConversationTimeline(currentConversationId);
     if (mobileQuery.matches) closeMobileDrawer(true);
   });
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 
 import agentkit.core.llm_client as llm_client
 from agentkit.llm.fake import FakeProvider
@@ -115,3 +116,68 @@ def test_stream_response_includes_error_context():
         "error": "search timed out",
         "conversation_id": "conversation-1",
     }
+
+
+def test_stream_response_emits_typed_initial_events_before_worker_frames(monkeypatch):
+    provider = FakeProvider(responses=["abc"])
+    monkeypatch.setattr(llm_client, "require_model", lambda: provider)
+
+    def produce() -> dict:
+        return {"text": llm_client.require_chat_streaming("s", "u")}
+
+    raw = "".join(
+        stream_response(
+            produce,
+            initial_events=(("accepted", {"attempt_id": "attempt-1"}),),
+            max_queue_size=1,
+        )
+    )
+
+    assert raw.index("event: accepted") < raw.index("event: token")
+    assert 'data: {"attempt_id": "attempt-1"}' in raw
+
+
+def test_stream_response_observes_each_token_before_transport(monkeypatch):
+    provider = FakeProvider(responses=["streamed output"])
+    monkeypatch.setattr(llm_client, "require_model", lambda: provider)
+    observed: list[str] = []
+
+    def produce() -> dict:
+        return {"text": llm_client.require_chat_streaming("s", "u")}
+
+    raw = "".join(stream_response(produce, token_observer=observed.append))
+
+    assert "".join(observed) == "streamed output"
+    assert raw.index('data: {"delta":') < raw.index("event: final")
+
+
+def test_stream_response_continues_durable_producer_after_disconnect(monkeypatch):
+    release = threading.Event()
+    terminal_projection = threading.Event()
+
+    class BlockedProvider:
+        name = "blocked"
+
+        def stream(self, system: str, user: str):
+            del system, user
+            release.wait(timeout=2)
+            yield "durable output"
+
+    monkeypatch.setattr(llm_client, "require_model", lambda: BlockedProvider())
+
+    def produce() -> dict:
+        text = llm_client.require_chat_streaming("s", "u")
+        terminal_projection.set()
+        return {"text": text}
+
+    iterator = stream_response(
+        produce,
+        initial_events=(("accepted", {"attempt_id": "attempt-1"}),),
+        continue_on_disconnect=True,
+    )
+    assert next(iterator) == ": stream-open\n\n"
+    assert "event: accepted" in next(iterator)
+    iterator.close()
+    release.set()
+
+    assert terminal_projection.wait(timeout=2)

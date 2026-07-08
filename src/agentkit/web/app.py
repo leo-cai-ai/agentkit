@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import threading
 import uuid
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -45,6 +46,7 @@ from agentkit.runtime.conversation_deletion import (
     ConversationBusyError,
     ConversationNotFoundError,
 )
+from agentkit.runtime.conversation_projection_models import AcceptedTurn
 from agentkit.web.identity import current_principal, require_permission
 from agentkit.web.security import configure_security
 from agentkit.web.streaming import stream_response
@@ -61,6 +63,81 @@ app = Flask(__name__)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.jinja_env.auto_reload = True
 configure_security(app)
+
+
+@dataclass(frozen=True)
+class _PreparedChatCommand:
+    task: TaskRequest
+    accepted: AcceptedTurn
+
+
+class _StreamingProjectionObserver:
+    """把 transport token 合并到同一个 durable Message，不记录正文指标。"""
+
+    def __init__(self, runtime: AgentKitRuntime, accepted: AcceptedTurn) -> None:
+        self._runtime = runtime
+        self._accepted = accepted
+        self._lock = threading.Lock()
+        self._message_id: int | None = None
+        self._content = ""
+
+    def __call__(self, chunk: str) -> None:
+        with self._lock:
+            self._content += chunk
+            try:
+                if self._message_id is None:
+                    attempt = self._runtime.conversations.get_attempt(
+                        self._accepted.attempt_id
+                    )
+                    if attempt is None or not attempt.get("run_id"):
+                        return
+                    self._message_id = (
+                        self._runtime.conversation_projection.open_streaming_output(
+                            accepted=self._accepted,
+                            run_id=str(attempt["run_id"]),
+                            agent_id=str(attempt.get("agent_id") or "general_agent"),
+                        )
+                    )
+                self._runtime.conversation_projection.checkpoint_streaming_output(
+                    self._message_id,
+                    content=self._content,
+                )
+            except Exception as exc:  # noqa: BLE001 - checkpoint 不能打断客户端流
+                self._record_failure(exc)
+
+    def flush(self) -> None:
+        """终态前尽力刷新；coordinator 会以同一 Message 完成原子封口。"""
+        with self._lock:
+            if self._message_id is None:
+                return
+            try:
+                self._runtime.conversation_projection.checkpoint_streaming_output(
+                    self._message_id,
+                    content=self._content,
+                )
+            except Exception as exc:  # noqa: BLE001 - 终态投影优先
+                self._record_failure(exc)
+
+    def _record_failure(self, exc: Exception) -> None:
+        app.logger.exception(
+            "conversation stream checkpoint failed",
+            extra={"attempt_id": self._accepted.attempt_id},
+        )
+        try:
+            attempt = self._runtime.conversations.get_attempt(self._accepted.attempt_id)
+            run_id = str((attempt or {}).get("run_id") or self._accepted.attempt_id)
+            self._runtime.gateway.audit.record(
+                run_id,
+                "conversation_stream_checkpoint_failed",
+                {
+                    "conversation_id": self._accepted.conversation_id,
+                    "turn_id": self._accepted.turn_id,
+                    "attempt_id": self._accepted.attempt_id,
+                    "error_type": type(exc).__name__,
+                },
+            )
+        except Exception:  # noqa: BLE001 - 审计故障也不得影响主流程
+            app.logger.exception("conversation stream checkpoint audit failed")
 
 
 @lru_cache(maxsize=8)
@@ -492,13 +569,61 @@ def _action_decision_payload(payload: dict[str, Any]) -> tuple[str, int, str]:
     return decision, expected_version, idempotency_key
 
 
-def _run_chat(
+def _request_scope(
+    runtime: AgentKitRuntime,
+    principal: Principal,
+) -> tuple[str, str]:
+    tenant_id = str(runtime.tenant_config["tenant_id"])
+    user_id = _effective_user_id(
+        {},
+        get_ui_config(runtime.tenant_config),
+        principal=principal,
+    )
+    return tenant_id, user_id
+
+
+def _scoped_timeline(
+    runtime: AgentKitRuntime,
+    principal: Principal,
+    conversation_id: str,
+):
+    tenant_id, user_id = _request_scope(runtime, principal)
+    return runtime.conversation_projection.timeline(
+        conversation_id=conversation_id,
+        tenant_id=tenant_id,
+        user_id=user_id,
+    )
+
+
+def _require_action_scope(
+    runtime: AgentKitRuntime,
+    principal: Principal,
+    action_id: str,
+) -> None:
+    action = runtime.conversations.get_action(action_id)
+    if action is None:
+        raise KeyError(action_id)
+    scope = runtime.conversations.get_attempt_scope(str(action["attempt_id"]))
+    if scope is None:
+        raise KeyError(action_id)
+    try:
+        _scoped_timeline(runtime, principal, str(scope["conversation_id"]))
+    except KeyError as exc:
+        raise KeyError(action_id) from exc
+    if (
+        str(action.get("conversation_id")) != str(scope["conversation_id"])
+        or str(action.get("turn_id")) != str(scope["turn_id"])
+        or str(action.get("attempt_id")) != str(scope["attempt_id"])
+    ):
+        raise KeyError(action_id)
+
+
+def _prepare_chat_command(
     payload: dict[str, Any],
     *,
     runtime: AgentKitRuntime | None = None,
     principal: Principal | None = None,
-    trusted_context: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+) -> _PreparedChatCommand:
     runtime = runtime if runtime is not None else get_runtime()
     principal = principal if principal is not None else current_principal()
     if runtime.chat_service is None:
@@ -506,8 +631,6 @@ def _run_chat(
     if isinstance(_extract_payload(payload).get("approval"), dict):
         raise ValueError("旧审批恢复请求已停用，请使用 durable Action 决议接口")
     task = _chat_task_request(payload, runtime=runtime, principal=principal)
-    if trusted_context:
-        task = replace(task, context={**task.context, **trusted_context})
     conversation_id = str(task.context.get("conversation_id") or "")
     if conversation_id:
         conversation = runtime.conversations.get_conversation(conversation_id)
@@ -528,8 +651,6 @@ def _run_chat(
         content=task.text,
         title=task.text[:60],
     )
-    if not accepted.created:
-        return _existing_chat_response(runtime, task, accepted)
     task = replace(
         task,
         context={
@@ -539,8 +660,103 @@ def _run_chat(
             "conversation_attempt_id": accepted.attempt_id,
         },
     )
-    response = runtime.chat_service.handle(task)
-    return _web_response(response)
+    return _PreparedChatCommand(task=task, accepted=accepted)
+
+
+def _execute_chat_command(
+    command: _PreparedChatCommand,
+    *,
+    runtime: AgentKitRuntime,
+) -> dict[str, Any]:
+    if not command.accepted.created:
+        return _existing_chat_response(runtime, command.task, command.accepted)
+    if runtime.chat_service is None:
+        raise RuntimeError("多 Agent 聊天服务未初始化")
+    return _web_response(runtime.chat_service.handle(command.task))
+
+
+def _run_chat(
+    payload: dict[str, Any],
+    *,
+    runtime: AgentKitRuntime | None = None,
+    principal: Principal | None = None,
+) -> dict[str, Any]:
+    runtime = runtime if runtime is not None else get_runtime()
+    command = _prepare_chat_command(payload, runtime=runtime, principal=principal)
+    return _execute_chat_command(command, runtime=runtime)
+
+
+def _accepted_event(command: _PreparedChatCommand) -> tuple[str, dict[str, Any]]:
+    accepted = command.accepted
+    return (
+        "accepted",
+        {
+            "conversation_id": accepted.conversation_id,
+            "turn_id": accepted.turn_id,
+            "attempt_id": accepted.attempt_id,
+            "created": accepted.created,
+        },
+    )
+
+
+def _prepare_retry_command(
+    turn_id: str,
+    payload: dict[str, Any],
+    *,
+    runtime: AgentKitRuntime,
+    principal: Principal,
+) -> _PreparedChatCommand:
+    allowed = {"retry_of_attempt_id", "idempotency_key"}
+    if set(payload) - allowed:
+        raise ValueError("Retry 命令包含不支持字段")
+    retry_of_attempt_id = str(payload.get("retry_of_attempt_id") or "").strip()
+    idempotency_key = str(payload.get("idempotency_key") or "").strip()
+    if not retry_of_attempt_id or not idempotency_key:
+        raise ValueError("retry_of_attempt_id 和 idempotency_key 不能为空")
+    source_scope = runtime.conversations.get_attempt_scope(retry_of_attempt_id)
+    if source_scope is None or str(source_scope["turn_id"]) != turn_id:
+        raise KeyError(turn_id)
+    timeline = _scoped_timeline(
+        runtime,
+        principal,
+        str(source_scope["conversation_id"]),
+    )
+    turn = next((item for item in timeline.turns if str(item["id"]) == turn_id), None)
+    if turn is None or not any(
+        str(attempt["id"]) == retry_of_attempt_id for attempt in turn["attempts"]
+    ):
+        raise KeyError(turn_id)
+    retry = runtime.conversation_projection.retry_attempt(
+        turn_id=turn_id,
+        retry_of_attempt_id=retry_of_attempt_id,
+        idempotency_key=idempotency_key,
+    )
+    resolved = runtime.conversation_projection.resolve_accepted(
+        conversation_id=str(source_scope["conversation_id"]),
+        turn_id=turn_id,
+        attempt_id=retry.attempt_id,
+    )
+    accepted = replace(resolved, created=retry.created)
+    source_attempt = next(
+        attempt for attempt in turn["attempts"] if str(attempt["id"]) == retry_of_attempt_id
+    )
+    task = _chat_task_request(
+        {"message": str(turn["user_message"]["content"])},
+        runtime=runtime,
+        principal=principal,
+    )
+    task = replace(
+        task,
+        context={
+            **task.context,
+            "conversation_id": accepted.conversation_id,
+            "conversation_turn_id": accepted.turn_id,
+            "conversation_attempt_id": accepted.attempt_id,
+            "retry_of_attempt_id": retry_of_attempt_id,
+            "retry_of_run_id": str(source_attempt.get("run_id") or ""),
+        },
+    )
+    return _PreparedChatCommand(task=task, accepted=accepted)
 
 
 def _existing_chat_response(
@@ -622,6 +838,7 @@ def _decide_action(
     principal = principal if principal is not None else current_principal()
     if runtime.chat_service is None:
         raise RuntimeError("多 Agent 聊天服务未初始化")
+    _require_action_scope(runtime, principal, action_id)
     decision, expected_version, idempotency_key = _action_decision_payload(payload)
     ui = get_ui_config(runtime.tenant_config)
     roles, role_source = _trusted_business_roles(
@@ -661,9 +878,22 @@ def format_response_text(response: TaskResponse) -> str:
     return format_task_output_text(status=response.status, output=response.output)
 
 
-def _sse(produce, *, error_context: dict[str, Any] | None = None) -> Response:
+def _sse(
+    produce,
+    *,
+    initial_events: tuple[tuple[str, dict[str, Any]], ...] = (),
+    token_observer=None,
+    continue_on_disconnect: bool = False,
+    error_context: dict[str, Any] | None = None,
+) -> Response:
     response = Response(
-        stream_response(produce, error_context=error_context),
+        stream_response(
+            produce,
+            initial_events=initial_events,
+            token_observer=token_observer,
+            continue_on_disconnect=continue_on_disconnect,
+            error_context=error_context,
+        ),
         mimetype="text/event-stream",
     )
     response.headers["X-Accel-Buffering"] = "no"
@@ -686,7 +916,34 @@ def api_chat_stream():
     payload = request.get_json(silent=True) or {}
     runtime = get_runtime()
     principal = current_principal()
-    return _sse(lambda: _run_chat(payload, runtime=runtime, principal=principal))
+    try:
+        command = _prepare_chat_command(
+            payload,
+            runtime=runtime,
+            principal=principal,
+        )
+    except (KeyError, RuntimeError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    observer = _StreamingProjectionObserver(runtime, command.accepted)
+
+    def produce() -> dict[str, Any]:
+        try:
+            return _execute_chat_command(command, runtime=runtime)
+        finally:
+            observer.flush()
+
+    accepted = command.accepted
+    return _sse(
+        produce,
+        initial_events=(_accepted_event(command),),
+        token_observer=observer,
+        continue_on_disconnect=True,
+        error_context={
+            "conversation_id": accepted.conversation_id,
+            "turn_id": accepted.turn_id,
+            "attempt_id": accepted.attempt_id,
+        },
+    )
 
 
 @app.post("/api/tasks")
@@ -726,7 +983,9 @@ def api_tasks_resume_stream():
 def api_conversation_action_decision(action_id: str):
     try:
         return jsonify(_decide_action(action_id, request.get_json(silent=True) or {}))
-    except (KeyError, RuntimeError, ValueError) as exc:
+    except KeyError:
+        return jsonify({"error": "Action 不存在"}), 404
+    except (RuntimeError, ValueError) as exc:
         return jsonify({"error": str(exc)}), 400
 
 
@@ -736,6 +995,10 @@ def api_conversation_action_decision_stream(action_id: str):
     payload = request.get_json(silent=True) or {}
     runtime = get_runtime()
     principal = current_principal()
+    try:
+        _require_action_scope(runtime, principal, action_id)
+    except KeyError:
+        return jsonify({"error": "Action 不存在"}), 404
     return _sse(
         lambda: _decide_action(
             action_id,
@@ -758,6 +1021,18 @@ def api_conversations():
         user_id=user_id,
     )
     return jsonify({"conversations": rows})
+
+
+@app.get("/api/conversations/<conversation_id>/timeline")
+@require_permission(CHAT_USE)
+def api_conversation_timeline(conversation_id: str):
+    runtime = get_runtime()
+    principal = current_principal()
+    try:
+        timeline = _scoped_timeline(runtime, principal, conversation_id)
+    except KeyError:
+        return jsonify({"error": "会话不存在"}), 404
+    return jsonify(timeline.to_dict())
 
 
 @app.post("/api/conversations")
@@ -829,40 +1104,42 @@ def api_terminate_and_delete_conversation(conversation_id: str):
     )
 
 
-@app.post("/api/conversations/<conversation_id>/retry/stream")
+@app.post("/api/conversation-turns/<turn_id>/attempts")
 @require_permission(CHAT_USE)
-def api_retry_conversation_stream(conversation_id: str):
+def api_retry_conversation_turn(turn_id: str):
     runtime = get_runtime()
     principal = current_principal()
-    user_id = _effective_user_id({}, get_ui_config(runtime.tenant_config))
-    conversation = runtime.conversations.get_conversation(conversation_id)
-    if (
-        conversation is None
-        or conversation.get("tenant_id") != str(runtime.tenant_config["tenant_id"])
-        or conversation.get("agent") != "general_agent"
-        or conversation.get("user_id") != user_id
-    ):
-        return jsonify({"error": "会话不存在"}), 404
-    if conversation.get("status") != "active":
-        return jsonify({"error": "该会话正在删除，不能重新执行"}), 409
-    execution = runtime.conversation_runs.resolve(
-        conversation_id=conversation_id,
-        tenant_id=str(runtime.tenant_config["tenant_id"]),
-        user_id=user_id,
-    )
-    if not execution.retryable or not execution.original_request:
-        return jsonify({"error": "该会话当前不能重新执行"}), 409
-    payload = {
-        "message": execution.original_request,
-        "context": {"conversation_id": conversation_id},
-    }
-    return _sse(
-        lambda: _run_chat(
+    payload = request.get_json(silent=True) or {}
+    try:
+        command = _prepare_retry_command(
+            turn_id,
             payload,
             runtime=runtime,
             principal=principal,
-            trusted_context={"retry_of_run_id": execution.latest_run_id},
         )
+    except KeyError:
+        return jsonify({"error": "会话 Turn 或 Attempt 不存在"}), 404
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 409
+    observer = _StreamingProjectionObserver(runtime, command.accepted)
+
+    def produce() -> dict[str, Any]:
+        try:
+            return _execute_chat_command(command, runtime=runtime)
+        finally:
+            observer.flush()
+
+    accepted = command.accepted
+    return _sse(
+        produce,
+        initial_events=(_accepted_event(command),),
+        token_observer=observer,
+        continue_on_disconnect=True,
+        error_context={
+            "conversation_id": accepted.conversation_id,
+            "turn_id": accepted.turn_id,
+            "attempt_id": accepted.attempt_id,
+        },
     )
 
 
@@ -880,17 +1157,7 @@ def api_conversation_messages(conversation_id: str):
     ):
         return jsonify({"error": "会话不存在"}), 404
     rows = runtime.conversations.all_messages(conversation_id)
-    execution = runtime.conversation_runs.resolve(
-        conversation_id=conversation_id,
-        tenant_id=str(runtime.tenant_config["tenant_id"]),
-        user_id=user_id,
-    )
-    return jsonify(
-        {
-            "messages": _display_conversation_messages(rows),
-            "execution": execution.to_dict(),
-        }
-    )
+    return jsonify({"messages": _display_conversation_messages(rows)})
 
 
 def _display_conversation_messages(
