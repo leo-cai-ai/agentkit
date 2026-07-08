@@ -157,7 +157,14 @@ const timeline = {
           card_text: "这是审批前必须看见的正文核心",
           media_strategy: "xhs_text_image",
           card_style: "notebook",
-          media_preview_urls: ["https://example.test/1.png", "https://example.test/2.png"],
+          media_preview_urls: [
+            "https://example.test/1.png",
+            "https://example.test/2.png",
+            "https://example.test/3.png",
+            "https://example.test/4.png",
+            "https://example.test/5.png",
+            "javascript:alert(1)",
+          ],
         },
       }],
     }],
@@ -183,7 +190,20 @@ assert.equal(withClass(root, "ak-thinking").length, 0, "等待审批不是循环
 assert.equal(singleClass(root, "ak-action-preview-title").textContent, "发布预览");
 assert.equal(singleClass(root, "ak-action-preview-summary").textContent, "这是摘要");
 assert.equal(singleClass(root, "ak-action-preview-body").textContent, "这是审批前必须看见的正文核心");
-assert.equal(singleClass(root, "ak-action-media-summary").textContent.includes("2"), true);
+assert.equal(singleClass(root, "ak-action-media-summary").textContent.includes("5"), true);
+const mediaLinks = withClass(root, "ak-action-media-link");
+const mediaImages = withClass(root, "ak-action-media-thumbnail");
+assert.equal(mediaLinks.length, 4, "安全缩略图最多显示四个");
+assert.equal(mediaImages.length, 4);
+for (let index = 0; index < mediaLinks.length; index += 1) {
+  assert.equal(mediaLinks[index].attributes.target, "_blank");
+  assert.equal(mediaLinks[index].attributes.rel, "noopener noreferrer");
+  assert.equal(mediaImages[index].attributes.loading, "lazy");
+  assert.equal(mediaImages[index].attributes.alt, `媒体预览 ${index + 1}`);
+  assert.equal(mediaImages[index].attributes.width, "160");
+  assert.equal(mediaImages[index].attributes.height, "120");
+}
+assert.equal(singleClass(root, "ak-action-media-more").textContent.includes("1"), true);
 
 const buttons = descendants(root).filter((node) => node.tagName === "button");
 const approve = buttons.find((node) => node.dataset.timelineDecision === "approved");
@@ -192,15 +212,52 @@ assert.equal(decisions[0].actionId, "action-1");
 assert.equal(decisions[0].decision, "approved");
 assert.equal(decisions[0].expectedVersion, 4);
 
+const rolloverTimeline = structuredClone(timeline);
+rolloverTimeline.turns[0].attempts[1].actions[0].status = "completed";
+rolloverTimeline.turns[0].attempts[1].actions[0].decision = "approved";
+rolloverTimeline.turns[0].attempts[1].actions.push({
+  id: "action-2",
+  status: "pending",
+  version: 1,
+  preview: { title: "第二版" },
+});
+approve.focus();
+timelineUi.render(root, rolloverTimeline, { focusFallback: new FakeNode("textarea") });
+assert.equal(document.activeElement.dataset.timelineKey, "action:action-1");
+let focusedParent = document.activeElement.parentNode;
+while (focusedParent && !focusedParent.className.includes("ak-action-history")) {
+  focusedParent = focusedParent.parentNode;
+}
+assert.equal(focusedParent?.open, true, "fallback focus 所在 disclosure 必须展开");
+
 timeline.turns[0].attempts[1].status = "running";
 timeline.turns[0].attempts[1].stage = "publishing";
 timeline.turns[0].attempts[1].actions[0].status = "approved";
 timeline.turns[0].attempts[1].actions[0].decision = "approved";
-timelineUi.render(root, timeline);
+const composer = new FakeNode("textarea");
+timelineUi.render(root, timeline, { focusFallback: composer });
 
 assert.equal(withClass(root, "ak-timeline-action-buttons").length, 0, "非 pending Action 不显示按钮");
 assert.equal(withClass(root, "ak-thinking").length, 1, "运行中 Attempt 显示 Thinking");
 assert.equal(withClass(root, "ak-thinking-bars")[0].children.length, 4, "Thinking 使用四根动效条");
+assert.equal(document.activeElement.dataset.timelineKey, "action:action-1", "decision 消失后聚焦同 Action 状态");
+
+timeline.turns[0].attempts[1].actions = [];
+timelineUi.render(root, timeline, { focusFallback: composer });
+assert.equal(document.activeElement.dataset.timelineKey, "timeline-live", "Action 消失后聚焦 latest live status");
+
+const focusedMessage = withClass(root, "assistant")[0];
+focusedMessage.focus();
+timelineUi.render(root, { turns: [] }, { focusFallback: composer });
+assert.equal(document.activeElement, composer, "状态也消失时回到 Composer");
+
+timeline.turns[0].attempts[1].actions = [{
+  id: "action-1",
+  status: "approved",
+  decision: "approved",
+  version: 5,
+  preview: {},
+}];
 
 timeline.turns[0].attempts[1].status = "failed";
 timeline.turns[0].attempts[1].error_summary = "批准后发布失败";
@@ -274,5 +331,26 @@ assert.equal(singleClass(root, "ak-timeline-live"), liveAfter, "live region 节�
 root.scrollTop = 100;
 timelineUi.render(root, stableTimeline, { forceScroll: true });
 assert.equal(root.scrollTop, root.scrollHeight, "当前命令自身更新时跟随到底部");
+
+assert.equal(typeof timelineUi.setNotice, "function");
+assert.equal(typeof timelineUi.clearNotice, "function");
+root.scrollHeight = 1000;
+root.clientHeight = 300;
+root.scrollTop = 100;
+timelineUi.setNotice(root, "网络连接中断");
+assert.equal(root.scrollTop, 100, "错误 notice 不打断正在阅读历史的用户");
+const noticeBefore = singleClass(root, "ak-timeline-notice");
+assert.equal(noticeBefore.textContent, "网络连接中断");
+assert.equal(noticeBefore.hidden, false);
+
+timelineUi.render(root, stableTimeline);
+const noticeAfter = singleClass(root, "ak-timeline-notice");
+assert.equal(noticeAfter, noticeBefore, "notice 使用稳定 keyed 节点");
+assert.equal(noticeAfter.hidden, true, "成功 hydration 清除 notice");
+assert.equal(noticeAfter.textContent, "");
+
+root.scrollTop = 710;
+timelineUi.setNotice(root, "网络连接中断");
+assert.equal(root.scrollTop, root.scrollHeight, "原本接近底部时 notice 跟随到底部");
 
 console.log("chat_timeline: ok");

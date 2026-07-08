@@ -397,6 +397,30 @@ def test_chat_hydrates_timeline_and_never_reposts_after_stream_failure(client) -
     assert "pendingApproval" not in source
 
 
+def test_lost_accepted_recovery_is_fenced_by_navigation_generation(client) -> None:
+    source = client.get("/static/js/app.js").get_data(as_text=True)
+    function = source.split("async function loadConversationTimelineForClientMessage", 1)[1].split(
+        "function bindChatForm", 1
+    )[0]
+
+    assert "clientMessageId, requestToken" in function
+    assert "signal: requestToken.signal" in function
+    assert "chatSessionGuard.isCurrent(requestToken)" in function
+    assert "loadConversationTimelineForClientMessage(clientMessageId, requestToken)" in source
+
+
+def test_network_notice_uses_stable_timeline_region_without_forced_scroll(client) -> None:
+    source = client.get("/static/js/app.js").get_data(as_text=True)
+    function = source.split("function appendConnectionNotice", 1)[1].split(
+        "function applyConversationTimeline", 1
+    )[0]
+
+    assert "AgentKitChatTimeline.setNotice" in function
+    assert "appendChild" not in function
+    assert "scrollChatToBottom" not in function
+    assert "AgentKitChatTimeline.clearNotice" in source
+
+
 def test_agent_network_has_accessible_canvas_filters_and_fallback(client) -> None:
     login(client)
     html = client.get("/agents").get_data(as_text=True)

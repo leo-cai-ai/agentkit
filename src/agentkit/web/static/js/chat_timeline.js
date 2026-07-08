@@ -185,12 +185,40 @@
       if (value == null || !String(value).trim()) continue;
       container.appendChild(element("p", "ak-action-preview-meta", `${label}：${value}`));
     }
-    if (Array.isArray(preview.media_preview_urls) && preview.media_preview_urls.length) {
+    const safeMediaUrls = Array.isArray(preview.media_preview_urls)
+      ? preview.media_preview_urls.filter((value) => /^https?:\/\//i.test(String(value)))
+      : [];
+    if (safeMediaUrls.length) {
       container.appendChild(element(
         "p",
         "ak-action-media-summary",
-        `媒体预览：${preview.media_preview_urls.length} 个文件`,
+        `媒体预览：${safeMediaUrls.length} 个文件`,
       ));
+      const mediaGrid = element("div", "ak-action-media-grid");
+      for (const [index, url] of safeMediaUrls.slice(0, 4).entries()) {
+        const link = element("a", "ak-action-media-link");
+        withTimelineKey(link, `media:${action.id}:${index}`);
+        link.setAttribute("href", String(url));
+        link.setAttribute("target", "_blank");
+        link.setAttribute("rel", "noopener noreferrer");
+        const image = element("img", "ak-action-media-thumbnail");
+        image.setAttribute("src", String(url));
+        image.setAttribute("loading", "lazy");
+        image.setAttribute("decoding", "async");
+        image.setAttribute("alt", `媒体预览 ${index + 1}`);
+        image.setAttribute("width", "160");
+        image.setAttribute("height", "120");
+        link.appendChild(image);
+        mediaGrid.appendChild(link);
+      }
+      container.appendChild(mediaGrid);
+      if (safeMediaUrls.length > 4) {
+        container.appendChild(element(
+          "p",
+          "ak-action-media-more",
+          `另有 ${safeMediaUrls.length - 4} 个媒体文件`,
+        ));
+      }
     } else if (Number.isFinite(Number(preview.media_count)) && Number(preview.media_count) > 0) {
       container.appendChild(element(
         "p",
@@ -209,6 +237,8 @@
       element("section", "ak-timeline-action"),
       `action:${action.id}`,
     );
+    node.setAttribute("tabindex", "-1");
+    node.setAttribute("aria-label", "审批状态");
     node.dataset.actionStatus = String(action?.status || "");
     node.appendChild(element(
       "strong",
@@ -405,24 +435,69 @@
     const children = Array.from(root.children || []);
     let live = children.find((child) => child.dataset?.timelineLive != null);
     let content = children.find((child) => child.dataset?.timelineContent != null);
+    let notice = children.find((child) => child.dataset?.timelineNotice != null);
     if (!live || !content) {
+      const existingContent = children.filter((child) => child !== live && child !== notice);
       live = element("div", "ak-timeline-live");
       live.dataset.timelineLive = "";
       live.setAttribute("role", "status");
       live.setAttribute("aria-live", "polite");
       live.setAttribute("aria-atomic", "true");
+      live.setAttribute("tabindex", "-1");
+      withTimelineKey(live, "timeline-live");
       content = element("div", "ak-timeline-content");
       content.dataset.timelineContent = "";
-      root.replaceChildren(live, content);
+      notice = element("p", "conversation-notice error ak-timeline-notice");
+      notice.dataset.timelineNotice = "";
+      notice.setAttribute("role", "status");
+      notice.setAttribute("aria-live", "polite");
+      notice.setAttribute("aria-atomic", "true");
+      notice.hidden = true;
+      withTimelineKey(notice, "timeline-notice");
+      root.replaceChildren(live, content, notice);
+      content.append(...existingContent);
+    } else if (!notice) {
+      notice = element("p", "conversation-notice error ak-timeline-notice");
+      notice.dataset.timelineNotice = "";
+      notice.setAttribute("role", "status");
+      notice.setAttribute("aria-live", "polite");
+      notice.setAttribute("aria-atomic", "true");
+      notice.hidden = true;
+      withTimelineKey(notice, "timeline-notice");
+      root.appendChild(notice);
     }
-    return { content, live };
+    return { content, live, notice };
   }
 
-  function captureRenderState(root, content, forceScroll) {
+  function clearNoticeNode(notice) {
+    notice.textContent = "";
+    notice.hidden = true;
+  }
+
+  function setNotice(root, message) {
+    if (!root) return;
+    const distanceFromBottom = root.scrollHeight - root.scrollTop - root.clientHeight;
+    const previousScrollTop = root.scrollTop;
+    const { notice } = timelineShell(root);
+    notice.textContent = String(message || "");
+    notice.hidden = !notice.textContent;
+    root.scrollTop = distanceFromBottom <= 80 ? root.scrollHeight : previousScrollTop;
+  }
+
+  function clearNotice(root) {
+    if (!root) return;
+    clearNoticeNode(timelineShell(root).notice);
+  }
+
+  function captureRenderState(root, content, live, forceScroll) {
     const distanceFromBottom = root.scrollHeight - root.scrollTop - root.clientHeight;
     const active = document.activeElement;
     return {
-      focusKey: content.contains(active) ? active?.dataset?.timelineKey || "" : "",
+      focusKey: content.contains(active)
+        ? active?.dataset?.timelineKey || ""
+        : live.contains(active)
+          ? "timeline-live"
+          : "",
       openKeys: new Set(
         Array.from(content.querySelectorAll("details[open][data-timeline-key]"))
           .map((node) => node.dataset.timelineKey),
@@ -432,7 +507,7 @@
     };
   }
 
-  function restoreRenderState(root, content, state) {
+  function restoreRenderState(root, content, live, state, focusFallback) {
     const keyedNodes = Array.from(content.querySelectorAll("[data-timeline-key]"));
     for (const node of keyedNodes) {
       if (
@@ -442,15 +517,29 @@
         node.open = true;
       }
     }
-    const focusTarget = keyedNodes.find((node) => node.dataset.timelineKey === state.focusKey);
+    let focusTarget = keyedNodes.find((node) => node.dataset.timelineKey === state.focusKey);
+    if (!focusTarget && state.focusKey.startsWith("decision:")) {
+      const actionId = state.focusKey.split(":")[1] || "";
+      focusTarget = keyedNodes.find((node) => node.dataset.timelineKey === `action:${actionId}`);
+    }
+    if (!focusTarget && state.focusKey && live.textContent) focusTarget = live;
+    if (!focusTarget && state.focusKey) focusTarget = focusFallback;
+    let focusAncestor = focusTarget?.parentElement || focusTarget?.parentNode;
+    while (focusAncestor && focusAncestor !== content) {
+      if (String(focusAncestor.tagName).toLowerCase() === "details") {
+        focusAncestor.open = true;
+      }
+      focusAncestor = focusAncestor.parentElement || focusAncestor.parentNode;
+    }
     focusTarget?.focus({ preventScroll: true });
     root.scrollTop = state.scrollToBottom ? root.scrollHeight : state.scrollTop;
   }
 
   function render(root, timeline, handlers = {}) {
     if (!root) return;
-    const { content, live } = timelineShell(root);
-    const state = captureRenderState(root, content, handlers.forceScroll);
+    const { content, live, notice } = timelineShell(root);
+    const state = captureRenderState(root, content, live, handlers.forceScroll);
+    clearNoticeNode(notice);
     const fragment = document.createDocumentFragment();
     for (const turn of timelineTurns(timeline)) {
       const turnNode = element("section", "ak-timeline-turn");
@@ -470,20 +559,25 @@
       fragment.appendChild(turnNode);
     }
     content.replaceChildren(fragment);
-    restoreRenderState(root, content, state);
 
     const announcement = latestAnnouncement(timeline);
     if (announcement && root.dataset.timelineAnnouncementKey !== announcement.key) {
       root.dataset.timelineAnnouncementKey = announcement.key;
       live.textContent = announcement.text;
+    } else if (!announcement) {
+      root.dataset.timelineAnnouncementKey = "";
+      live.textContent = "";
     }
+    restoreRenderState(root, content, live, state, handlers.focusFallback);
   }
 
   window.AgentKitChatTimeline = Object.freeze({
+    clearNotice,
     createHydrationGuard,
     thinkingLabel,
     hasActiveAttempt,
     latestRetryableAttempt,
     render,
+    setNotice,
   });
 })(window);

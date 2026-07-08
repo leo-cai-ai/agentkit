@@ -656,13 +656,7 @@ function executionFromTimeline(timeline, operation = "") {
 function appendConnectionNotice(message) {
   const thread = document.getElementById("chat-thread");
   if (!thread) return;
-  thread.querySelector(".conversation-notice")?.remove();
-  const notice = document.createElement("p");
-  notice.className = "conversation-notice error";
-  notice.setAttribute("role", "status");
-  notice.textContent = message;
-  thread.appendChild(notice);
-  scrollChatToBottom();
+  window.AgentKitChatTimeline.setNotice(thread, message);
 }
 
 function applyConversationTimeline(timeline, { forceScroll = false } = {}) {
@@ -674,8 +668,10 @@ function applyConversationTimeline(timeline, { forceScroll = false } = {}) {
     setChatBusy(false);
     return;
   }
+  window.AgentKitChatTimeline.clearNotice(root);
   window.AgentKitChatTimeline.render(root, timeline, {
     agentLabel,
+    focusFallback: document.querySelector("[data-chat-input]"),
     forceScroll,
     onDecision: decideTimelineAction,
     onRetry: retryTimelineAttempt,
@@ -1702,19 +1698,22 @@ async function runUnifiedChatTurn(message, selectedAgent) {
       if (currentConversationId) {
         await rehydrateConversationTimeline(currentConversationId, { forceScroll: true });
       } else {
-        await loadConversationTimelineForClientMessage(clientMessageId);
+        await loadConversationTimelineForClientMessage(clientMessageId, requestToken);
       }
     }
   }
 }
 
-async function loadConversationTimelineForClientMessage(clientMessageId) {
+async function loadConversationTimelineForClientMessage(clientMessageId, requestToken) {
+  if (!chatSessionGuard.isCurrent(requestToken)) return false;
   try {
     const response = await fetch(
       `/api/conversations/timeline?client_message_id=${encodeURIComponent(clientMessageId)}`,
+      { signal: requestToken.signal },
     );
     if (!response.ok) return false;
     const timeline = await response.json();
+    if (!chatSessionGuard.isCurrent(requestToken)) return false;
     const conversationId = timeline.conversation?.id || currentConversationId;
     if (!conversationId || (currentConversationId && currentConversationId !== conversationId)) {
       return false;
@@ -1725,7 +1724,8 @@ async function loadConversationTimelineForClientMessage(clientMessageId) {
     applyConversationTimeline(timeline, { forceScroll: true });
     renderConversationHistory();
     return true;
-  } catch {
+  } catch (error) {
+    if (error.name === "AbortError" || !chatSessionGuard.isCurrent(requestToken)) return false;
     appendConnectionNotice("连接已中断，暂时无法恢复会话。");
     return false;
   }

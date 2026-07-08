@@ -1687,8 +1687,35 @@ button.conversation-new {
 
 .ak-action-preview-summary,
 .ak-action-preview-meta,
-.ak-action-media-summary {
+.ak-action-media-summary,
+.ak-action-media-more {
   font-size: 0.8125rem;
+}
+
+.ak-action-media-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(6rem, 8rem));
+  gap: var(--ak-sys-space-2);
+}
+
+.ak-action-media-link {
+  display: block;
+  overflow: hidden;
+  border: 1px solid var(--ak-sys-color-border-default);
+  border-radius: var(--ak-sys-radius-sm);
+  background: var(--ak-sys-color-bg-inset);
+}
+
+.ak-action-media-link:focus-visible {
+  outline: var(--ak-sys-focus-width) solid var(--ak-sys-color-focus-ring);
+  outline-offset: var(--ak-sys-focus-offset);
+}
+
+.ak-action-media-thumbnail {
+  inline-size: 100%;
+  block-size: 6rem;
+  display: block;
+  object-fit: cover;
 }
 
 .ak-action-preview-content {
