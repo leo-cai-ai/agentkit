@@ -1,5 +1,8 @@
 # AgentKit 统一 Agent 架构
 
+> 需要下钻到接口、Agent、Skill/Tool、执行 Runtime、Context、Memory/RAG、可靠执行、评估、
+> 安全和扩展细节时，请从[详细框架模块手册](framework/README.md)进入。
+
 ## 1. 架构目标
 
 本框架面向企业 Agent 流程的快速交付，优先级为：
@@ -153,7 +156,7 @@ flowchart LR
 `UNTRUSTED_DATA_BEGIN/END` 包裹的 User Message，未在 `context.yaml` 声明的值会被忽略。预算取 Model Context
 Window、Agent、Skill、Run 剩余预算与 Pack 上限的最小值，再按优先级做确定性裁剪。
 
-Registry 启动时校验路径、Source、Serializer、Truncator、模板变量、JSON Schema 与租户 Override，并把 13 个 Pack 的
+Registry 启动时校验路径、Source、Serializer、Truncator、模板变量、JSON Schema 与租户 Override，并把 15 个 Pack（11 个 Runtime、4 个 Business）的
 Hash 写入 Runtime Manifest。等待审批的 Checkpoint 同时保存 Context Manifest Hash；恢复时 Hash 不一致会拒绝执行并要求
 重新发起任务。治理页面只展示 ID、Version、Hash、Override Hash 和预算，不展示 Prompt 或运行时内容。
 

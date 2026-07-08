@@ -43,6 +43,10 @@ flowchart LR
 
 LLM 可以建议策略，但不能扩大 Agent 的 Skill 白名单、Tool 白名单、权限或预算。
 
+完整的源码级框架手册见 [`docs/framework/README.md`](docs/framework/README.md)，其中按模块说明
+接口接入、Agent、Skill/Tool/MCP、执行 Runtime、Context、Memory/RAG、可靠执行、评估观测、
+安全多租户和扩展开发。
+
 ## LangChain / LangGraph 版本基线
 
 - LangChain Core：`>=1.4.8,<2.0.0`
@@ -157,7 +161,7 @@ Python Tool 通过 `entrypoint` 加载；MCP Tool 通过 `server` 和 `tool` 声
 `owner_skill` 关联根目录 `skills/` 中的能力包。后者不保存 Workflow、Tool 实现或完整业务说明。
 
 动态数据统一进入 User Message，并被标记为不可信；System Message 由不可覆盖的安全 Fragment、节点规则和显式允许的
-Agent/Skill 指令组成。Registry 在启动时严格校验 13 个 Pack 并生成 Hash。审批恢复时如果 Context Manifest Hash 已变化，
+Agent/Skill 指令组成。Registry 在启动时严格校验 15 个 Pack（11 个 Runtime、4 个 Business）并生成 Hash。审批恢复时如果 Context Manifest Hash 已变化，
 运行会拒绝继续，避免用新规则恢复旧任务。租户只能通过 `contexts/overrides/<tenant>/` 覆盖 System/User 模板，不能改变
 安全 Fragment、输入白名单、预算或 Schema。
 
@@ -181,4 +185,4 @@ agentkit --tenant company_alpha validate-contexts
 agentkit --tenant company_alpha doctor --skip-db
 ```
 
-更详细的设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，系统学习顺序见 [docs/AI_AGENT_系统学习与面试指南.md](docs/AI_AGENT_%E7%B3%BB%E7%BB%9F%E5%AD%A6%E4%B9%A0%E4%B8%8E%E9%9D%A2%E8%AF%95%E6%8C%87%E5%8D%97.md)。
+更详细的设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，系统学习顺序见 [docs/AI_AGENT_系统学习与面试指南.md](docs/AI_AGENT_系统学习与面试指南.md)。

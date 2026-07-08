@@ -179,7 +179,7 @@ blocked → 阻止或修订预算耗尽
 | `new-tenant` | 生成租户配置 |
 | `new-agent` | 生成 Agent Manifest |
 | `new-skill` | 生成 Skill Package |
-| `validate-packs` | 校验 Agent/Skill Catalog |
+| `validate-catalog` | 校验 Agent/Skill/Tool Catalog |
 | `validate-contexts` | 校验 Context Pack |
 | `eval` | Agent/LLM Golden Eval |
 | `rag-ingest` | 摄取知识 |

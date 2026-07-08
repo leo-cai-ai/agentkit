@@ -261,7 +261,7 @@ agentkit --tenant company_alpha validate-catalog
 agentkit --tenant company_alpha validate-contexts
 ```
 
-当前目录包含 13 个 Context Pack：10 个 Runtime Pack 和 3 个业务 Pack。Registry 会校验路径、输入 Source、模板变量、输出 Schema、预算和租户 Override，并计算 Runtime Manifest Hash。等待审批的 Checkpoint 保存该 Hash；新版本 Hash 不一致时会拒绝恢复旧任务，要求重新发起，避免用新 Prompt 继续旧决策链。
+当前目录包含 15 个 Context Pack：11 个 Runtime Pack 和 4 个业务 Pack。Registry 会校验路径、输入 Source、模板变量、输出 Schema、预算和租户 Override，并计算 Runtime Manifest Hash。等待审批的 Checkpoint 保存该 Hash；新版本 Hash 不一致时会拒绝恢复旧任务，要求重新发起，避免用新 Prompt 继续旧决策链。
 
 ## 6. 初始化数据库与持久化内容
 
@@ -770,7 +770,7 @@ docker compose down
 
 ## 19. 上线验收清单
 
-- [ ] Catalog 与 13 个 Context Pack 校验通过。
+- [ ] Catalog 与 15 个 Context Pack 校验通过。
 - [ ] `init-db` 和完整 `doctor` 通过。
 - [ ] General 普通对话、新建会话和历史会话通过。
 - [ ] 显式 `@agent` 只影响当前消息。
