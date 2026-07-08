@@ -4,8 +4,8 @@ import sqlite3
 
 import pytest
 
-from agentkit.core.memory.store import ConversationStore
-from agentkit.runtime.conversation_projection_models import AttemptStatus
+from agentkit.core.memory.store import ConversationConflictError, ConversationStore
+from agentkit.runtime.conversation_projection_models import ActionStatus, AttemptStatus
 
 
 def _accept(
@@ -24,6 +24,192 @@ def _accept(
         user_content="研究小红书 Top 5",
         user_token_estimate=8,
     )
+
+
+def accepted_store(tmp_path):
+    store = ConversationStore(tmp_path / "conversation.sqlite")
+    return store, _accept(store)
+
+
+def test_review_appends_revision_and_keeps_original(tmp_path) -> None:
+    store, accepted = accepted_store(tmp_path)
+    original_id = store.open_attempt_message(
+        conversation_id=accepted.conversation_id,
+        turn_id=accepted.turn_id,
+        attempt_id=accepted.attempt_id,
+        role="assistant",
+        kind="assistant_output",
+        content="初稿",
+        agent_id="xhs_growth",
+    )
+    store.seal_attempt_message(original_id, content="初稿")
+
+    revision_id = store.append_attempt_revision(
+        conversation_id=accepted.conversation_id,
+        turn_id=accepted.turn_id,
+        attempt_id=accepted.attempt_id,
+        content="审核后版本",
+        agent_id="xhs_growth",
+        supersedes_message_id=original_id,
+    )
+
+    rows = store.messages_for_attempt(accepted.attempt_id)
+    assert [row["content"] for row in rows] == ["初稿", "审核后版本"]
+    assert rows[-1]["supersedes_message_id"] == original_id
+    assert revision_id != original_id
+
+
+def test_approval_decision_is_compare_and_set_and_idempotent(tmp_path) -> None:
+    store, accepted = accepted_store(tmp_path)
+    _, action = store.persist_approval_request(
+        conversation_id=accepted.conversation_id,
+        turn_id=accepted.turn_id,
+        attempt_id=accepted.attempt_id,
+        agent_id="xhs_growth",
+        visible_content="审核后版本",
+        thread_id="thread-1",
+        skills=["xhs.growth.campaign"],
+        preview={"title": "审核后版本"},
+        preview_artifact_id=None,
+    )
+
+    decided = store.decide_action(
+        action.id,
+        decision="approved",
+        decided_by="u1",
+        decision_context={"roles": ["growth_manager"]},
+        idempotency_key="approve-1",
+        expected_version=action.version,
+    )
+    repeated = store.decide_action(
+        action.id,
+        decision="approved",
+        decided_by="u1",
+        decision_context={"roles": ["growth_manager"]},
+        idempotency_key="approve-1",
+        expected_version=action.version,
+    )
+
+    assert repeated == decided
+    assert decided.status is ActionStatus.APPROVED
+    assert store.get_attempt(accepted.attempt_id)["status"] == "resuming"
+
+
+def test_streaming_message_checkpoints_then_seals_without_duplicate(tmp_path) -> None:
+    store, accepted = accepted_store(tmp_path)
+    message_id = store.open_attempt_message(
+        conversation_id=accepted.conversation_id,
+        turn_id=accepted.turn_id,
+        attempt_id=accepted.attempt_id,
+        role="assistant",
+        kind="assistant_output",
+        content="",
+        agent_id="xhs_growth",
+    )
+
+    assert store.checkpoint_attempt_message(message_id, content="正在生成") is True
+    assert store.seal_attempt_message(message_id, content="最终内容") is True
+    assert store.checkpoint_attempt_message(message_id, content="不能再覆盖") is False
+    assert store.seal_attempt_message(message_id, content="也不能再覆盖") is False
+    rows = store.messages_for_attempt(accepted.attempt_id)
+    assert [(row["id"], row["content"], row["state"]) for row in rows] == [
+        (message_id, "最终内容", "sealed")
+    ]
+
+
+def test_approval_boundary_seals_streaming_message_in_same_transaction(tmp_path) -> None:
+    store, accepted = accepted_store(tmp_path)
+    message_id = store.open_attempt_message(
+        conversation_id=accepted.conversation_id,
+        turn_id=accepted.turn_id,
+        attempt_id=accepted.attempt_id,
+        role="assistant",
+        kind="assistant_output",
+        content="草稿",
+        agent_id="xhs_growth",
+    )
+
+    visible_message_id, action = store.persist_approval_request(
+        conversation_id=accepted.conversation_id,
+        turn_id=accepted.turn_id,
+        attempt_id=accepted.attempt_id,
+        agent_id="xhs_growth",
+        visible_content="审核稿",
+        thread_id="thread-1",
+        skills=["xhs.growth.campaign"],
+        preview={"z": 1, "a": "中文"},
+        preview_artifact_id=None,
+    )
+
+    assert visible_message_id == message_id
+    assert store.messages_for_attempt(accepted.attempt_id)[0]["content"] == "审核稿"
+    assert store.get_action(action.id)["preview_json"] == {"a": "中文", "z": 1}
+    assert store.get_attempt(accepted.attempt_id)["stage"] == "awaiting_user_decision"
+
+
+def test_different_action_decision_conflicts_and_joint_transition_rolls_back(
+    tmp_path,
+) -> None:
+    store, accepted = accepted_store(tmp_path)
+    _, action = store.persist_approval_request(
+        conversation_id=accepted.conversation_id,
+        turn_id=accepted.turn_id,
+        attempt_id=accepted.attempt_id,
+        agent_id="xhs_growth",
+        visible_content="审核稿",
+        thread_id="thread-1",
+        skills=[],
+        preview={},
+        preview_artifact_id=None,
+    )
+    store.decide_action(
+        action.id,
+        decision="approved",
+        decided_by="u1",
+        decision_context={},
+        idempotency_key="decision-1",
+        expected_version=action.version,
+    )
+
+    with pytest.raises(ConversationConflictError):
+        store.decide_action(
+            action.id,
+            decision="rejected",
+            decided_by="u1",
+            decision_context={},
+            idempotency_key="decision-2",
+            expected_version=action.version,
+        )
+
+    assert (
+        store.transition_action_attempt(
+            action.id,
+            expected_action={"approved"},
+            action_status="completed",
+            expected_attempt={"waiting_for_approval"},
+            attempt_status="succeeded",
+        )
+        is False
+    )
+    assert store.get_action(action.id)["status"] == "approved"
+    assert (
+        store.transition_action_attempt(
+            action.id,
+            expected_action={"approved"},
+            action_status="completed",
+            expected_attempt={"resuming"},
+            attempt_status="succeeded",
+        )
+        is True
+    )
+    assert store.get_attempt(accepted.attempt_id)["status"] == "succeeded"
+    assert store.get_action(action.id)["status"] == "completed"
+    with store._connect() as conn:
+        turn = conn.execute(
+            "SELECT active_attempt_id FROM conversation_turns WHERE id = ?",
+            (accepted.turn_id,),
+        ).fetchone()
+    assert turn[0] is None
 
 
 def test_accept_turn_is_idempotent_and_persists_input_before_run(tmp_path) -> None:

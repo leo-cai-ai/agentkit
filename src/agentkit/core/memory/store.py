@@ -10,6 +10,7 @@ agent's / user's history is never visible to another.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 import uuid
@@ -20,6 +21,8 @@ from typing import Any
 
 from agentkit.runtime.conversation_projection_models import (
     AcceptedTurn,
+    ActionStatus,
+    ApprovalAction,
     AttemptRef,
     AttemptStage,
     AttemptStatus,
@@ -38,6 +41,32 @@ _TERMINAL_ATTEMPT_STATUSES = {
     AttemptStatus.REJECTED.value,
     AttemptStatus.CANCELLED.value,
 }
+
+
+class ConversationConflictError(RuntimeError):
+    """会话投影的比较并交换条件不再成立。"""
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _approval_action_from_row(row: Any) -> ApprovalAction:
+    skills = row[5]
+    preview = row[6]
+    if isinstance(skills, str):
+        skills = json.loads(skills)
+    if isinstance(preview, str):
+        preview = json.loads(preview)
+    return ApprovalAction(
+        id=str(row[0]),
+        attempt_id=str(row[1]),
+        status=ActionStatus(str(row[2])),
+        version=int(row[3]),
+        thread_id=str(row[4]),
+        skills=tuple(str(skill) for skill in skills),
+        preview=dict(preview),
+    )
 
 
 def _pack_embedding(values: Sequence[float]) -> bytes:
@@ -287,6 +316,387 @@ class ConversationStore:
                 "SELECT * FROM conversation_attempts WHERE id = ?", (attempt_id,)
             ).fetchone()
         return dict(row) if row else None
+
+    def open_attempt_message(
+        self,
+        *,
+        conversation_id: str,
+        turn_id: str,
+        attempt_id: str,
+        role: str,
+        kind: str,
+        content: str,
+        agent_id: str,
+    ) -> int:
+        now = round(time.time(), 3)
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO messages (
+                    conversation_id, role, content, agent_id, created_at, turn_id,
+                    attempt_id, kind, state, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'streaming', ?)
+                """,
+                (
+                    conversation_id,
+                    role,
+                    content,
+                    agent_id,
+                    now,
+                    turn_id,
+                    attempt_id,
+                    kind,
+                    now,
+                ),
+            )
+        return int(cursor.lastrowid or 0)
+
+    def checkpoint_attempt_message(self, message_id: int, *, content: str) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE messages SET content = ?, updated_at = ?
+                WHERE id = ? AND state = 'streaming'
+                """,
+                (content, round(time.time(), 3), message_id),
+            )
+        return cursor.rowcount == 1
+
+    def seal_attempt_message(
+        self,
+        message_id: int,
+        *,
+        content: str,
+        state: str = "sealed",
+    ) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE messages SET content = ?, state = ?, updated_at = ?
+                WHERE id = ? AND state = 'streaming'
+                """,
+                (content, state, round(time.time(), 3), message_id),
+            )
+        return cursor.rowcount == 1
+
+    def append_attempt_revision(
+        self,
+        *,
+        conversation_id: str,
+        turn_id: str,
+        attempt_id: str,
+        content: str,
+        agent_id: str,
+        supersedes_message_id: int,
+        artifact_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> int:
+        now = round(time.time(), 3)
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO messages (
+                    conversation_id, role, content, agent_id, created_at, turn_id,
+                    attempt_id, kind, state, artifact_id, supersedes_message_id,
+                    metadata_json, updated_at
+                )
+                SELECT ?, 'assistant', ?, ?, ?, ?, ?, 'review_revision', 'sealed',
+                       ?, id, ?, ?
+                FROM messages
+                WHERE id = ? AND conversation_id = ? AND turn_id = ? AND attempt_id = ?
+                """,
+                (
+                    conversation_id,
+                    content,
+                    agent_id,
+                    now,
+                    turn_id,
+                    attempt_id,
+                    artifact_id,
+                    _canonical_json(metadata or {}),
+                    now,
+                    supersedes_message_id,
+                    conversation_id,
+                    turn_id,
+                    attempt_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("superseded message does not belong to attempt")
+        return int(cursor.lastrowid or 0)
+
+    def messages_for_attempt(self, attempt_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM messages
+                WHERE attempt_id = ? AND kind != 'user_input'
+                ORDER BY id
+                """,
+                (attempt_id,),
+            ).fetchall()
+        result = [dict(row) for row in rows]
+        for row in result:
+            row["metadata_json"] = json.loads(row["metadata_json"])
+        return result
+
+    def persist_approval_request(
+        self,
+        *,
+        conversation_id: str,
+        turn_id: str,
+        attempt_id: str,
+        agent_id: str,
+        visible_content: str,
+        thread_id: str,
+        skills: list[str],
+        preview: dict[str, Any],
+        preview_artifact_id: str | None,
+    ) -> tuple[int, ApprovalAction]:
+        now = round(time.time(), 3)
+        action_id = str(uuid.uuid4())
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            streaming = conn.execute(
+                """
+                SELECT id FROM messages
+                WHERE attempt_id = ? AND state = 'streaming' AND visibility = 'user'
+                ORDER BY id DESC LIMIT 1
+                """,
+                (attempt_id,),
+            ).fetchone()
+            if streaming is not None:
+                message_id = int(streaming[0])
+                sealed = conn.execute(
+                    """
+                    UPDATE messages
+                    SET content = ?, state = 'sealed', agent_id = ?, updated_at = ?
+                    WHERE id = ? AND state = 'streaming'
+                    """,
+                    (visible_content, agent_id, now, message_id),
+                )
+                if sealed.rowcount != 1:
+                    raise ConversationConflictError("streaming message was already sealed")
+            else:
+                previous = conn.execute(
+                    """
+                    SELECT id FROM messages
+                    WHERE attempt_id = ? AND role = 'assistant' AND visibility = 'user'
+                    ORDER BY id DESC LIMIT 1
+                    """,
+                    (attempt_id,),
+                ).fetchone()
+                previous_id = int(previous[0]) if previous is not None else None
+                message_kind = "review_revision" if previous_id is not None else "assistant_output"
+                cursor = conn.execute(
+                    """
+                    INSERT INTO messages (
+                        conversation_id, role, content, agent_id, created_at, turn_id,
+                        attempt_id, kind, state, artifact_id, supersedes_message_id,
+                        updated_at
+                    ) VALUES (?, 'assistant', ?, ?, ?, ?, ?, ?, 'sealed', ?, ?, ?)
+                    """,
+                    (
+                        conversation_id,
+                        visible_content,
+                        agent_id,
+                        now,
+                        turn_id,
+                        attempt_id,
+                        message_kind,
+                        preview_artifact_id,
+                        previous_id,
+                        now,
+                    ),
+                )
+                message_id = int(cursor.lastrowid or 0)
+
+            conn.execute(
+                """
+                INSERT INTO conversation_actions (
+                    id, conversation_id, turn_id, attempt_id, status, thread_id,
+                    skills_json, preview_artifact_id, preview_json, created_at
+                ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
+                """,
+                (
+                    action_id,
+                    conversation_id,
+                    turn_id,
+                    attempt_id,
+                    thread_id,
+                    _canonical_json(skills),
+                    preview_artifact_id,
+                    _canonical_json(preview),
+                    now,
+                ),
+            )
+            changed = conn.execute(
+                """
+                UPDATE conversation_attempts
+                SET status = 'waiting_for_approval', stage = 'awaiting_user_decision',
+                    agent_id = ?, version = version + 1
+                WHERE id = ? AND turn_id = ? AND status IN ('queued', 'running')
+                """,
+                (agent_id, attempt_id, turn_id),
+            )
+            if changed.rowcount != 1:
+                raise ConversationConflictError("attempt is not ready for approval")
+        return message_id, ApprovalAction(
+            id=action_id,
+            attempt_id=attempt_id,
+            status=ActionStatus.PENDING,
+            version=1,
+            thread_id=thread_id,
+            skills=tuple(skills),
+            preview=dict(preview),
+        )
+
+    def get_action(self, action_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM conversation_actions WHERE id = ?", (action_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        for key in ("skills_json", "preview_json", "decision_context_json"):
+            result[key] = json.loads(result[key])
+        return result
+
+    def decide_action(
+        self,
+        action_id: str,
+        *,
+        decision: str,
+        decided_by: str,
+        decision_context: dict[str, Any],
+        idempotency_key: str,
+        expected_version: int,
+    ) -> ApprovalAction:
+        if decision not in {"approved", "rejected"}:
+            raise ValueError("decision must be approved or rejected")
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT id, attempt_id, status, version, thread_id, skills_json,
+                       preview_json, decision, idempotency_key
+                FROM conversation_actions WHERE id = ?
+                """,
+                (action_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(action_id)
+            if row[8] == idempotency_key:
+                if row[7] != decision:
+                    raise ConversationConflictError("action already has another decision")
+                return _approval_action_from_row(row)
+            if row[2] != ActionStatus.PENDING.value or int(row[3]) != expected_version:
+                raise ConversationConflictError("action decision compare-and-set failed")
+
+            now = round(time.time(), 3)
+            changed = conn.execute(
+                """
+                UPDATE conversation_actions
+                SET status = ?, decision = ?, decided_by = ?, decision_context_json = ?,
+                    idempotency_key = ?, version = version + 1, decided_at = ?
+                WHERE id = ? AND status = 'pending' AND version = ?
+                """,
+                (
+                    decision,
+                    decision,
+                    decided_by,
+                    _canonical_json(decision_context),
+                    idempotency_key,
+                    now,
+                    action_id,
+                    expected_version,
+                ),
+            )
+            if changed.rowcount != 1:
+                raise ConversationConflictError("action decision compare-and-set failed")
+            resumed = conn.execute(
+                """
+                UPDATE conversation_attempts
+                SET status = 'resuming', version = version + 1
+                WHERE id = ? AND status = 'waiting_for_approval'
+                """,
+                (str(row[1]),),
+            )
+            if resumed.rowcount != 1:
+                raise ConversationConflictError("attempt is not waiting for approval")
+            decided_row = list(row)
+            decided_row[2] = decision
+            decided_row[3] = expected_version + 1
+        return _approval_action_from_row(decided_row)
+
+    def transition_action_attempt(
+        self,
+        action_id: str,
+        *,
+        expected_action: set[str],
+        action_status: str,
+        expected_attempt: set[str],
+        attempt_status: str,
+        error_code: str = "",
+        error_summary: str = "",
+    ) -> bool:
+        if not expected_action or not expected_attempt:
+            return False
+        action_values = tuple(sorted(expected_action))
+        attempt_values = tuple(sorted(expected_attempt))
+        action_slots = ", ".join("?" for _ in action_values)
+        attempt_slots = ", ".join("?" for _ in attempt_values)
+        now = round(time.time(), 3)
+        completed_at = now if action_status in {"completed", "invalidated"} else None
+        finished_at = now if attempt_status in _TERMINAL_ATTEMPT_STATUSES else None
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            action = conn.execute(
+                f"""
+                UPDATE conversation_actions
+                SET status = ?, version = version + 1,
+                    completed_at = CASE WHEN ? IS NULL THEN completed_at ELSE ? END
+                WHERE id = ? AND status IN ({action_slots})
+                """,
+                (action_status, completed_at, completed_at, action_id, *action_values),
+            )
+            if action.rowcount != 1:
+                conn.rollback()
+                return False
+            attempt = conn.execute(
+                f"""
+                UPDATE conversation_attempts
+                SET status = ?, error_code = ?, error_summary = ?, version = version + 1,
+                    finished_at = CASE WHEN ? IS NULL THEN finished_at ELSE ? END
+                WHERE id = (SELECT attempt_id FROM conversation_actions WHERE id = ?)
+                  AND status IN ({attempt_slots})
+                """,
+                (
+                    attempt_status,
+                    error_code,
+                    error_summary,
+                    finished_at,
+                    finished_at,
+                    action_id,
+                    *attempt_values,
+                ),
+            )
+            if attempt.rowcount != 1:
+                conn.rollback()
+                return False
+            if attempt_status in _TERMINAL_ATTEMPT_STATUSES:
+                conn.execute(
+                    """
+                    UPDATE conversation_turns
+                    SET active_attempt_id = NULL, updated_at = ?
+                    WHERE active_attempt_id = (
+                        SELECT attempt_id FROM conversation_actions WHERE id = ?
+                    )
+                    """,
+                    (now, action_id),
+                )
+        return True
 
     def create_retry_attempt(
         self,

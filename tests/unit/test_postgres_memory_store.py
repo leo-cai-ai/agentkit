@@ -6,7 +6,7 @@ import pytest
 
 from agentkit.core import migrations
 from agentkit.core.memory.pg_store import PgConversationStore
-from agentkit.runtime.conversation_projection_models import AttemptStatus
+from agentkit.runtime.conversation_projection_models import ActionStatus, AttemptStatus
 
 
 def test_postgres_v4_migration_uses_projection_contract() -> None:
@@ -193,6 +193,145 @@ def test_postgres_transition_attempt_uses_conditional_update(monkeypatch) -> Non
 
     assert changed is True
     assert "status IN (%s, %s)" in calls[0][0]
+    assert all("?" not in sql for sql, _ in calls)
+
+
+def test_postgres_streaming_message_lifecycle_uses_conditional_updates(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class Result:
+        rowcount = 1
+
+        def fetchone(self):
+            return (31,)
+
+    class Connection:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+            return Result()
+
+    store = object.__new__(PgConversationStore)
+    store._settings = None
+    monkeypatch.setattr(store, "_connect", lambda: nullcontext(Connection()))
+
+    message_id = store.open_attempt_message(
+        conversation_id="conversation-1",
+        turn_id="turn-1",
+        attempt_id="attempt-1",
+        role="assistant",
+        kind="assistant_output",
+        content="",
+        agent_id="xhs_growth",
+    )
+    assert store.checkpoint_attempt_message(message_id, content="生成中") is True
+    assert store.seal_attempt_message(message_id, content="完成") is True
+
+    assert message_id == 31
+    assert "RETURNING id" in calls[0][0]
+    assert "state = 'streaming'" in calls[1][0]
+    assert "state = 'streaming'" in calls[2][0]
+    assert all("?" not in sql for sql, _ in calls)
+
+
+def test_postgres_approval_boundary_and_decision_are_atomic(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class Result:
+        def __init__(self, row=None, rowcount=1) -> None:
+            self._row = row
+            self.rowcount = rowcount
+
+        def fetchone(self):
+            return self._row
+
+    class Connection:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+            if "state = 'streaming'" in sql and sql.lstrip().startswith("SELECT"):
+                return Result(None)
+            if "role = 'assistant'" in sql and sql.lstrip().startswith("SELECT"):
+                return Result(None)
+            if "INSERT INTO messages" in sql:
+                return Result((41,))
+            if "FROM conversation_actions" in sql and "FOR UPDATE" in sql:
+                return Result(
+                    (
+                        "action-1",
+                        "attempt-1",
+                        "pending",
+                        1,
+                        "thread-1",
+                        ["xhs.growth.campaign"],
+                        {"title": "审核稿"},
+                        None,
+                        None,
+                    )
+                )
+            return Result()
+
+    store = object.__new__(PgConversationStore)
+    store._settings = None
+    monkeypatch.setattr(store, "_connect", lambda: nullcontext(Connection()))
+    monkeypatch.setattr("agentkit.core.memory.pg_store.uuid.uuid4", lambda: "action-1")
+
+    message_id, action = store.persist_approval_request(
+        conversation_id="conversation-1",
+        turn_id="turn-1",
+        attempt_id="attempt-1",
+        agent_id="xhs_growth",
+        visible_content="审核稿",
+        thread_id="thread-1",
+        skills=["xhs.growth.campaign"],
+        preview={"title": "审核稿"},
+        preview_artifact_id=None,
+    )
+    decided = store.decide_action(
+        action.id,
+        decision="approved",
+        decided_by="u1",
+        decision_context={"roles": ["growth_manager"]},
+        idempotency_key="decision-1",
+        expected_version=action.version,
+    )
+
+    assert message_id == 41
+    assert decided.status is ActionStatus.APPROVED
+    assert any("waiting_for_approval" in sql for sql, _ in calls)
+    assert any("status = 'resuming'" in sql for sql, _ in calls)
+    assert all("?" not in sql for sql, _ in calls)
+
+
+def test_postgres_joint_action_attempt_transition_clears_terminal_attempt(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class Result:
+        rowcount = 1
+
+        def fetchone(self):
+            return ("attempt-1",)
+
+    class Connection:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+            return Result()
+
+    store = object.__new__(PgConversationStore)
+    store._settings = None
+    monkeypatch.setattr(store, "_connect", lambda: nullcontext(Connection()))
+
+    changed = store.transition_action_attempt(
+        "action-1",
+        expected_action={"approved"},
+        action_status="completed",
+        expected_attempt={"resuming"},
+        attempt_status="succeeded",
+    )
+
+    assert changed is True
+    assert "FOR UPDATE OF a, ca" in calls[0][0]
+    assert any("UPDATE conversation_turns" in sql for sql, _ in calls)
     assert all("?" not in sql for sql, _ in calls)
 
 
