@@ -278,50 +278,71 @@ flowchart TD
 - 未配置认证时保护接口失败关闭，不会自动变成匿名管理员。
 - XHS 发布素材接口只接受安全文件名和允许的图片扩展名，并受 `chat:use` 保护。
 
-## 8. 会话、父子运行与审批恢复
+## 8. 会话投影、Retry 与审批恢复
 
-### 8.1 会话与运行不是同一个对象
+### 8.1 Conversation、Turn、Attempt 与 Run 不是同一个对象
 
 ```mermaid
 flowchart TD
-    C[General Conversation] --> M1[用户消息]
-    C --> M2[助手消息]
-    C --> P[General 父 Run]
+    C[General Conversation] --> T[Turn / 用户输入]
+    T --> U[User Message / 路由前持久化]
+    T --> A1[Attempt 1]
+    T --> A2[Attempt 2 / Retry]
+    A1 --> M1[Assistant Message / Revision]
+    A1 --> D[Approval Action]
+    A1 --> P[General 父 Run]
     P --> X[xhs_growth 子 Run]
-    X --> T[LangGraph Thread / Checkpoint]
-    X --> A[Audit Events]
-    P --> A
+    X --> CP[LangGraph Thread / Checkpoint]
+    X --> E[Audit Events]
+    P --> E
 ```
 
-一个会话可以有多轮消息和多个 Run。失败后重试会在原会话创建新 Run，并记录 `retry_of_run_id`；不会覆盖历史 Run。审批恢复使用子 Run 的 `thread_id` 回到原 Checkpoint，然后由协调器更新父 Run。
+一个 Conversation 可以有多个 Turn；每个 Turn 只有一条 input-first User Message，但可以有多个 Attempt。Assistant Message、Revision 和审批 Action 都属于具体 Attempt。Run 负责执行追踪，不能作为聊天消息替换指令。
 
-### 8.2 审批 Resume 请求
+普通 Chat SSE 在开始路由前原子创建 Turn、User Message 和 Attempt，并把 `accepted` 作为第一帧返回，其中包含 `conversation_id`、`turn_id`、`attempt_id` 和 `created`。因此即使 SSE 随后断开，客户端也应读取 Timeline 恢复，不得自动改发阻塞 POST 或创建第二个 Turn。
 
-显式 Task 恢复接口：
+### 8.2 Retry 命令与 accepted-first SSE
+
+失败、拒绝、中断或取消的最新 Attempt 通过以下命令显式重试：
+
+```http
+POST /api/conversation-turns/{turn_id}/attempts
+Content-Type: application/json
+X-CSRF-Token: <token>
+```
 
 ```json
 {
-  "thread_id": "原响应中的 thread_id",
-  "approved_skills": ["xhs.growth.campaign"],
-  "rejected_skills": []
+  "retry_of_attempt_id": "attempt-1",
+  "idempotency_key": "retry-command-uuid"
 }
 ```
 
-Chat 流可以把审批作为当前请求的一部分：
+服务端验证 Attempt 属于当前租户、用户和 Turn，并要求 `retry_of_attempt_id` 指向该 Turn 的最新终态 Attempt。命令先创建 Attempt N+1，再以 SSE 第一帧返回新的 `accepted.attempt_id`，之后才重新进入业务图。相同 `idempotency_key` 重复提交会返回同一个 Attempt，不会再次启动协调器。
+
+Retry 不覆盖 Attempt 1：旧 Message、Revision、Action、preview、失败摘要和 Run/Audit 全部保留；Timeline 默认折叠旧 Attempt 只是显示策略。SSE 中断后客户端使用 `GET /api/conversations/{conversation_id}/timeline` 重建；若连 `accepted` 帧也丢失，则用原 `client_message_id` 请求 `GET /api/conversations/timeline?client_message_id=...` 定位已持久化 Turn。
+
+### 8.3 durable Action 审批请求
+
+Chat 审批以 Timeline 中的 `action_id` 和 `version` 为准：
+
+```http
+POST /api/conversation-actions/{action_id}/decision
+Content-Type: application/json
+X-CSRF-Token: <token>
+```
 
 ```json
 {
-  "message": "确认发布",
-  "context": {"conversation_id": "conversation-id"},
-  "approval": {
-    "thread_id": "thread-id",
-    "skills": ["xhs.growth.campaign"],
-    "action": "approve"
-  }
+  "decision": "approved",
+  "expected_version": 1,
+  "idempotency_key": "approval-command-uuid"
 }
 ```
 
-同一 Skill 不能同时出现在批准和拒绝列表。Resume 不是重放原始请求；它从已保存状态继续，因此调用方必须保留 `thread_id`，同时依赖服务端审批、权限和 Context Manifest 一致性校验。
+`decision` 只能是 `approved` 或 `rejected`；`expected_version` 提供乐观并发控制，`idempotency_key` 防止重复决议。流式客户端可使用同路径的 `/decision/stream` 变体。服务端从 durable Action 反查 thread、Skills、父子 Run 和可信角色，再从 Checkpoint 继续；浏览器不提交或持有权威 `thread_id`。旧 `/api/tasks/resume`、`/api/tasks/approve` 及其流式浏览器恢复接口已停用并返回 410。
+
+Resume 不是重放原始请求。若 Checkpoint 缺失或失效，Action 标记为 `invalidated`、Attempt 标记为 `interrupted`，已有 Timeline 记录保留，用户需要显式创建新的 Retry Attempt。
 
 ## 9. 错误模型与状态语义
 

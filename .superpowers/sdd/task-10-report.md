@@ -35,3 +35,11 @@
 - catalog：`[ok] 声明目录有效: 4 Agents, 15 Capabilities, 9 Tools`。
 - Ruff：`All checks passed!`。
 - format：`253 files already formatted`。
+
+## Review finding 修复
+
+- 更新活跃接口文档 `docs/framework/01_INTERFACE_AND_ACCESS.md`，删除 Run 级 Retry 与浏览器持有 `thread_id` 的旧契约。
+- 文档现在明确 `POST /api/conversation-turns/{turn_id}/attempts`、`retry_of_attempt_id`、`idempotency_key`、accepted-first SSE、Timeline 断线恢复和 Attempt N+1 追加语义。
+- 同步更正 Chat 审批为 durable `POST /api/conversation-actions/{action_id}/decision`；旧 `/api/tasks/resume` 与 `/api/tasks/approve` 浏览器接口标记为 410。
+- 全量活跃文档扫描不再包含 `retry_of_run_id`、旧 `/retry/stream`、`replace_turn_messages`、retry replacement 或原位替换旧契约；历史 `docs/superpowers/specs|plans` 仅保留当时设计讨论。
+- Review 验证：活跃 docs 扫描输出 `NO_ACTIVE_DOC_LEGACY_MATCHES`；Timeline/UI 接口回归 `51 passed`；Ruff `All checks passed!`；format `253 files already formatted`；修改文档的 Markdown fence 均配对。

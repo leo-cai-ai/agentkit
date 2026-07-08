@@ -124,7 +124,7 @@ Conversation Store 使用四层可恢复模型：
 
 - `Turn`：一次用户输入；同一 `client_message_id` 幂等返回同一个 Turn。
 - `Attempt`：一次执行；Retry 通过 `retry_of_attempt_id` 创建 Attempt N+1。
-- `Message`：User 输入、Assistant 输出或 Revision；可见历史只追加，不原位替换。
+- `Message`：User 输入、Assistant 输出或 Revision；可见历史只追加且不可覆盖。
 - `Action`：审批 preview、版本、决策和决策者；它是 durable 服务端状态，不依赖浏览器内存。
 
 写入顺序是 input-first：API 接受请求后，先原子保存 Turn、User Message 和 Attempt，再开始路由。路由失败、Agent 失败、Tool 失败、SSE 断开或审批恢复失败都不能删除这条输入。流式 Assistant Message 先 checkpoint，再以 `sealed`、`failed` 或 `interrupted` 封口；Revision 通过 `supersedes_message_id` 形成追加链。
