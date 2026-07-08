@@ -19,15 +19,13 @@ const AGENT_DIRECTORY = (() => {
   }
 })();
 const DEMO_PROMPT = UI_CONFIG.demo_prompt || "Rank the top 3 candidates for JOB-001 and explain why.";
-let pendingApproval = null;
 let pendingInput = null;
 let currentConversationId = null;
+let currentConversationTimeline = null;
 let conversationCache = [];
 let chatBusy = false;
 let pendingDeleteConversationId = null;
 let pendingDeleteExecution = null;
-let currentConversationExecution = null;
-let currentRetryCommand = null;
 const HISTORY_COLLAPSED_KEY = "agentkit:chat-history-collapsed";
 const chatSessionGuard = window.AgentKitChatSession.createChatSessionGuard();
 const TRACE_ATTENTION_STATES = new Set(["waiting_approval", "failed", "blocked"]);
@@ -174,8 +172,6 @@ function syncChatComposerState() {
 function setChatBusy(busy) {
   chatBusy = busy;
   syncChatComposerState();
-  const retry = document.querySelector("[data-conversation-retry]");
-  if (retry) retry.disabled = busy || !currentConversationExecution?.retryable;
 }
 
 function escapeHtml(value) {
@@ -541,65 +537,6 @@ function conversationTitle(conv) {
   return (conv.title || "").trim() || "未命名会话";
 }
 
-function conversationOutcome(execution) {
-  if (execution?.outcome) return String(execution.outcome);
-  const status = String(execution?.status || "idle");
-  if (status === "idle") return "idle";
-  if (status === "running") return "processing";
-  if (status === "completed") return "succeeded";
-  if (["waiting_for_approval", "needs_clarification"].includes(status)) {
-    return "action_required";
-  }
-  return "not_completed";
-}
-
-function renderConversationExecution(execution) {
-  currentConversationExecution = execution || null;
-  const card = document.querySelector("[data-conversation-execution]");
-  if (!card) return;
-  const status = String(execution?.status || "idle");
-  const outcome = conversationOutcome(execution);
-  const operation = String(execution?.operation || "");
-  const retryableFailure = outcome === "not_completed" &&
-    Boolean(execution?.retryable);
-  const visible = outcome === "processing" || retryableFailure;
-  card.hidden = !visible;
-  card.dataset.status = status;
-  card.dataset.outcome = outcome;
-  card.dataset.mode = retryableFailure ? "recovery" : "status";
-  if (!visible) {
-    setChatBusy(false);
-    return;
-  }
-  const copy = card.querySelector("[data-conversation-execution-copy]");
-  const title = card.querySelector("[data-conversation-execution-title]");
-  const reason = card.querySelector("[data-conversation-execution-reason]");
-  const retry = card.querySelector("[data-conversation-retry]");
-  if (copy) copy.hidden = retryableFailure;
-  const titles = {
-    processing: operation === "retry" ? "正在重新运行" : "正在处理",
-  };
-  const reasons = {
-    processing: operation === "retry" ? "正在重新运行上一次请求，请稍候。" : "任务正在处理中。",
-  };
-  if (title) title.textContent = titles[outcome];
-  if (reason) reason.textContent = execution?.reason || reasons[outcome];
-  if (retry) {
-    retry.hidden = !retryableFailure;
-    retry.disabled = chatBusy || !retryableFailure;
-    retry.textContent = "重新执行";
-  }
-}
-
-function emptyConversationNotice(execution) {
-  const status = String(execution?.status || "idle");
-  if (status === "failed") return "本次任务未保存对话消息，可重新执行或查看运行追踪。";
-  if (status === "waiting_for_approval") return "任务正在等待人工审批。";
-  if (status === "running") return "任务仍在执行，请稍候。";
-  if (status === "cancelled") return "任务已取消，可重新执行或删除会话。";
-  return "该会话暂无消息。";
-}
-
 function conversationMeta(conv) {
   if (!conv) return "开始新的对话";
   const when = formatRelativeTime(conv.updated_at || conv.created_at);
@@ -715,44 +652,38 @@ function executionFromTimeline(timeline, operation = "") {
   };
 }
 
-function messagesFromTimeline(timeline) {
-  const messages = [];
-  for (const turn of timeline?.turns || []) {
-    messages.push(turn.user_message);
-    for (const attempt of turn.attempts || []) {
-      for (const message of attempt.messages || []) messages.push(message);
-    }
-  }
-  return messages;
+function appendConnectionNotice(message) {
+  const thread = document.getElementById("chat-thread");
+  if (!thread) return;
+  thread.querySelector(".conversation-notice")?.remove();
+  const notice = document.createElement("p");
+  notice.className = "conversation-notice error";
+  notice.setAttribute("role", "status");
+  notice.textContent = message;
+  thread.appendChild(notice);
+  scrollChatToBottom();
 }
 
-function applyConversationTimeline(timeline, operation = "") {
-  const execution = executionFromTimeline(timeline, operation);
-  renderConversationExecution(execution);
-  const latestTurn = timeline.turns?.at(-1);
-  const latestAttempt = latestTurn?.attempts?.at(-1);
-  currentRetryCommand = execution.retryable && latestTurn && latestAttempt
-    ? { turnId: latestTurn.id, attemptId: latestAttempt.id }
-    : null;
-  const messages = messagesFromTimeline(timeline);
-  if (!messages.length) {
-    showConversationNotice(emptyConversationNotice(execution));
+function applyConversationTimeline(timeline) {
+  const root = document.querySelector("[data-chat-timeline]");
+  if (!root) return;
+  currentConversationTimeline = timeline;
+  if (!(timeline?.turns || []).length) {
+    showConversationNotice("该会话暂无消息。");
+    setChatBusy(false);
     return;
   }
-  const thread = document.getElementById("chat-thread");
-  if (thread) thread.innerHTML = "";
-  for (const msg of messages) {
-    addChatMessage(
-      msg.role === "user" ? "user" : "assistant",
-      msg.content,
-      msg.role === "user" ? "你" : agentLabel(msg.agent_id || "general_agent"),
-    );
-  }
+  window.AgentKitChatTimeline.render(root, timeline, {
+    agentLabel,
+    onDecision: decideTimelineAction,
+    onRetry: retryTimelineAttempt,
+  });
+  setChatBusy(window.AgentKitChatTimeline.hasActiveAttempt(timeline));
 }
 
 async function loadConversationTimeline(
   conversationId,
-  { operation = "", preserveWhileLoading = false } = {},
+  { preserveWhileLoading = false } = {},
 ) {
   if (!conversationId) {
     chatSessionGuard.cancel();
@@ -772,7 +703,7 @@ async function loadConversationTimeline(
       !chatSessionGuard.isCurrent(requestToken) ||
       currentConversationId !== requestedConversationId
     ) return;
-    applyConversationTimeline(data, operation);
+    applyConversationTimeline(data);
   } catch (error) {
     if (error.name === "AbortError") return;
     if (
@@ -780,13 +711,17 @@ async function loadConversationTimeline(
       currentConversationId === requestedConversationId
     ) {
       if (!preserveWhileLoading) {
-        showConversationNotice("Conversation messages could not be loaded.", "error");
+        showConversationNotice("无法加载会话，请稍后重试。", "error");
+      } else {
+        appendConnectionNotice("连接已中断，正在从已保存的会话恢复。");
       }
     }
   }
 }
 
-async function refreshConversationExecution(conversationId, operation = "") {
+// SSE 仍在读取时不能启动新的 session guard，否则会中断当前 POST。
+async function rehydrateConversationTimeline(conversationId) {
+  if (!conversationId) return false;
   try {
     const response = await fetch(
       `/api/conversations/${encodeURIComponent(conversationId)}/timeline`,
@@ -794,9 +729,12 @@ async function refreshConversationExecution(conversationId, operation = "") {
     if (!response.ok) return false;
     const data = await response.json();
     if (currentConversationId !== conversationId) return false;
-    renderConversationExecution(executionFromTimeline(data, operation));
+    applyConversationTimeline(data);
     return true;
   } catch {
+    if (currentConversationId === conversationId) {
+      appendConnectionNotice("连接已中断，正在从已保存的会话恢复。");
+    }
     return false;
   }
 }
@@ -805,8 +743,8 @@ async function startNewConversation() {
   chatSessionGuard.cancel();
   setTraceDrawerOpen(false);
   currentConversationId = null;
-  currentConversationExecution = null;
-  renderConversationExecution({ status: "idle" });
+  currentConversationTimeline = null;
+  setChatBusy(false);
   clearPendingResult();
   setExecutionState("空闲");
   resetChatThread(getChatWelcomeMessage());
@@ -867,9 +805,6 @@ async function openConversationDeleteDialog(conversationId) {
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(body.error || "无法读取会话状态");
     pendingDeleteExecution = executionFromTimeline(body);
-    if (currentConversationId === conversationId) {
-      currentConversationExecution = pendingDeleteExecution;
-    }
     if (pendingDeleteExecution.status === "running") {
       dialog.querySelector("[data-conversation-delete-error]").textContent =
         "任务正在运行，请等待完成后再删除";
@@ -967,18 +902,43 @@ async function terminateAndDeleteConversation(conversationId) {
   }
 }
 
-async function retryConversation(conversationId) {
-  if (!conversationId || !currentRetryCommand || chatBusy) return;
-  const command = { ...currentRetryCommand };
+async function decideTimelineAction(command) {
+  const conversationId = currentConversationId;
+  if (!conversationId || !command?.actionId) return;
   setChatBusy(true);
-  renderConversationExecution({
-    ...(currentConversationExecution || {}),
-    status: "running",
-    outcome: "processing",
-    operation: "retry",
-    reason: "正在重新运行上一次请求，请稍候。",
-    retryable: false,
+  document.querySelectorAll("[data-timeline-decision]").forEach((button) => {
+    button.disabled = true;
   });
+  try {
+    await streamSse(
+      `/api/conversation-actions/${encodeURIComponent(command.actionId)}/decision/stream`,
+      {
+        decision: command.decision,
+        expected_version: command.expectedVersion,
+        idempotency_key: window.crypto?.randomUUID?.() || `approval-${Date.now()}`,
+      },
+      {
+        onAccepted: () => void rehydrateConversationTimeline(conversationId),
+        onFinal: () => void rehydrateConversationTimeline(conversationId),
+        onError: () => void rehydrateConversationTimeline(conversationId),
+      },
+    );
+  } catch (error) {
+    if (currentConversationId === conversationId && error.name !== "AbortError") {
+      appendConnectionNotice("连接已中断，正在从已保存的会话恢复。");
+    }
+  } finally {
+    if (currentConversationId === conversationId) {
+      await rehydrateConversationTimeline(conversationId);
+      await loadConversations("general_agent");
+    }
+  }
+}
+
+async function retryTimelineAttempt(command) {
+  const conversationId = currentConversationId;
+  if (!conversationId || !command?.turnId || !command?.attemptId || chatBusy) return;
+  setChatBusy(true);
   try {
     await streamSse(
       `/api/conversation-turns/${encodeURIComponent(command.turnId)}/attempts`,
@@ -987,42 +947,19 @@ async function retryConversation(conversationId) {
         idempotency_key: window.crypto?.randomUUID?.() || `retry-${Date.now()}`,
       },
       {
-        onAccepted: () => renderConversationExecution({
-          status: "running",
-          outcome: "processing",
-          operation: "retry",
-          reason: "Thinking…",
-          retryable: false,
-        }),
+        onAccepted: () => void rehydrateConversationTimeline(conversationId),
+        onFinal: () => void rehydrateConversationTimeline(conversationId),
+        onError: () => void rehydrateConversationTimeline(conversationId),
       },
     );
-    if (currentConversationId !== conversationId) return;
-    await loadConversationTimeline(conversationId, {
-      operation: "retry",
-      preserveWhileLoading: true,
-    });
-    await loadConversations("general_agent");
   } catch (error) {
-    if (currentConversationId === conversationId) {
-      const refreshed = await refreshConversationExecution(conversationId, "retry");
-      if (!refreshed) {
-        renderConversationExecution({
-          ...(currentConversationExecution || {}),
-          status: "failed",
-          outcome: "not_completed",
-          operation: "retry",
-          reason: error.message || "请求失败，请稍后重试。",
-          retryable: true,
-        });
-      }
+    if (currentConversationId === conversationId && error.name !== "AbortError") {
+      appendConnectionNotice("连接已中断，正在从已保存的会话恢复。");
     }
   } finally {
     if (currentConversationId === conversationId) {
-      await loadConversationTimeline(conversationId, {
-        operation: "retry",
-        preserveWhileLoading: true,
-      });
-      setChatBusy(conversationOutcome(currentConversationExecution) === "processing");
+      await rehydrateConversationTimeline(conversationId);
+      await loadConversations("general_agent");
     }
   }
 }
@@ -1303,9 +1240,6 @@ function renderResult(payload, requestPayload = null, options = {}) {
   const waitingForApproval = outputStatus === "waiting_for_approval";
   const rejected = outputStatus === "rejected";
   const approval = response.output?.governance?.approval || response.output?.approval || final.approval || {};
-  pendingApproval = waitingForApproval && requestPayload
-    ? { request: { ...requestPayload }, action_id: approval.action_id || "", version: approval.version || 0 }
-    : null;
   const conversationMessage = final.message || response.output?.message || "";
   const rawPlan = escapeHtml(JSON.stringify(response.plan || {}, null, 2));
   const rawAudit = escapeHtml(JSON.stringify(response.audit_events || [], null, 2));
@@ -1400,60 +1334,6 @@ function addChatMessage(role, text, labelOverride = "") {
   thread.scrollTop = thread.scrollHeight;
 }
 
-function addApprovalChatMessage(text, approval, labelOverride = "") {
-  const thread = document.getElementById("chat-thread");
-  if (!thread) return;
-  const node = document.createElement("div");
-  node.className = "chat-message assistant approval-message";
-  node.innerHTML = `
-    <span>${escapeHtml(labelOverride || getSelectedAgentLabel())}</span>
-    <div class="chat-body">${renderAssistantHtml(text)}</div>
-    ${approvalActionHtml(true, approval)}
-  `;
-  thread.appendChild(node);
-  thread.scrollTop = thread.scrollHeight;
-}
-
-function addAssistantResponse(result, requestPayload) {
-  const response = runtimeView(result.response);
-  const final = response.output?.final || {};
-  const approval = response.output?.governance?.approval || response.output?.approval || final.approval || {};
-  const label = getSelectedAgentLabel();
-  if (response.output?.status === "waiting_for_approval") {
-    pendingApproval = { request: { ...requestPayload }, action_id: approval.action_id || "", version: approval.version || 0 };
-    addApprovalChatMessage(result.assistant_text, approval, label);
-    return;
-  }
-  addChatMessage("assistant", result.assistant_text, label);
-}
-
-function resolveApprovalActions(label) {
-  document.querySelectorAll("#chat-thread .approval-box").forEach((box) => {
-    const actions = box.querySelector(".approval-actions");
-    if (actions) {
-      actions.innerHTML = `<span class="approval-resolution">${escapeHtml(label)}</span>`;
-    }
-  });
-  document.querySelectorAll("#chat-thread .approval-message").forEach((message) => {
-    message.dataset.approvalResolved = label.toLowerCase();
-  });
-}
-
-function pruneDuplicateApprovalMessages() {
-  const messages = Array.from(document.querySelectorAll("#chat-thread .chat-message.assistant"));
-  let keptApprovalMessage = false;
-  for (const message of messages) {
-    const text = message.textContent || "";
-    const isApprovalWait = text.includes("This run is waiting for human approval before execution.");
-    if (!isApprovalWait) continue;
-    if (message.classList.contains("approval-message") && !keptApprovalMessage) {
-      keptApprovalMessage = true;
-      continue;
-    }
-    message.remove();
-  }
-}
-
 function clearPendingResult() {
   const region = document.getElementById("result-region");
   if (!region) return;
@@ -1480,19 +1360,8 @@ function finalizeActionResult(result, requestPayload, bubble, selectedAgent, str
   const response = runtimeView(result.response);
   const final = response.output?.final || {};
   const status = response.output?.status;
-  const approval = response.output?.governance?.approval || response.output?.approval || final.approval || {};
   if (status === "waiting_for_approval") {
     if (bubble) bubble.node.remove();
-    pendingApproval = {
-      request: { ...requestPayload },
-      action_id: approval.action_id || "",
-      version: approval.version || 0,
-    };
-    addApprovalChatMessage(
-      result.assistant_text,
-      approval,
-      agentLabel(result.agent || "general_agent"),
-    );
   } else if (bubble) {
     // Tokens emitted inside an action workflow may be an intermediate artifact
     // (for example, only the generated article body). Once the workflow ends,
@@ -1761,19 +1630,6 @@ function bindGovernanceRegistry() {
   updateSearch();
 }
 
-function agentFromRequestPayload(payload) {
-  return payload?.context?.agent || payload?.agent || getSelectedAgentName();
-}
-
-function buildApprovalChatPayload(action) {
-  return {
-    action_id: pendingApproval?.action_id || "",
-    decision: action === "approve" ? "approved" : "rejected",
-    expected_version: pendingApproval?.version || 0,
-    idempotency_key: window.crypto?.randomUUID?.() || `approval-${Date.now()}`,
-  };
-}
-
 async function runUnifiedChatTurn(message, selectedAgent) {
   const isNewConversation = !currentConversationId;
   const clientMessageId = window.crypto?.randomUUID?.() || `chat-${Date.now()}`;
@@ -1791,13 +1647,8 @@ async function runUnifiedChatTurn(message, selectedAgent) {
       onAccepted: (accepted) => {
         if (!chatSessionGuard.isCurrent(requestToken)) return;
         currentConversationId = accepted.conversation_id || currentConversationId;
-        if (bubble && !streamed) bubble.p.textContent = "Thinking…";
-        renderConversationExecution({
-          status: "running",
-          outcome: "processing",
-          reason: "Thinking…",
-          retryable: false,
-        });
+        if (bubble && !streamed) bubble.p.textContent = "正在处理";
+        void rehydrateConversationTimeline(currentConversationId);
       },
       onToken: (delta) => {
         if (!chatSessionGuard.isCurrent(requestToken)) return;
@@ -1809,6 +1660,13 @@ async function runUnifiedChatTurn(message, selectedAgent) {
         if (!chatSessionGuard.isCurrent(requestToken)) return;
         errored = msg;
         errorConversationId = details?.conversation_id || null;
+        const conversationId = errorConversationId || currentConversationId;
+        if (conversationId) void rehydrateConversationTimeline(conversationId);
+      },
+      onFinal: (data) => {
+        if (!chatSessionGuard.isCurrent(requestToken)) return;
+        const conversationId = data?.conversation_id || currentConversationId;
+        if (conversationId) void rehydrateConversationTimeline(conversationId);
       },
     });
     if (!chatSessionGuard.isCurrent(requestToken)) return;
@@ -1832,7 +1690,7 @@ async function runUnifiedChatTurn(message, selectedAgent) {
     if (isNewConversation) await loadConversations(selectedAgent);
   } catch (error) {
     if (error.name === "AbortError" || !chatSessionGuard.isCurrent(requestToken)) return;
-    if (bubble) bubble.p.textContent = error.message;
+    appendConnectionNotice("连接已中断，正在从已保存的会话恢复。");
     if (errorConversationId) {
       currentConversationId = errorConversationId;
       await loadConversations(selectedAgent);
@@ -1843,9 +1701,7 @@ async function runUnifiedChatTurn(message, selectedAgent) {
   } finally {
     if (chatSessionGuard.isCurrent(requestToken)) {
       if (currentConversationId) {
-        await loadConversationTimeline(currentConversationId, {
-          preserveWhileLoading: true,
-        });
+        await rehydrateConversationTimeline(currentConversationId);
       } else {
         await loadConversationTimelineForClientMessage(clientMessageId);
       }
@@ -1866,6 +1722,7 @@ async function loadConversationTimelineForClientMessage(clientMessageId) {
     renderConversationHistory();
     return true;
   } catch {
+    appendConnectionNotice("连接已中断，暂时无法恢复会话。");
     return false;
   }
 }
@@ -1901,7 +1758,10 @@ function bindChatForm() {
     try {
       await runUnifiedChatTurn(message, selectedAgent);
     } finally {
-      setChatBusy(false);
+      setChatBusy(Boolean(
+        currentConversationTimeline &&
+        window.AgentKitChatTimeline.hasActiveAttempt(currentConversationTimeline)
+      ));
     }
   };
   chatForm.addEventListener("submit", (event) => {
@@ -2000,6 +1860,8 @@ function bindConversationHistory() {
     const item = event.target.closest("[data-conversation-id]");
     if (!item) return;
     currentConversationId = item.dataset.conversationId || null;
+    currentConversationTimeline = null;
+    setChatBusy(false);
     setTraceDrawerOpen(false);
     clearPendingResult();
     setExecutionState("历史会话");
@@ -2029,9 +1891,6 @@ function bindConversationHistory() {
       return;
     }
     await deleteConversation(pendingDeleteConversationId);
-  });
-  document.querySelector("[data-conversation-retry]")?.addEventListener("click", () => {
-    if (currentConversationId) retryConversation(currentConversationId);
   });
   deleteDialog?.addEventListener("cancel", (event) => {
     if (deleteDialog.dataset.busy === "true") {
@@ -2098,149 +1957,6 @@ function bindTraceDrawer() {
   });
 }
 
-async function approvePendingTask() {
-  if (!pendingApproval) return;
-  const requestToken = chatSessionGuard.begin(currentConversationId);
-  const originalRequest = pendingApproval.request;
-  const agentName = agentFromRequestPayload(originalRequest);
-  const agentLabel = getSelectedAgentLabel();
-  const buttons = document.querySelectorAll("[data-approve-pending], [data-reject-pending]");
-  buttons.forEach((button) => {
-    button.disabled = true;
-  });
-  setExecutionState("Approved, executing", 3);
-  setAgentStatus(agentName, "running");
-  const approvedCommand = buildApprovalChatPayload("approve");
-  const bubble = addLiveAssistantMessage(agentLabel);
-  let streamed = "";
-  let errored = null;
-  let succeeded = false;
-  try {
-    const result = await streamSse(`/api/conversation-actions/${encodeURIComponent(approvedCommand.action_id)}/decision/stream`, {
-      decision: approvedCommand.decision,
-      expected_version: approvedCommand.expected_version,
-      idempotency_key: approvedCommand.idempotency_key,
-    }, {
-      signal: requestToken.signal,
-      onToken: (delta) => {
-        if (!chatSessionGuard.isCurrent(requestToken)) return;
-        streamed += delta;
-        if (bubble) bubble.p.textContent = streamed;
-        scrollChatToBottom();
-      },
-      onError: (msg) => {
-        if (!chatSessionGuard.isCurrent(requestToken)) return;
-        errored = msg;
-      },
-    });
-    if (!chatSessionGuard.isCurrent(requestToken)) return;
-    if (errored && !result) throw new Error(errored);
-    const status = runtimeView(result.response).output?.status;
-    setExecutionState(status === "waiting_for_approval" ? "Waiting for approval" : "Completed", status === "waiting_for_approval" ? 2 : 5, status !== "waiting_for_approval");
-    setAgentStatus(agentName, status === "waiting_for_approval" ? "waiting" : "completed");
-    resolveApprovalActions("Approved");
-    pruneDuplicateApprovalMessages();
-    pendingApproval = null;
-    clearPendingResult();
-    finalizeAssistantBubble(bubble, result.assistant_text || streamed || "");
-    renderResult(result, originalRequest);
-    succeeded = true;
-  } catch (error) {
-    if (error.name === "AbortError" || !chatSessionGuard.isCurrent(requestToken)) return;
-    setExecutionState("Failed");
-    setAgentStatus(agentName, "failed");
-    updateTraceFromView({ status: "failed" });
-    // Show the message (incl. the truncation fallback) in the chat bubble
-    // rather than a jarring alert popup.
-    if (bubble) finalizeAssistantBubble(bubble, error.message);
-    else alert(error.message);
-  } finally {
-    if (!succeeded) {
-      buttons.forEach((button) => {
-        button.disabled = false;
-      });
-    }
-  }
-}
-
-async function rejectPendingTask() {
-  if (!pendingApproval) return;
-  const requestToken = chatSessionGuard.begin(currentConversationId);
-  const originalRequest = pendingApproval.request;
-  const agentName = agentFromRequestPayload(originalRequest);
-  const agentLabel = getSelectedAgentLabel();
-  const buttons = document.querySelectorAll("[data-approve-pending], [data-reject-pending]");
-  buttons.forEach((button) => {
-    button.disabled = true;
-  });
-  setExecutionState("Rejected", 2);
-  setAgentStatus(agentName, "rejected");
-  const rejectedCommand = buildApprovalChatPayload("reject");
-  const bubble = addLiveAssistantMessage(agentLabel);
-  let streamed = "";
-  let errored = null;
-  let succeeded = false;
-  try {
-    const result = await streamSse(`/api/conversation-actions/${encodeURIComponent(rejectedCommand.action_id)}/decision/stream`, {
-      decision: rejectedCommand.decision,
-      expected_version: rejectedCommand.expected_version,
-      idempotency_key: rejectedCommand.idempotency_key,
-    }, {
-      signal: requestToken.signal,
-      onToken: (delta) => {
-        if (!chatSessionGuard.isCurrent(requestToken)) return;
-        streamed += delta;
-        if (bubble) bubble.p.textContent = streamed;
-        scrollChatToBottom();
-      },
-      onError: (msg) => {
-        if (!chatSessionGuard.isCurrent(requestToken)) return;
-        errored = msg;
-      },
-    });
-    if (!chatSessionGuard.isCurrent(requestToken)) return;
-    if (errored && !result) throw new Error(errored);
-    setExecutionState("Rejected", 2);
-    resolveApprovalActions("Rejected");
-    pruneDuplicateApprovalMessages();
-    pendingApproval = null;
-    clearPendingResult();
-    // Rejected runs don't execute, so nothing streams -> show the rejection text.
-    finalizeAssistantBubble(bubble, streamed || result.assistant_text || "");
-    renderResult(result, originalRequest);
-    succeeded = true;
-  } catch (error) {
-    if (error.name === "AbortError" || !chatSessionGuard.isCurrent(requestToken)) return;
-    setExecutionState("Failed");
-    updateTraceFromView({ status: "failed" });
-    if (bubble) finalizeAssistantBubble(bubble, error.message);
-    else alert(error.message);
-  } finally {
-    if (!succeeded) {
-      buttons.forEach((button) => {
-        button.disabled = false;
-      });
-    }
-  }
-}
-
-function bindApprovalActions() {
-  document.addEventListener("click", (event) => {
-    const approveButton = event.target.closest("[data-approve-pending]");
-    if (approveButton) {
-      event.preventDefault();
-      approvePendingTask();
-      return;
-    }
-
-    const rejectButton = event.target.closest("[data-reject-pending]");
-    if (rejectButton) {
-      event.preventDefault();
-      rejectPendingTask();
-    }
-  });
-}
-
 document.addEventListener("DOMContentLoaded", () => {
   bindPrimaryNavigation();
   bindAgentSelector();
@@ -2251,6 +1967,5 @@ document.addEventListener("DOMContentLoaded", () => {
   bindMentionAutocomplete();
   bindConversationHistory();
   bindTraceDrawer();
-  bindApprovalActions();
   bindTabs();
 });

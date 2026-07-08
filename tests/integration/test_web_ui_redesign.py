@@ -86,7 +86,9 @@ def test_mobile_navigation_has_a_focused_controller(client) -> None:
 def test_chat_surface_anchors_composer_after_flexible_message_area(client) -> None:
     css = client.get("/static/css/pages.css").get_data(as_text=True)
 
-    assert "grid-template-rows: minmax(0, 1fr) auto auto" in css
+    assert "grid-template-rows: minmax(0, 1fr) auto" in css
+    assert ".ak-chat-composer" in css
+    assert "position: sticky" in css
     assert "grid-template-rows: auto auto minmax(0, 1fr) auto" not in css
     assert "grid-template-rows: auto auto minmax(18rem, 50dvh) auto" not in css
 
@@ -191,11 +193,8 @@ def test_chat_has_conversation_recovery_and_two_stage_delete_controls(client) ->
     js = client.get("/static/js/app.js").get_data(as_text=True)
     css = client.get("/static/css/pages.css").get_data(as_text=True)
 
-    assert "data-conversation-execution" in html
-    assert "data-conversation-execution-title" in html
-    assert "data-conversation-execution-reason" in html
-    assert "data-conversation-retry" in html
-    assert "data-conversation-execution-copy" in html
+    assert "data-chat-timeline" in html
+    assert "data-conversation-execution" not in html
     assert "data-conversation-execution-trace" not in html
     assert "data-conversation-state-delete" not in html
     assert "data-conversation-delete-stage" in html
@@ -203,22 +202,8 @@ def test_chat_has_conversation_recovery_and_two_stage_delete_controls(client) ->
     assert "/api/conversations/${encodeURIComponent(conversationId)}/timeline" in js
     assert "/retry/stream" not in js
     assert "handlers.onAccepted?.(parsed.data)" in js
-    assert 'bubble.p.textContent = "Thinking…"' in js
-    assert 'outcome: "processing"' in js
-    assert 'operation: "retry"' in js
-    assert "正在重新运行上一次请求，请稍候。" in js
-    assert "重新运行完成" not in js
-    assert "重新运行未完成" not in js
-    assert "card.dataset.outcome = outcome" in js
-    assert 'const retryableFailure = outcome === "not_completed" &&' in js
-    assert "Boolean(execution?.retryable)" in js
-    assert 'const visible = outcome === "processing" || retryableFailure' in js
-    assert "copy.hidden = retryableFailure" in js
-    assert 'querySelector("[data-conversation-execution-trace]")' not in js
-    assert 'querySelector("[data-conversation-state-delete]")' not in js
-    assert 'showConversationNotice("正在重新执行原始请求…"' not in js
-    assert "任务状态已更新" not in js
-    assert 'setChatBusy(conversationOutcome(currentConversationExecution) === "processing")' in js
+    assert "AgentKitChatTimeline.render" in js
+    assert "AgentKitChatTimeline.hasActiveAttempt" in js
     assert "/terminate-and-delete" in js
     assert "requires_second_delete_confirmation" in js
     assert "任务正在运行，请等待完成后再删除" in js
@@ -229,8 +214,7 @@ def test_chat_has_conversation_recovery_and_two_stage_delete_controls(client) ->
     assert 'data-status="cancelling"' not in css
     assert 'data-status="deletion_pending"' not in css
     assert "No messages were saved for this conversation" not in js
-    assert ".ak-conversation-execution" in css
-    assert ".ak-conversation-execution-actions" in css
+    assert ".ak-conversation-execution" not in css
     assert "data-conversation-delete-dialog" in html
     assert "remove.dataset.deleteConversationId" in js
 
@@ -319,13 +303,74 @@ def test_xhs_approval_preview_renders_native_pagination_source_text(client) -> N
 
 
 def test_history_messages_render_normalized_content_not_business_json(client) -> None:
-    script = client.get("/static/js/app.js").get_data(as_text=True)
-    start = script.index("function applyConversationTimeline(")
-    end = script.index("async function loadConversationTimeline(", start)
-    body = script[start:end]
-    assert "msg.content" in body
-    assert "JSON.stringify(msg" not in body
-    assert "addChatMessage(" in body
+    script = client.get("/static/js/chat_timeline.js").get_data(as_text=True)
+    assert "message.content" in script
+    assert "JSON.stringify(message" not in script
+    assert "turn.user_message" in script
+
+
+def test_timeline_renderer_loads_before_app_and_exposes_pure_helpers(client) -> None:
+    login(client)
+    html = client.get("/chat").get_data(as_text=True)
+    source = client.get("/static/js/chat_timeline.js").get_data(as_text=True)
+
+    assert html.index("chat_timeline.js") < html.index("app.js")
+    assert "window.AgentKitChatTimeline = Object.freeze" in source
+    for helper in (
+        "thinkingLabel",
+        "hasActiveAttempt",
+        "latestRetryableAttempt",
+        "render",
+    ):
+        assert f"{helper}," in source
+
+
+def test_timeline_renderer_owns_attempt_revision_and_action_disclosures(client) -> None:
+    source = client.get("/static/js/chat_timeline.js").get_data(as_text=True)
+
+    assert "turn.user_message" in source
+    assert "attempt.collapsed !== false" in source
+    assert 'message.kind === "assistant_revision"' in source
+    assert "olderRevisions" in source
+    assert 'action.status === "pending"' in source
+    assert 'action.decision === "approved"' in source
+    assert "handlers.onDecision" in source
+    assert "handlers.onRetry" in source
+
+
+def test_thinking_animation_is_stage_aware_and_reduced_motion_safe(client) -> None:
+    source = client.get("/static/js/chat_timeline.js").get_data(as_text=True)
+    css = client.get("/static/css/pages.css").get_data(as_text=True)
+
+    for stage in (
+        "understanding_request",
+        "routing_agent",
+        "executing_agent",
+        "preparing_approval",
+        "awaiting_user_decision",
+        "publishing",
+        "finalizing",
+    ):
+        assert stage in source
+    assert "正在处理" in source
+    assert ".ak-thinking-bars" in css
+    assert "transform" in css
+    assert "opacity" in css
+    assert "prefers-reduced-motion: reduce" in css
+
+
+def test_chat_hydrates_timeline_and_never_reposts_after_stream_failure(client) -> None:
+    source = client.get("/static/js/app.js").get_data(as_text=True)
+    function = source.split("async function runUnifiedChatTurn", 1)[1].split(
+        "function bindChatForm", 1
+    )[0]
+
+    assert "/timeline" in source
+    assert "client_message_id" in function
+    assert "AgentKitChatTimeline.render" in source
+    assert "postChat(requestPayload" not in function
+    assert "postChat(" not in function
+    assert "pendingApproval" not in source
 
 
 def test_agent_network_has_accessible_canvas_filters_and_fallback(client) -> None:
@@ -440,13 +485,14 @@ def test_shared_components_define_loading_empty_error_and_permission_states(clie
 
 def test_browser_approval_payload_uses_only_durable_action_command(client) -> None:
     source = client.get("/static/js/app.js").get_data(as_text=True)
-    function = source.split("function buildApprovalChatPayload", 1)[1].split(
-        "async function runUnifiedChatTurn", 1
+    function = source.split("async function decideTimelineAction", 1)[1].split(
+        "async function retryTimelineAttempt", 1
     )[0]
 
-    assert "action_id" in function
+    assert "actionId" in function
     assert "expected_version" in function
     assert "idempotency_key" in function
+    assert "if (!conversationId || !command?.actionId) return;" in function
     assert "thread_id" not in function
     assert "skills" not in function
 

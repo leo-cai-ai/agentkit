@@ -95,6 +95,7 @@
           aria-live="polite"
           aria-relevant="additions"
           tabindex="0"
+          data-chat-timeline
         >
           <div class="chat-message assistant">
             <span>General Agent</span>
@@ -103,25 +104,6 @@
             </div>
           </div>
         </div>
-
-        <section
-          class="ak-conversation-execution"
-          data-conversation-execution
-          role="status"
-          aria-live="polite"
-          hidden
-        >
-          <div data-conversation-execution-copy>
-            <span class="ak-eyebrow">任务状态</span>
-            <h3 data-conversation-execution-title></h3>
-            <p data-conversation-execution-reason></p>
-          </div>
-          <div class="ak-conversation-execution-actions">
-            <button class="secondary" type="button" data-conversation-retry hidden>
-              重新执行
-            </button>
-          </div>
-        </section>
 
         <form id="chat-form" class="chat-input-row ak-chat-composer" aria-label="消息输入框">
           <div class="ak-mention-shell">
