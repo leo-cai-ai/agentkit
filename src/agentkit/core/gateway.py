@@ -208,6 +208,38 @@ class AgentGateway:
         return self._context_invoker
 
 
+def _build_serde() -> Any:
+    """构建显式声明自定义类型的 JsonPlusSerializer，避免 pickle 回退与告警。
+
+    将 agentkit 自定义数据类注册到 ``allowed_msgpack_modules`` 后，
+    LangGraph Checkpoint 序列化/反序列化使用高效的 msgpack 路径，
+    不再产生 *Deserializing unregistered type* 告警，也消除了 pickle
+    回退带来的额外开销。
+    """
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+    return JsonPlusSerializer(
+        allowed_msgpack_modules=[
+            ("agentkit.core.contracts", "AgentProfile"),
+            ("agentkit.core.contracts", "ArtifactContextPolicy"),
+            ("agentkit.core.contracts", "ContextPolicy"),
+            ("agentkit.core.contracts", "IntentFrame"),
+            ("agentkit.core.contracts", "MemoryContextPolicy"),
+            ("agentkit.core.contracts", "RagContextPolicy"),
+            ("agentkit.core.contracts", "TaskRequest"),
+            ("agentkit.core.execution.models", "AgentExecutionPolicy"),
+            ("agentkit.core.execution.models", "AutonomyBudget"),
+            ("agentkit.core.execution.models", "CapabilityResolution"),
+            ("agentkit.core.execution.models", "ComplexityAssessment"),
+            ("agentkit.core.execution.models", "ExecutionStrategyName"),
+            ("agentkit.core.execution.models", "OrchestrationMode"),
+            ("agentkit.core.execution.models", "StrategyResult"),
+            ("agentkit.core.execution.models", "ToolPolicy"),
+            ("agentkit.core.execution.selector", "StrategySelection"),
+        ],
+    )
+
+
 def build_checkpointer(
     *,
     mode: str,
@@ -216,22 +248,24 @@ def build_checkpointer(
 ) -> Any:
     """构建 Memory、SQLite 或 PostgreSQL Checkpointer。"""
 
+    serde = _build_serde()
+
     if mode == "memory":
         from langgraph.checkpoint.memory import InMemorySaver
 
-        return InMemorySaver()
+        return InMemorySaver(serde=serde)
     if mode == "sqlite":
         if sqlite_path is None:
             from langgraph.checkpoint.memory import InMemorySaver
 
-            return InMemorySaver()
+            return InMemorySaver(serde=serde)
         import sqlite3
 
         from langgraph.checkpoint.sqlite import SqliteSaver
 
         sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(str(sqlite_path), check_same_thread=False)
-        sqlite_saver = SqliteSaver(connection)
+        sqlite_saver = SqliteSaver(connection, serde=serde)
         sqlite_saver.setup()
         return sqlite_saver
     if mode == "postgres":
@@ -249,7 +283,7 @@ def build_checkpointer(
             prepare_threshold=0,
             row_factory=dict_row,
         )
-        postgres_saver = PostgresSaver(connection)
+        postgres_saver = PostgresSaver(connection, serde=serde)
         postgres_saver.setup()
         return postgres_saver
     if mode == "none":

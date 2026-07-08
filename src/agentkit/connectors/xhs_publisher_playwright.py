@@ -543,6 +543,53 @@ class XhsPublishAdapter:
             f"expected_length={len(expected)} actual_length={len(actual)}; {diagnostics}"
         )
 
+    def _fill_prosemirror_editor(
+        self,
+        page: Any,
+        locator: Any,
+        *,
+        text: str,
+        field_name: str,
+    ) -> None:
+        """Fill a ProseMirror/tiptap contenteditable editor via JS execCommand.
+
+        ProseMirror intercepts input events and manages its own DOM state, so
+        Playwright's locator.fill() is unreliable — the editor may split text
+        across child nodes or fail to capture it entirely.  Using
+        ``document.execCommand("insertText")`` triggers the correct input
+        handling path inside ProseMirror so the full text is accepted.
+        Verification reads back via ``textContent`` from page-level JS to
+        ensure all child nodes are included.
+        """
+        locator.click()
+        page.evaluate(
+            """(text) => {
+                const sel = window.getSelection();
+                sel.removeAllRanges();
+                const el = document.activeElement;
+                if (!el) return;
+                const range = document.createRange();
+                range.selectNodeContents(el);
+                sel.addRange(range);
+                document.execCommand("delete");
+                document.execCommand("insertText", false, text);
+            }""",
+            text,
+        )
+        actual = page.evaluate(
+            """() => {
+                const el = document.querySelector("div.tiptap.ProseMirror");
+                return el ? (el.textContent || el.innerText || "") : "";
+            }"""
+        )
+        if self._normalized_field_value(actual) == self._normalized_field_value(text):
+            return
+        diagnostics = self._capture_diagnostics(page, field_name=f"{field_name}-value")
+        raise BrowserPageChanged(
+            f"Xiaohongshu {field_name} value mismatch; "
+            f"expected_length={len(text)} actual_length={len(actual)}; {diagnostics}"
+        )
+
     def _stabilize_publish_surface(self, page: Any) -> None:
         keyboard = getattr(page, "keyboard", None)
         press = getattr(keyboard, "press", None)
@@ -598,10 +645,10 @@ class XhsPublishAdapter:
             timeout_ms=remaining_ms(),
             field_name="text-image editor",
         )
-        self._fill_and_verify(
+        self._fill_prosemirror_editor(
             page=page,
             locator=editor,
-            expected=card_text,
+            text=card_text,
             field_name="text-image content",
         )
         _log.info("Xiaohongshu text-image content populated: chars=%d", len(card_text))
