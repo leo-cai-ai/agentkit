@@ -7,9 +7,9 @@ import pytest
 from agentkit.core.artifacts import InMemoryArtifactStore
 from agentkit.core.audit import SQLiteAuditLog
 from agentkit.core.context.errors import ContextHashMismatchError
-from agentkit.core.contracts import TaskRequest
+from agentkit.core.contracts import TaskRequest, ToolDefinition
 from agentkit.core.execution.direct import DirectStrategy
-from agentkit.core.execution.models import AutonomyBudget
+from agentkit.core.execution.models import AutonomyBudget, ToolRisk
 from agentkit.core.execution.registry import StrategyRegistry
 from agentkit.core.execution.selector import StrategySelector
 from agentkit.core.execution.workflow import WorkflowStrategy
@@ -120,6 +120,9 @@ def test_sqlite_checkpoint_inspection_distinguishes_pending_completed_and_missin
     pending = first.approval_checkpoint(waiting.thread_id)
     assert pending.status == "pending"
     assert pending.response is None
+    assert pending.checkpoint_id
+    assert pending.checkpoint_epoch > 0
+    assert pending.skills == ("refund.apply",)
 
     resumed = _durable_gateway(tmp_path, calls)
     completed_response = resumed.resume(
@@ -134,3 +137,94 @@ def test_sqlite_checkpoint_inspection_distinguishes_pending_completed_and_missin
     assert missing.status == "missing"
     assert missing.response is None
     assert calls == ["once"]
+
+
+def test_sqlite_double_approval_advances_checkpoint_without_running_phase_two_tool(
+    tmp_path,
+) -> None:
+    prepared: list[str] = []
+    published: list[str] = []
+    agents, skills, tools = AgentRegistry(), SkillRegistry(), ToolRegistry()
+    agents.register(_agent("customer_service", ["refund.apply"]))
+    tools.register(
+        ToolDefinition(
+            name="refund.submit",
+            domain="test",
+            description="submit refund",
+            risk=ToolRisk.SIDE_EFFECT,
+            handler=lambda args: published.append(args["marker"]) or {"published": True},
+        )
+    )
+    skills.register(
+        _skill(
+            "refund.apply",
+            lambda ctx, args: prepared.append(args["marker"])
+            or {
+                "summary": "ready to publish",
+                "deferred_action": {
+                    "tool_name": "refund.submit",
+                    "arguments": {"marker": "phase-2"},
+                    "preview": {"content": "review phase two"},
+                },
+            },
+            workflow=True,
+            side_effect=True,
+        )
+    )
+    gateway = AgentGateway(
+        tenant_id="t1",
+        tenant_selector="company_alpha",
+        tenant_config={},
+        agents=agents,
+        skills=skills,
+        tools=tools,
+        audit=SQLiteAuditLog(tmp_path / "audit.sqlite"),
+        context_invoker=SimpleNamespace(manifest_hash="sha256:test"),
+        checkpointer=build_checkpointer(mode="sqlite", sqlite_path=tmp_path / "checkpoints.sqlite"),
+        selector=StrategySelector(
+            skills=skills,
+            global_budget=AutonomyBudget(20, 20, 10, 10, 2, 50000, 600),
+        ),
+        strategies=StrategyRegistry([DirectStrategy(), WorkflowStrategy()]),
+        intent_resolver=_intent,
+        artifact_store_factory=lambda run_id: InMemoryArtifactStore(),
+    )
+    waiting = gateway.handle(
+        TaskRequest(
+            user_id="u1",
+            roles=[],
+            text="refund",
+            context={
+                "agent": "customer_service",
+                "skill": "refund.apply",
+                "skill_args": {"marker": "phase-1"},
+            },
+        )
+    )
+    first = gateway.approval_checkpoint(waiting.thread_id)
+
+    waiting_again = gateway.resume(
+        waiting.thread_id,
+        approved_skills=["refund.apply"],
+    )
+    second = gateway.approval_checkpoint(waiting.thread_id)
+
+    assert waiting_again.status == "waiting_for_approval"
+    assert first.checkpoint_id and second.checkpoint_id
+    assert second.checkpoint_id != first.checkpoint_id
+    assert second.checkpoint_epoch > first.checkpoint_epoch
+    assert second.preview == {"content": "review phase two"}
+    assert prepared == ["phase-1"]
+    assert published == []
+
+    completed = gateway.resume(
+        waiting.thread_id,
+        approved_skills=["refund.apply"],
+    )
+
+    assert completed.status == "completed"
+    assert prepared == ["phase-1"]
+    assert published == ["phase-2"]
+    with pytest.raises(RuntimeError, match="未等待审批"):
+        gateway.resume(waiting.thread_id, approved_skills=["refund.apply"])
+    assert published == ["phase-2"]

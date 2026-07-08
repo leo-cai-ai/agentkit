@@ -36,7 +36,7 @@ MESSAGE_PROJECTION_COLUMNS = {
 def test_sqlite_v4_creates_conversation_projection_schema(tmp_path) -> None:
     db_path = tmp_path / "runtime.sqlite"
 
-    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4, 5]
+    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4, 5, 6]
     with sqlite3.connect(db_path) as conn:
         tables = {
             row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -61,7 +61,7 @@ def test_sqlite_v4_upgrades_existing_v3_conversation_schema(tmp_path) -> None:
     db_path = tmp_path / "runtime.sqlite"
     _create_existing_v3_conversation_schema(db_path)
 
-    assert run_sqlite_migrations(db_path) == [4, 5]
+    assert run_sqlite_migrations(db_path) == [4, 5, 6]
     with sqlite3.connect(db_path) as conn:
         tables = {
             row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -145,14 +145,14 @@ def test_sqlite_migrations_take_over_store_direct_init_schema(tmp_path) -> None:
     db_path = tmp_path / "direct-then-migrated.sqlite"
     ConversationStore(db_path)
 
-    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4, 5]
+    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4, 5, 6]
     assert run_sqlite_migrations(db_path) == []
 
 
 def test_sqlite_migrations_bootstrap_and_record_version(tmp_path) -> None:
     db_path = tmp_path / "runtime.sqlite"
 
-    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4, 5]
+    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4, 5, 6]
     assert run_sqlite_migrations(db_path) == []
 
     with sqlite3.connect(db_path) as conn:
@@ -183,7 +183,7 @@ def test_sqlite_migrations_bootstrap_and_record_version(tmp_path) -> None:
         "tool_idempotency_records",
         "workflow_artifacts",
     ]
-    assert versions == [(1,), (2,), (3,), (4,), (5,)]
+    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,)]
     with sqlite3.connect(db_path) as conn:
         run_columns = {row[1] for row in conn.execute("PRAGMA table_info(task_runs)").fetchall()}
     assert {"agent_id", "parent_run_id", "conversation_id"} <= run_columns
@@ -224,7 +224,7 @@ def test_sqlite_migrations_accept_existing_audit_schema(tmp_path) -> None:
             """
         )
 
-    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4, 5]
+    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4, 5, 6]
 
 
 def test_sqlite_migrations_record_applied_timestamp(tmp_path) -> None:
@@ -343,7 +343,7 @@ def test_sqlite_migrations_are_safe_during_concurrent_bootstrap(tmp_path) -> Non
 
     assert not any(caller.is_alive() for caller in callers)
     assert errors == []
-    assert sorted(results) == [[], [1, 2, 3, 4, 5]]
+    assert sorted(results) == [[], [1, 2, 3, 4, 5, 6]]
 
 
 def test_sqlite_migrations_close_connection(tmp_path, monkeypatch) -> None:
@@ -377,7 +377,7 @@ def test_sqlite_migrations_close_connection(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(migrations.sqlite3, "connect", tracking_connect)
 
-    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4, 5]
+    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4, 5, 6]
     assert len(connections) == 1
     assert connections[0].closed is True
 
@@ -394,6 +394,7 @@ def test_sqlite_audit_log_bootstraps_migrations(tmp_path) -> None:
             (3,),
             (4,),
             (5,),
+            (6,),
         ]
 
 
@@ -431,7 +432,7 @@ def test_sqlite_v2_adopts_legacy_artifacts_without_losing_valid_rows(tmp_path) -
             ),
         )
 
-    assert run_sqlite_migrations(db_path) == [2, 3, 4, 5]
+    assert run_sqlite_migrations(db_path) == [2, 3, 4, 5, 6]
 
     with sqlite3.connect(db_path) as conn:
         preserved = conn.execute(
@@ -487,7 +488,7 @@ def test_sqlite_migrations_log_new_versions_once(tmp_path, caplog) -> None:
     db_path = tmp_path / "runtime.sqlite"
     caplog.set_level(logging.INFO, logger="agentkit.core.migrations")
 
-    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4, 5]
+    assert run_sqlite_migrations(db_path) == [1, 2, 3, 4, 5, 6]
 
     migration_records = [
         record for record in caplog.records if record.getMessage() == "schema_migrated"
@@ -498,6 +499,7 @@ def test_sqlite_migrations_log_new_versions_once(tmp_path, caplog) -> None:
         ("sqlite", 3),
         ("sqlite", 4),
         ("sqlite", 5),
+        ("sqlite", 6),
     ]
 
     caplog.clear()
@@ -509,7 +511,7 @@ def test_sqlite_v5_backfills_legacy_messages_without_rewriting_content(tmp_path)
     db_path, conversation_id = _legacy_conversation_database(tmp_path)
     before = _read_message_contents(db_path)
 
-    assert run_sqlite_migrations(db_path) == [5]
+    assert run_sqlite_migrations(db_path) == [5, 6]
 
     assert _read_message_contents(db_path) == before
     turns = _read_rows(db_path, "conversation_turns")
@@ -583,7 +585,7 @@ def test_sqlite_v5_backfills_empty_conversation_from_root_task_run(tmp_path) -> 
             ],
         )
 
-    assert run_sqlite_migrations(db_path) == [5]
+    assert run_sqlite_migrations(db_path) == [5, 6]
 
     messages = _read_rows(db_path, "messages")
     turns = _read_rows(db_path, "conversation_turns")
@@ -601,7 +603,7 @@ def test_sqlite_v5_backfills_empty_conversation_from_root_task_run(tmp_path) -> 
 
 def test_sqlite_v5_backfill_is_idempotent(tmp_path) -> None:
     db_path, _ = _legacy_conversation_database(tmp_path)
-    assert run_sqlite_migrations(db_path) == [5]
+    assert run_sqlite_migrations(db_path) == [5, 6]
     before = {
         table: _read_rows(db_path, table)
         for table in ("messages", "conversation_turns", "conversation_attempts")
@@ -625,7 +627,7 @@ def test_sqlite_v5_duplicate_run_across_pairs_keeps_every_turn_projected(tmp_pat
     ]
     before = [(row["content"], row["run_id"]) for row in _read_rows(db_path, "messages")]
 
-    assert run_sqlite_migrations(db_path) == [5]
+    assert run_sqlite_migrations(db_path) == [5, 6]
 
     attempts = _read_rows(db_path, "conversation_attempts")
     assert [(row["run_id"], row["status"]) for row in attempts] == [
@@ -683,7 +685,7 @@ def test_sqlite_v5_existing_attempt_owns_run_and_legacy_pair_uses_synthetic(
     )
     _mark_as_v4_database(db_path)
 
-    assert run_sqlite_migrations(db_path) == [5]
+    assert run_sqlite_migrations(db_path) == [5, 6]
 
     legacy_attempts = [
         row
@@ -724,7 +726,7 @@ def test_postgres_v5_runner_executes_contract_under_advisory_lock(monkeypatch) -
     connection = _FakePostgresMigrationConnection(applied_versions=(1, 2, 3, 4))
     monkeypatch.setattr(pg, "connection", lambda _settings: nullcontext(connection))
 
-    assert migrations.run_postgres_migrations(object()) == [5]
+    assert migrations.run_postgres_migrations(object()) == [5, 6]
 
     assert connection.calls[0] == (
         "SELECT pg_advisory_xact_lock(%s)",
@@ -734,17 +736,40 @@ def test_postgres_v5_runner_executes_contract_under_advisory_lock(monkeypatch) -
     assert [sql for sql in executed_sql if sql in migrations._POSTGRES_V5_STATEMENTS] == list(
         migrations._POSTGRES_V5_STATEMENTS
     )
-    assert connection.calls[-1][1][0] == 5
+    assert connection.calls[-1][1][0] == 6
 
 
 def test_postgres_v5_runner_skips_contract_when_already_applied(monkeypatch) -> None:
     connection = _FakePostgresMigrationConnection(applied_versions=(1, 2, 3, 4, 5))
     monkeypatch.setattr(pg, "connection", lambda _settings: nullcontext(connection))
 
-    assert migrations.run_postgres_migrations(object()) == []
+    assert migrations.run_postgres_migrations(object()) == [6]
 
     executed_sql = [sql for sql, _params in connection.calls]
     assert not any(sql in migrations._POSTGRES_V5_STATEMENTS for sql in executed_sql)
+
+
+def test_sqlite_v6_adds_checkpoint_identity_to_existing_action_table(tmp_path) -> None:
+    db_path = tmp_path / "existing-v5.sqlite"
+    run_sqlite_migrations(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("ALTER TABLE conversation_actions DROP COLUMN checkpoint_id")
+        conn.execute("ALTER TABLE conversation_actions DROP COLUMN checkpoint_epoch")
+        conn.execute("DELETE FROM schema_migrations WHERE version = 6")
+
+    assert run_sqlite_migrations(db_path) == [6]
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(conversation_actions)")}
+    assert {"checkpoint_id", "checkpoint_epoch"} <= columns
+
+
+def test_postgres_v6_adds_checkpoint_identity_idempotently() -> None:
+    statements = migrations._POSTGRES_MIGRATIONS[6]
+    normalized = [" ".join(statement.lower().split()) for statement in statements]
+
+    assert any("add column if not exists checkpoint_id" in sql for sql in normalized)
+    assert any("add column if not exists checkpoint_epoch" in sql for sql in normalized)
 
 
 def _legacy_conversation_database(tmp_path):

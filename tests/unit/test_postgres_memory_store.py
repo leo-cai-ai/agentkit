@@ -22,6 +22,8 @@ def test_postgres_v4_migration_uses_projection_contract() -> None:
     assert "CREATE TABLE IF NOT EXISTS conversation_turns" in sql
     assert "CREATE TABLE IF NOT EXISTS conversation_attempts" in sql
     assert "CREATE TABLE IF NOT EXISTS conversation_actions" in sql
+    assert "checkpoint_id TEXT NOT NULL DEFAULT ''" in sql
+    assert "checkpoint_epoch BIGINT NOT NULL DEFAULT 0" in sql
     assert "metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb" in sql
     assert "preview_json JSONB NOT NULL DEFAULT '{}'::jsonb" in sql
     assert "decision_context_json JSONB NOT NULL DEFAULT '{}'::jsonb" in sql
@@ -56,6 +58,10 @@ def test_postgres_store_initializes_latest_projection_schema(monkeypatch) -> Non
     assert "CREATE TABLE IF NOT EXISTS conversation_turns" in sql
     assert "CREATE TABLE IF NOT EXISTS conversation_attempts" in sql
     assert "CREATE TABLE IF NOT EXISTS conversation_actions" in sql
+    assert "checkpoint_id TEXT NOT NULL DEFAULT ''" in sql
+    assert "checkpoint_epoch BIGINT NOT NULL DEFAULT 0" in sql
+    assert "ADD COLUMN IF NOT EXISTS checkpoint_id" in sql
+    assert "ADD COLUMN IF NOT EXISTS checkpoint_epoch" in sql
     assert "ALTER TABLE messages ADD COLUMN IF NOT EXISTS metadata_json JSONB" in sql
     assert "UPDATE messages SET kind = 'user_input'" in sql
     assert "UPDATE messages SET updated_at = created_at" in sql

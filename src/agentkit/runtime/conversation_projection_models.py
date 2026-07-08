@@ -70,6 +70,8 @@ class ApprovalAction:
     status: ActionStatus
     version: int
     thread_id: str
+    checkpoint_id: str = ""
+    checkpoint_epoch: int = 0
     skills: tuple[str, ...] = ()
     preview: dict[str, Any] = field(default_factory=dict)
 

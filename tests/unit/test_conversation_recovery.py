@@ -61,7 +61,7 @@ class FakeRecoveryCoordinator:
             if self.checkpoint_exists
             else ApprovalCheckpointStatus.MISSING
         )
-        return ApprovalCheckpoint(status)
+        return ApprovalCheckpoint(status, checkpoint_id="checkpoint-1", checkpoint_epoch=1)
 
     def resume_action(self, action_id: str):
         action = self.store.get_action(action_id)
@@ -85,7 +85,11 @@ class LeaseRecoveryCoordinator:
 
     def approval_checkpoint(self, thread_id: str) -> ApprovalCheckpoint:
         del thread_id
-        return ApprovalCheckpoint(ApprovalCheckpointStatus.PENDING)
+        return ApprovalCheckpoint(
+            ApprovalCheckpointStatus.PENDING,
+            checkpoint_id="checkpoint-1",
+            checkpoint_epoch=1,
+        )
 
     def resume_action(self, action_id: str):
         claimed = self.store.claim_action_resume(
@@ -150,6 +154,8 @@ def recovery_fixture(
         skills=["xhs.growth.campaign"],
         preview={"title": "审核后版本", "content": "绝不能进入审计的正文"},
         preview_artifact_id=None,
+        checkpoint_id="checkpoint-1",
+        checkpoint_epoch=1,
     )
     if approved:
         action = store.decide_action(

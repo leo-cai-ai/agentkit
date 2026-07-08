@@ -463,6 +463,8 @@ class PgConversationStore(ConversationStore):
         skills: list[str],
         preview: dict[str, Any],
         preview_artifact_id: str | None,
+        checkpoint_id: str = "",
+        checkpoint_epoch: int = 0,
     ) -> tuple[int, ApprovalAction]:
         now = round(time.time(), 3)
         action_id = str(uuid.uuid4())
@@ -527,8 +529,9 @@ class PgConversationStore(ConversationStore):
                 """
                 INSERT INTO conversation_actions (
                     id, conversation_id, turn_id, attempt_id, status, thread_id,
-                    skills_json, preview_artifact_id, preview_json, created_at
-                ) VALUES (%s, %s, %s, %s, 'pending', %s, %s, %s, %s, %s)
+                    checkpoint_id, checkpoint_epoch, skills_json, preview_artifact_id,
+                    preview_json, created_at
+                ) VALUES (%s, %s, %s, %s, 'pending', %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     action_id,
@@ -536,6 +539,8 @@ class PgConversationStore(ConversationStore):
                     turn_id,
                     attempt_id,
                     thread_id,
+                    checkpoint_id,
+                    checkpoint_epoch,
                     _canonical_json(skills),
                     preview_artifact_id,
                     _canonical_json(preview),
@@ -560,6 +565,8 @@ class PgConversationStore(ConversationStore):
             status=ActionStatus.PENDING,
             version=1,
             thread_id=thread_id,
+            checkpoint_id=checkpoint_id,
+            checkpoint_epoch=checkpoint_epoch,
             skills=tuple(skills),
             preview=dict(preview),
         )
@@ -569,7 +576,8 @@ class PgConversationStore(ConversationStore):
             row = conn.execute(
                 """
                 SELECT id, conversation_id, turn_id, attempt_id, type, status,
-                       thread_id, skills_json, preview_artifact_id, preview_json,
+                       thread_id, checkpoint_id, checkpoint_epoch, skills_json,
+                       preview_artifact_id, preview_json,
                        decision, decided_by, decision_context_json, idempotency_key,
                        version, created_at, decided_at, completed_at
                 FROM conversation_actions WHERE id = %s
@@ -586,6 +594,8 @@ class PgConversationStore(ConversationStore):
             "type",
             "status",
             "thread_id",
+            "checkpoint_id",
+            "checkpoint_epoch",
             "skills_json",
             "preview_artifact_id",
             "preview_json",
@@ -1462,6 +1472,8 @@ class PgConversationStore(ConversationStore):
                     type TEXT NOT NULL DEFAULT 'approval',
                     status TEXT NOT NULL,
                     thread_id TEXT NOT NULL,
+                    checkpoint_id TEXT NOT NULL DEFAULT '',
+                    checkpoint_epoch BIGINT NOT NULL DEFAULT 0,
                     skills_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                     preview_artifact_id TEXT,
                     preview_json JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -1475,6 +1487,14 @@ class PgConversationStore(ConversationStore):
                     completed_at DOUBLE PRECISION
                 )
                 """
+            )
+            conn.execute(
+                "ALTER TABLE conversation_actions ADD COLUMN IF NOT EXISTS "
+                "checkpoint_id TEXT NOT NULL DEFAULT ''"
+            )
+            conn.execute(
+                "ALTER TABLE conversation_actions ADD COLUMN IF NOT EXISTS "
+                "checkpoint_epoch BIGINT NOT NULL DEFAULT 0"
             )
             projection_indexes = (
                 """

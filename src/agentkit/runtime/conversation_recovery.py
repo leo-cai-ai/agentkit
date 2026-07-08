@@ -261,6 +261,29 @@ class ConversationRecoveryService:
                 changed_ids.append(action_id)
                 continue
 
+            if checkpoint_status == "pending":
+                stored_checkpoint_id = str(action.get("checkpoint_id") or "")
+                current_checkpoint_id = str(checkpoint.checkpoint_id or "")
+                if not stored_checkpoint_id or not current_checkpoint_id:
+                    if self._store.transition_action_attempt(
+                        action_id,
+                        expected_action={str(action["status"])},
+                        action_status="invalidated",
+                        expected_attempt={status},
+                        attempt_status="interrupted",
+                        error_code="approval_checkpoint_identity_missing",
+                        error_summary="审批 Checkpoint 身份缺失",
+                    ):
+                        changed_ids.append(action_id)
+                    continue
+                if stored_checkpoint_id != current_checkpoint_id:
+                    try:
+                        self._coordinator.recover_advanced_checkpoint(action_id, checkpoint)
+                    except ConversationConflictError:
+                        continue
+                    changed_ids.append(action_id)
+                    continue
+
             if status in {"resuming", "running"} and decision in _DECIDED_ACTION_STATUSES:
                 try:
                     self._coordinator.resume_action(action_id)

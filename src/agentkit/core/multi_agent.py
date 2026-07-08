@@ -608,6 +608,13 @@ class MultiAgentCoordinator:
         if decision not in {"approved", "rejected"}:
             raise ConversationConflictError("approval action has no durable decision")
         thread_id = str(action["thread_id"])
+        checkpoint = self._gateway.approval_checkpoint(thread_id)
+        if (
+            checkpoint.status != "pending"
+            or not checkpoint.checkpoint_id
+            or checkpoint.checkpoint_id != str(action.get("checkpoint_id") or "")
+        ):
+            raise ConversationConflictError("approval checkpoint identity has advanced")
         user_id = str(conversation["user_id"])
         child_run = self._audit.run_for_thread(
             thread_id,
@@ -734,6 +741,48 @@ class MultiAgentCoordinator:
     def approval_checkpoint(self, thread_id: str) -> ApprovalCheckpoint:
         return self._gateway.approval_checkpoint(thread_id)
 
+    def recover_advanced_checkpoint(
+        self,
+        action_id: str,
+        checkpoint: ApprovalCheckpoint,
+    ) -> None:
+        """原子关闭旧决定并把已前进的 Checkpoint 投影为新 pending Action。"""
+        action, attempt, scope, conversation = self._trusted_action(action_id)
+        decision = str(action.get("decision") or action.get("status") or "")
+        if decision not in {"approved", "rejected"} or checkpoint.status != "pending":
+            raise ConversationConflictError("advanced checkpoint is not recoverable")
+        if not checkpoint.checkpoint_id:
+            raise ConversationConflictError("advanced checkpoint identity is missing")
+        claim = self._store.claim_action_resume(
+            action_id,
+            lease_owner=str(self._lease_owner_factory()),
+            lease_seconds=self._resume_lease_seconds,
+            now=float(self._clock()),
+        )
+        if not claim:
+            return
+        accepted = self._projection.resolve_accepted(
+            conversation_id=str(scope["conversation_id"]),
+            turn_id=str(scope["turn_id"]),
+            attempt_id=str(scope["attempt_id"]),
+        )
+        self._projection.rollover_approval(
+            accepted=accepted,
+            current_action_id=action_id,
+            run_id=str(attempt["run_id"]),
+            decision=decision,
+            decided_by=str(action.get("decided_by") or conversation["user_id"]),
+            decision_context=dict(action.get("decision_context_json") or {}),
+            agent_id=str(attempt.get("agent_id") or scope["agent_id"]),
+            thread_id=str(action["thread_id"]),
+            skills=list(checkpoint.skills),
+            preview=dict(checkpoint.preview),
+            checkpoint_id=checkpoint.checkpoint_id,
+            checkpoint_epoch=checkpoint.checkpoint_epoch,
+            lease_owner=claim.owner,
+            lease_generation=claim.generation,
+        )
+
     def recover_completed_action(
         self,
         action_id: str,
@@ -856,6 +905,9 @@ class MultiAgentCoordinator:
                 format_task_output_text(status=child.status, output=child.output),
             )
             skills = approval.get("skills", [])
+            checkpoint = self._gateway.approval_checkpoint(child.thread_id)
+            if checkpoint.status != "pending" or not checkpoint.checkpoint_id:
+                raise ConversationConflictError("pending approval checkpoint identity is missing")
             consumed_decision = "approved" if approved_skills or not rejected_skills else "rejected"
             consumed_context = dict(decision_context or {})
             consumed_context.setdefault("approved_skills", [str(item) for item in approved_skills])
@@ -876,6 +928,8 @@ class MultiAgentCoordinator:
                     if approval.get("preview_artifact_id")
                     else None
                 ),
+                checkpoint_id=checkpoint.checkpoint_id,
+                checkpoint_epoch=checkpoint.checkpoint_epoch,
                 lease_owner=lease_claim.owner if lease_claim is not None else None,
                 lease_generation=lease_claim.generation if lease_claim is not None else None,
             )
@@ -1073,6 +1127,9 @@ class MultiAgentCoordinator:
                 format_task_output_text(status=child.status, output=child.output),
             )
             skills = approval.get("skills", [])
+            checkpoint = self._gateway.approval_checkpoint(child.thread_id)
+            if checkpoint.status != "pending" or not checkpoint.checkpoint_id:
+                raise ConversationConflictError("pending approval checkpoint identity is missing")
             action = self._projection.request_approval(
                 accepted=accepted,
                 run_id=parent_run_id,
@@ -1085,6 +1142,8 @@ class MultiAgentCoordinator:
                     if approval.get("preview_artifact_id")
                     else None
                 ),
+                checkpoint_id=checkpoint.checkpoint_id,
+                checkpoint_epoch=checkpoint.checkpoint_epoch,
             )
             approval.update({"action_id": action.id, "version": action.version})
             child.output["approval"] = approval

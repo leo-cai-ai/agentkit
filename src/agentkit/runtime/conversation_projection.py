@@ -324,6 +324,8 @@ class ConversationProjectionService:
         skills: list[str],
         preview: dict[str, Any],
         preview_artifact_id: str | None = None,
+        checkpoint_id: str = "",
+        checkpoint_epoch: int = 0,
     ) -> ApprovalAction:
         self._validate_accepted(accepted, run_id=run_id)
         visible_content = str(preview.get("content") or preview.get("summary") or "")
@@ -337,6 +339,8 @@ class ConversationProjectionService:
             skills=skills,
             preview=preview,
             preview_artifact_id=preview_artifact_id,
+            checkpoint_id=checkpoint_id,
+            checkpoint_epoch=checkpoint_epoch,
         )
         self._audit_event(
             run_id,
@@ -374,6 +378,8 @@ class ConversationProjectionService:
         skills: list[str],
         preview: dict[str, Any],
         preview_artifact_id: str | None = None,
+        checkpoint_id: str = "",
+        checkpoint_epoch: int = 0,
         lease_owner: str | None = None,
         lease_generation: int | None = None,
     ) -> ApprovalAction:
@@ -391,6 +397,8 @@ class ConversationProjectionService:
             skills=skills,
             preview=preview,
             preview_artifact_id=preview_artifact_id,
+            checkpoint_id=checkpoint_id,
+            checkpoint_epoch=checkpoint_epoch,
             lease_owner=lease_owner,
             lease_generation=lease_generation,
         )

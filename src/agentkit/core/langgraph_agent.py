@@ -210,8 +210,13 @@ class UnifiedAgentGraph:
             raise RuntimeError(f"审批包含非待处理 Skill: {', '.join(sorted(unknown))}")
         request = cast(TaskRequest, snapshot.values["request"])
         request_context = dict(request.context)
-        request_context["approved_skills"] = sorted(approved)
-        request_context["rejected_skills"] = sorted(rejected)
+        pending_result = cast(StrategyResult | None, snapshot.values.get("result"))
+        if pending_result is not None and pending_result.status == "deferred_action":
+            request_context["deferred_approved_skills"] = sorted(approved)
+            request_context["deferred_rejected_skills"] = sorted(rejected)
+        else:
+            request_context["approved_skills"] = sorted(approved)
+            request_context["rejected_skills"] = sorted(rejected)
         if decision_context:
             request_context["approval_decision"] = dict(decision_context)
         resumed_request = replace(request, context=request_context)
@@ -236,15 +241,40 @@ class UnifiedAgentGraph:
         """只读区分待审批、已完成和不存在的 durable Checkpoint。"""
         config = {"configurable": {"thread_id": thread_id}}
         snapshot = self._graph.get_state(config)
+        checkpoint_id = str(snapshot.config.get("configurable", {}).get("checkpoint_id") or "")
         if not snapshot.values:
             return ApprovalCheckpoint(ApprovalCheckpointStatus.MISSING)
         if snapshot.next:
-            return ApprovalCheckpoint(ApprovalCheckpointStatus.PENDING)
+            values = cast(dict[str, Any], snapshot.values)
+            pending_result = cast(StrategyResult | None, values.get("result"))
+            approval = {"skills": values.get("approval_required", [])}
+            if pending_result is not None and pending_result.status == "deferred_action":
+                action = pending_result.output.get("deferred_action", {})
+                if isinstance(action, dict) and isinstance(action.get("preview"), dict):
+                    preview = dict(action["preview"])
+                else:
+                    arguments = action.get("arguments", {}) if isinstance(action, dict) else {}
+                    preview = (
+                        dict(arguments.get("package", {})) if isinstance(arguments, dict) else {}
+                    )
+            else:
+                preview = {}
+            visible = str(preview.get("content") or preview.get("summary") or "")
+            return ApprovalCheckpoint(
+                ApprovalCheckpointStatus.PENDING,
+                checkpoint_id=checkpoint_id,
+                checkpoint_epoch=int(snapshot.metadata.get("step", 0) or 0),
+                skills=tuple(str(item) for item in approval["skills"]),
+                preview=preview,
+                visible_output=visible,
+            )
         if snapshot.values.get("result") is None:
             return ApprovalCheckpoint(ApprovalCheckpointStatus.MISSING)
         return ApprovalCheckpoint(
             ApprovalCheckpointStatus.COMPLETED,
             self._response_from_state(thread_id, config),
+            checkpoint_id=checkpoint_id,
+            checkpoint_epoch=int(snapshot.metadata.get("step", 0) or 0),
         )
 
     def _failure_response(
@@ -601,8 +631,8 @@ class UnifiedAgentGraph:
         tool_names.discard("")
         skill_name = state["resolution"].primary_skill or ""
         request = state["request"]
-        approved = set(request.context.get("approved_skills", []))
-        rejected = set(request.context.get("rejected_skills", []))
+        approved = set(request.context.get("deferred_approved_skills", []))
+        rejected = set(request.context.get("deferred_rejected_skills", []))
         if skill_name in rejected:
             return {"result": StrategyResult(status="rejected", output={})}
         if skill_name not in approved:

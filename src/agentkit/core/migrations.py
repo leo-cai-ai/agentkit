@@ -139,6 +139,8 @@ _SQLITE_MIGRATIONS: dict[int, tuple[str, ...]] = {
             type TEXT NOT NULL DEFAULT 'approval',
             status TEXT NOT NULL,
             thread_id TEXT NOT NULL,
+            checkpoint_id TEXT NOT NULL DEFAULT '',
+            checkpoint_epoch INTEGER NOT NULL DEFAULT 0,
             skills_json TEXT NOT NULL DEFAULT '[]',
             preview_artifact_id TEXT,
             preview_json TEXT NOT NULL DEFAULT '{}',
@@ -199,6 +201,7 @@ _SQLITE_MIGRATIONS: dict[int, tuple[str, ...]] = {
         """,
     ),
     5: (),
+    6: (),
 }
 
 
@@ -396,6 +399,8 @@ _POSTGRES_MIGRATIONS: dict[int, tuple[str, ...]] = {
             type TEXT NOT NULL DEFAULT 'approval',
             status TEXT NOT NULL,
             thread_id TEXT NOT NULL,
+            checkpoint_id TEXT NOT NULL DEFAULT '',
+            checkpoint_epoch BIGINT NOT NULL DEFAULT 0,
             skills_json JSONB NOT NULL DEFAULT '[]'::jsonb,
             preview_artifact_id TEXT,
             preview_json JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -709,6 +714,12 @@ _POSTGRES_MIGRATIONS: dict[int, tuple[str, ...]] = {
           AND assistant_messages.turn_id IS NULL
         """,
     ),
+    6: (
+        "ALTER TABLE conversation_actions ADD COLUMN IF NOT EXISTS "
+        "checkpoint_id TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE conversation_actions ADD COLUMN IF NOT EXISTS "
+        "checkpoint_epoch BIGINT NOT NULL DEFAULT 0",
+    ),
 }
 
 
@@ -741,6 +752,8 @@ def run_sqlite_migrations(path: str | Path) -> list[int]:
                 _sqlite_add_multi_agent_run_columns(conn)
             elif version == 5:
                 _sqlite_adopt_legacy_conversations(conn)
+            elif version == 6:
+                _sqlite_add_action_checkpoint_identity(conn)
             conn.execute(
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                 (version, round(time.time(), 3)),
@@ -958,6 +971,20 @@ def _postgres_adopt_legacy_conversations(conn: Any) -> None:
     """在 advisory migration lock 的事务内执行 PostgreSQL legacy 回填。"""
     for statement in _POSTGRES_V5_STATEMENTS:
         conn.execute(statement)
+
+
+def _sqlite_add_action_checkpoint_identity(conn: sqlite3.Connection) -> None:
+    """为已部署 Action 表补齐稳定 Checkpoint identity。"""
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(conversation_actions)")}
+    if "checkpoint_id" not in columns:
+        conn.execute(
+            "ALTER TABLE conversation_actions ADD COLUMN checkpoint_id TEXT NOT NULL DEFAULT ''"
+        )
+    if "checkpoint_epoch" not in columns:
+        conn.execute(
+            "ALTER TABLE conversation_actions ADD COLUMN "
+            "checkpoint_epoch INTEGER NOT NULL DEFAULT 0"
+        )
 
 
 def _sqlite_prepare_conversation_projection(conn: sqlite3.Connection) -> None:

@@ -72,7 +72,7 @@ def test_postgres_v5_backfills_duplicate_legacy_run_without_orphans(monkeypatch)
             )
 
         monkeypatch.setattr(migrations, "_POSTGRES_MIGRATIONS", all_migrations)
-        assert migrations.run_postgres_migrations(settings) == [5]
+        assert migrations.run_postgres_migrations(settings) == [5, 6]
 
         with scoped_connection(settings) as connection:
             attempts = connection.execute(

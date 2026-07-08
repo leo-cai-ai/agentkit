@@ -66,7 +66,7 @@ def test_deferred_approval_routes_action_key_through_tool_boundary(monkeypatch) 
                 roles=["recruiter"],
                 text="publish",
                 context={
-                    "approved_skills": ["candidate.rank"],
+                    "deferred_approved_skills": ["candidate.rank"],
                     "approval_decision": {
                         "action_tool_idempotency_key": "approval:action-1:command-1"
                     },

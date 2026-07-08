@@ -1055,6 +1055,8 @@ class ConversationStore:
         skills: list[str],
         preview: dict[str, Any],
         preview_artifact_id: str | None,
+        checkpoint_id: str = "",
+        checkpoint_epoch: int = 0,
         now: float | None = None,
         lease_owner: str | None = None,
         lease_generation: int | None = None,
@@ -1212,11 +1214,12 @@ class ConversationStore:
                 f"""
                 INSERT INTO conversation_actions (
                     id, conversation_id, turn_id, attempt_id, status, thread_id,
-                    skills_json, preview_artifact_id, preview_json, created_at
+                    checkpoint_id, checkpoint_epoch, skills_json, preview_artifact_id,
+                    preview_json, created_at
                 ) VALUES (
                     {placeholder}, {placeholder}, {placeholder}, {placeholder},
-                    'pending', {placeholder}, {placeholder}, {placeholder},
-                    {placeholder}, {placeholder}
+                    'pending', {placeholder}, {placeholder}, {placeholder}, {placeholder},
+                    {placeholder}, {placeholder}, {placeholder}
                 )
                 """,
                 (
@@ -1225,6 +1228,8 @@ class ConversationStore:
                     turn_id,
                     attempt_id,
                     thread_id,
+                    checkpoint_id,
+                    checkpoint_epoch,
                     _canonical_json(skills),
                     preview_artifact_id,
                     _canonical_json(preview),
@@ -1255,6 +1260,8 @@ class ConversationStore:
             status=ActionStatus.PENDING,
             version=1,
             thread_id=thread_id,
+            checkpoint_id=checkpoint_id,
+            checkpoint_epoch=checkpoint_epoch,
             skills=tuple(skills),
             preview=dict(preview),
         )
@@ -1326,6 +1333,8 @@ class ConversationStore:
             "id",
             "status",
             "thread_id",
+            "checkpoint_id",
+            "checkpoint_epoch",
             "skills_json",
             "preview_artifact_id",
             "preview_json",
@@ -1392,8 +1401,9 @@ class ConversationStore:
                     attempts_by_id[attempt_id]["messages"].append(message)
                 action_rows = conn.execute(
                     f"""
-                    SELECT attempt_id, id, status, thread_id, skills_json,
-                           preview_artifact_id, preview_json, decision, version,
+                    SELECT attempt_id, id, status, thread_id, checkpoint_id,
+                           checkpoint_epoch, skills_json, preview_artifact_id,
+                           preview_json, decision, version,
                            created_at, decided_at, completed_at
                     FROM conversation_actions
                     WHERE attempt_id IN ({slots})
@@ -1522,6 +1532,8 @@ class ConversationStore:
         skills: list[str],
         preview: dict[str, Any],
         preview_artifact_id: str | None,
+        checkpoint_id: str = "",
+        checkpoint_epoch: int = 0,
     ) -> tuple[int, ApprovalAction]:
         now = round(time.time(), 3)
         action_id = str(uuid.uuid4())
@@ -1586,8 +1598,9 @@ class ConversationStore:
                 """
                 INSERT INTO conversation_actions (
                     id, conversation_id, turn_id, attempt_id, status, thread_id,
-                    skills_json, preview_artifact_id, preview_json, created_at
-                ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
+                    checkpoint_id, checkpoint_epoch, skills_json, preview_artifact_id,
+                    preview_json, created_at
+                ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     action_id,
@@ -1595,6 +1608,8 @@ class ConversationStore:
                     turn_id,
                     attempt_id,
                     thread_id,
+                    checkpoint_id,
+                    checkpoint_epoch,
                     _canonical_json(skills),
                     preview_artifact_id,
                     _canonical_json(preview),
@@ -1619,6 +1634,8 @@ class ConversationStore:
             status=ActionStatus.PENDING,
             version=1,
             thread_id=thread_id,
+            checkpoint_id=checkpoint_id,
+            checkpoint_epoch=checkpoint_epoch,
             skills=tuple(skills),
             preview=dict(preview),
         )
@@ -2449,6 +2466,8 @@ class ConversationStore:
                     type TEXT NOT NULL DEFAULT 'approval',
                     status TEXT NOT NULL,
                     thread_id TEXT NOT NULL,
+                    checkpoint_id TEXT NOT NULL DEFAULT '',
+                    checkpoint_epoch INTEGER NOT NULL DEFAULT 0,
                     skills_json TEXT NOT NULL DEFAULT '[]',
                     preview_artifact_id TEXT,
                     preview_json TEXT NOT NULL DEFAULT '{}',
@@ -2466,6 +2485,19 @@ class ConversationStore:
                 )
                 """
             )
+            action_columns = {
+                str(row[1]) for row in conn.execute("PRAGMA table_info(conversation_actions)")
+            }
+            if "checkpoint_id" not in action_columns:
+                conn.execute(
+                    "ALTER TABLE conversation_actions ADD COLUMN "
+                    "checkpoint_id TEXT NOT NULL DEFAULT ''"
+                )
+            if "checkpoint_epoch" not in action_columns:
+                conn.execute(
+                    "ALTER TABLE conversation_actions ADD COLUMN "
+                    "checkpoint_epoch INTEGER NOT NULL DEFAULT 0"
+                )
             projection_indexes = (
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_turns_client_message

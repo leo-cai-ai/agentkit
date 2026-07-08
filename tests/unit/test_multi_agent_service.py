@@ -10,13 +10,19 @@ import pytest
 
 from agentkit.core.audit import InMemoryAuditLog
 from agentkit.core.context.errors import ContextOutputInvalidError
-from agentkit.core.contracts import TaskRequest, TaskResponse
+from agentkit.core.contracts import (
+    ApprovalCheckpoint,
+    ApprovalCheckpointStatus,
+    TaskRequest,
+    TaskResponse,
+)
 from agentkit.core.memory.store import ConversationConflictError, ConversationStore
 from agentkit.core.multi_agent import AgentDirectory, MultiAgentCoordinator
 from agentkit.core.registry import AgentRegistry
 from agentkit.runtime.conversation_context import AgentConversationContext
 from agentkit.runtime.conversation_persistence import ConversationPersistenceService
 from agentkit.runtime.conversation_projection import ConversationProjectionService
+from agentkit.runtime.conversation_recovery import ConversationRecoveryService
 from tests.unit.test_multi_agent import _profile
 
 
@@ -82,6 +88,21 @@ class FakeGateway:
         self.output = output or {"message": "招聘分析已完成"}
         self.requests: list[TaskRequest] = []
         self.resume_requests: list[tuple[str, dict]] = []
+        self.current_checkpoint_id = "checkpoint-1"
+        self.current_checkpoint_epoch = 1
+
+    def approval_checkpoint(self, thread_id: str) -> ApprovalCheckpoint:
+        del thread_id
+        approval = self.output.get("approval", {})
+        preview = dict(approval.get("preview", {}))
+        return ApprovalCheckpoint(
+            status=ApprovalCheckpointStatus.PENDING,
+            checkpoint_id=self.current_checkpoint_id,
+            checkpoint_epoch=self.current_checkpoint_epoch,
+            skills=tuple(approval.get("skills", [])),
+            preview=preview,
+            visible_output=str(preview.get("content") or preview.get("title") or ""),
+        )
 
     def handle_delegated(self, request: TaskRequest) -> TaskResponse:
         self.requests.append(request)
@@ -841,6 +862,8 @@ def test_resume_waiting_again_atomically_rolls_over_durable_approval(tmp_path) -
     child_run = first.governance["delegation"]["child_run_id"]
 
     def wait_again(thread_id: str, **kwargs) -> TaskResponse:
+        gateway.current_checkpoint_id = "checkpoint-2"
+        gateway.current_checkpoint_epoch = 2
         audit.record(child_run, "run_resumed", {"thread_id": thread_id})
         audit.record(
             child_run,
@@ -888,6 +911,67 @@ def test_resume_waiting_again_atomically_rolls_over_durable_approval(tmp_path) -
     assert attempt["messages"][-1]["content"]
 
 
+def test_recovery_rolls_forward_advanced_checkpoint_without_replaying_old_decision(
+    tmp_path,
+) -> None:
+    service, gateway, audit, _, _, projection = _projection_service(
+        tmp_path,
+        child_status="waiting_for_approval",
+        child_output={
+            "approval": {
+                "skills": ["draft.review"],
+                "preview": {"title": "first approval"},
+            }
+        },
+    )
+    first = service.handle(
+        _prepared_request(
+            projection,
+            message="@招聘 发布录用通知",
+            client_message_id="client-crash-gap",
+        )
+    )
+    initial = _timeline(projection, first.conversation_id).turns[0]["attempts"][0]
+    old_action = initial["actions"][0]
+    projection._store.decide_action(
+        old_action["id"],
+        decision="approved",
+        decided_by="u1",
+        decision_context={"approved_skills": ["draft.review"]},
+        idempotency_key="approve-before-crash",
+        expected_version=old_action["version"],
+    )
+
+    gateway.current_checkpoint_id = "checkpoint-2"
+    gateway.current_checkpoint_epoch = 2
+    gateway.output = {
+        "approval": {
+            "skills": ["publish.review"],
+            "preview": {
+                "title": "second approval",
+                "content": "review the second approval",
+            },
+        }
+    }
+    recovery = ConversationRecoveryService(
+        store=projection._store,
+        coordinator=service,
+        audit=audit,
+    )
+
+    recovery.reconcile(tenant_id="tenant-a")
+
+    recovered = _timeline(projection, first.conversation_id).turns[0]["attempts"][0]
+    assert gateway.resume_requests == []
+    assert [action["status"] for action in recovered["actions"]] == [
+        "completed",
+        "pending",
+    ]
+    assert recovered["actions"][1]["checkpoint_id"] == "checkpoint-2"
+    assert recovered["actions"][1]["preview"]["title"] == "second approval"
+    assert recovered["messages"][-1]["content"]
+
+
 def test_resume_same_thread_after_rollover_completes_active_action(
     tmp_path,
     monkeypatch,
@@ -916,6 +1000,8 @@ def test_resume_same_thread_after_rollover_completes_active_action(
         resume_count += 1
         audit.record(child_run, "run_resumed", {"thread_id": thread_id})
         if resume_count == 1:
+            gateway.current_checkpoint_id = "checkpoint-2"
+            gateway.current_checkpoint_epoch = 2
             audit.record(
                 child_run,
                 "run_paused",

@@ -244,3 +244,8 @@ class ApprovalCheckpointStatus(StrEnum):
 class ApprovalCheckpoint:
     status: ApprovalCheckpointStatus
     response: TaskResponse | None = None
+    checkpoint_id: str = ""
+    checkpoint_epoch: int = 0
+    skills: tuple[str, ...] = ()
+    preview: dict[str, Any] = field(default_factory=dict)
+    visible_output: str = ""
