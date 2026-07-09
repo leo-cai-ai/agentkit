@@ -484,6 +484,11 @@ class _TextImagePublishPage(_PublishPage):
         return super().locator(selector)
 
     def evaluate(self, expression: str, *args):
+        if 'document.execCommand("insertText"' in expression:
+            self.card_editors[0].value = str(args[0])
+            return None
+        if 'document.querySelector("div.tiptap.ProseMirror")' in expression:
+            return self.card_editors[0].value
         if ".edit-text-button" in expression:
             return all(editor.value for editor in self.card_editors)
         if ".cover-name" in expression:
