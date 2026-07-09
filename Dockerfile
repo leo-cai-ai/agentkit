@@ -24,6 +24,18 @@ RUN uv pip install --python "$VIRTUAL_ENV/bin/python" ".[serve,pg,rag,browser]"
 # ---- runtime: minimal image, non-root ----
 FROM python:3.12.10-slim AS runtime
 
+# ========== 新增：替换 APT 源为阿里云镜像（加速系统依赖下载） ==========
+# Debian 12 (Bookworm) 的 sources.list 文件位置（兼容新旧格式）
+RUN if [ -f /etc/apt/sources.list ]; then \
+        sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list && \
+        sed -i 's/security.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list; \
+    fi && \
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+        sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources && \
+        sed -i 's/security.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources; \
+    fi
+# ==================================================================
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     VIRTUAL_ENV=/opt/venv \
@@ -73,7 +85,12 @@ CMD ["gunicorn", "--bind", "0.0.0.0:8501", "--workers", "2", "--timeout", "120",
 FROM runtime AS browser-runtime
 
 USER root
+
+# ========== 新增：设置 Playwright 下载镜像（加速 Chromium 下载） ==========
+ENV PLAYWRIGHT_DOWNLOAD_HOST=https://registry.npmmirror.com/-/binary/playwright
+# ======================================================================
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
 RUN python -m playwright install --with-deps chromium \
     && chown -R appuser:appuser /ms-playwright
 USER appuser

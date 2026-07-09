@@ -110,6 +110,7 @@ class OllamaOcrProvider:
                 follow_redirects=False,
                 timeout=self._timeout_seconds,
                 transport=self._transport,
+                trust_env=False,
             ) as client:
                 with client.stream("POST", self._url, json=payload) as response:
                     if not response.is_success:

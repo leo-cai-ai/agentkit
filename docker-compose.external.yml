@@ -43,6 +43,7 @@ services:
       AGENTKIT_WEB_SEARCH_HEADLESS: "true"
       AGENTKIT_WEB_SEARCH_BROWSER_CHANNEL: ""
       AGENTKIT_WEB_SEARCH_EXECUTABLE_PATH: ""
+      PLAYWRIGHT_DOWNLOAD_HOST: "https://registry.npmmirror.com/-/binary/playwright"
       # Read-only root FS: keep every runtime write inside the writable tmpfs
       # (/tmp) — no bytecode/cache/HOME writes into /opt/venv or ~/.cache.
       PYTHONDONTWRITEBYTECODE: "1"
