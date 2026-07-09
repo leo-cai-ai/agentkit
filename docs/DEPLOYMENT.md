@@ -609,7 +609,7 @@ agentkit --tenant company_alpha doctor
 按业务补充评估门禁：
 
 ```bash
-agentkit --tenant company_alpha eval evals/golden.jsonl \
+agentkit --tenant company_alpha eval evaluation/datasets/golden.jsonl \
   --target gateway-trace \
   --threshold 1.0 \
   --min-mean-score 0.8
@@ -766,7 +766,7 @@ agentkit --tenant company_alpha rag-ingest ./knowledge --roles support_agent --o
 agentkit --tenant company_alpha rag-query "退款政策" --roles support_agent --json
 
 # 评估
-agentkit --tenant company_alpha eval evals/golden.jsonl --target gateway-trace
+agentkit --tenant company_alpha eval evaluation/datasets/golden.jsonl --target gateway-trace
 
 # Docker
 docker compose up -d --build

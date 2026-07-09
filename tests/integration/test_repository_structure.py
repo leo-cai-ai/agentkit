@@ -17,3 +17,15 @@ def test_standard_evaluation_dataset_uses_explicit_dataset_root() -> None:
 
 def test_trajectory_dataset_exists_in_explicit_dataset_root() -> None:
     assert (DATASET_ROOT / "trajectory.jsonl").is_file()
+
+
+def test_legacy_product_layout_is_absent() -> None:
+    legacy_paths = [
+        "evals",
+        "prompts",
+        "web_flask",
+        "run_demo.py",
+        "src/agentkit/domain_packs",
+    ]
+    existing = [path for path in legacy_paths if (REPO_ROOT / path).exists()]
+    assert existing == []

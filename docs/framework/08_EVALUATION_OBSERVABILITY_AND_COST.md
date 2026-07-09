@@ -183,7 +183,7 @@ Judge 失败会得到 0 分而不是让整个 Eval Runner 崩溃。没有配置 
 ## 5. 运行 Eval
 
 ```powershell
-agentkit --tenant company_alpha eval evals/golden.jsonl `
+agentkit --tenant company_alpha eval evaluation/datasets/golden.jsonl `
   --target gateway-trace `
   --threshold 0.95 `
   --min-mean-score 0.85

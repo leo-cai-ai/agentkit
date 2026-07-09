@@ -480,7 +480,7 @@ agents/                     # Agent Manifest
 skills/                     # Skill Package、Tool、Handler
 contexts/                   # Runtime/Business Context Pack
 tenants/                    # 租户装配
-evals/                      # Eval Dataset
+evaluation/datasets/        # Eval Dataset
 tests/                      # Unit/Integration
 docs/                       # 架构、部署和专题手册
 ```

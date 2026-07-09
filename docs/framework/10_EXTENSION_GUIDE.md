@@ -447,7 +447,7 @@ audit:
 ```powershell
 agentkit --tenant company_alpha validate-contexts
 python -m pytest tests/unit/test_context_golden.py -q
-agentkit --tenant company_alpha eval evals/golden.jsonl --target gateway-trace
+agentkit --tenant company_alpha eval evaluation/datasets/golden.jsonl --target gateway-trace
 ```
 
 更新 Golden 时必须人工检查 System/User 分层、输入名单、裁剪、Schema 和 Hash 变化。
@@ -543,7 +543,7 @@ contexts/business/employee-onboarding/checklist-review/user.md
 contexts/business/employee-onboarding/checklist-review/output.schema.json
 tests/unit/test_employee_onboarding.py
 tests/integration/test_onboarding_agent.py
-evals/onboarding.jsonl
+evaluation/datasets/onboarding.jsonl
 ```
 
 ### 13.3 业务能力拆分
