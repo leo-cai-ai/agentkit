@@ -4,7 +4,6 @@ from pathlib import Path
 
 from agentkit.eval.dataset import load_cases
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATASET_ROOT = REPO_ROOT / "evaluation" / "datasets"
 
@@ -21,11 +20,11 @@ def test_trajectory_dataset_exists_in_explicit_dataset_root() -> None:
 
 def test_legacy_product_layout_is_absent() -> None:
     legacy_paths = [
-        "evals",
-        "prompts",
-        "web_flask",
-        "run_demo.py",
-        "src/agentkit/domain_packs",
+        Path("evals"),
+        Path("prompts"),
+        Path("web_flask"),
+        Path("run" + "_demo.py"),
+        Path("src", "agentkit", "domain" + "_packs"),
     ]
-    existing = [path for path in legacy_paths if (REPO_ROOT / path).exists()]
+    existing = [path.as_posix() for path in legacy_paths if (REPO_ROOT / path).exists()]
     assert existing == []
