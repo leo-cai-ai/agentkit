@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 def test_strategy_trajectory_dataset_covers_runtime_matrix() -> None:
-    path = Path(__file__).resolve().parents[2] / "evals" / "trajectory.jsonl"
+    path = Path(__file__).resolve().parents[2] / "evaluation" / "datasets" / "trajectory.jsonl"
     cases = [
         json.loads(line)
         for line in path.read_text(encoding="utf-8").splitlines()
@@ -28,7 +28,7 @@ def test_strategy_trajectory_dataset_covers_runtime_matrix() -> None:
 
 
 def test_every_strategy_case_declares_governance_expectations() -> None:
-    path = Path(__file__).resolve().parents[2] / "evals" / "trajectory.jsonl"
+    path = Path(__file__).resolve().parents[2] / "evaluation" / "datasets" / "trajectory.jsonl"
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip() or line.lstrip().startswith("#"):
             continue
