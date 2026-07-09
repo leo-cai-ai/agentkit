@@ -23,8 +23,8 @@ def test_legacy_product_layout_is_absent() -> None:
         Path("evals"),
         Path("prompts"),
         Path("web_flask"),
-        Path("run" + "_demo.py"),
-        Path("src", "agentkit", "domain" + "_packs"),
+        Path("run_demo.py"),
+        Path("src/agentkit/domain_packs"),
     ]
     existing = [path.as_posix() for path in legacy_paths if (REPO_ROOT / path).exists()]
     assert existing == []
