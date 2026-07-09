@@ -58,7 +58,7 @@ AgentKit 已经具备持久化 Run、Audit Event、Conversation Projection、Art
 ```text
 Agent / LangGraph / Tool / LLM
             │
-            ├── ExecutionContext(run_id, conversation_id, agent_id, attempt_id)
+            ├── RunCorrelationContext(run_id, conversation_id, agent_id, attempt_id)
             ├── Audit Events + ErrorEnvelope
             ├── Conversation Projection
             └── Artifact Store
@@ -74,13 +74,13 @@ Agent / LangGraph / Tool / LLM
 
 ## 5. 执行上下文与日志关联
 
-### 5.1 ExecutionContext
+### 5.1 RunCorrelationContext
 
 扩展现有 `log_context.py`，维护不可变的运行关联字段：
 
 ```python
 @dataclass(frozen=True)
-class ExecutionContext:
+class RunCorrelationContext:
     run_id: str = "-"
     parent_run_id: str = ""
     conversation_id: str = ""
@@ -92,10 +92,10 @@ class ExecutionContext:
 
 ```python
 @contextmanager
-def bind_execution_context(context: ExecutionContext) -> Iterator[None]: ...
+def bind_run_context(context: RunCorrelationContext) -> Iterator[None]: ...
 ```
 
-保留 `bind_run_id()` 作为内部便利函数或迁移别名，但所有正式执行入口使用完整 `ExecutionContext`。
+保留 `bind_run_id()` 作为内部便利函数或迁移别名，但所有正式执行入口使用完整 `RunCorrelationContext`。该名称刻意区别于现有 `execution.protocol.ExecutionContext`；后者继续表示 Strategy/Skill 执行依赖，职责不变。
 
 ### 5.2 必须绑定的边界
 
@@ -119,7 +119,7 @@ run_id parent_run_id conversation_id agent_id attempt_id
 
 空字段使用 `-`。日志 Filter 只读取 ContextVar，不访问数据库。未进入任何 Run 的启动、迁移和健康检查日志允许 `run_id=-`。
 
-OpenTelemetry Span 继续读取同一 ExecutionContext，避免日志和 Trace 使用两套关联状态。
+OpenTelemetry Span 继续读取同一 RunCorrelationContext，避免日志和 Trace 使用两套关联状态。
 
 ## 6. 统一 ErrorEnvelope
 
@@ -431,7 +431,7 @@ AGENTKIT_TRACE_URL_TEMPLATE=
 
 ## 14. 测试设计
 
-### 14.1 ExecutionContext
+### 14.1 RunCorrelationContext
 
 - General 父 Run绑定和退出恢复。
 - 子 Run 临时覆盖并恢复父 Run。
