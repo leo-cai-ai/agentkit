@@ -4,3 +4,5 @@ browser-profiles/
 browser-state/
 xhs-publish-assets/
 !.gitignore
+web-*.stdout.log
+web-*.stderr.log
