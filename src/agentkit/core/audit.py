@@ -288,18 +288,33 @@ class SQLiteAuditLog:
             for row in rows
         ]
 
-    def list_runs(self, *, limit: int = 20) -> list[dict[str, Any]]:
+    def list_runs(
+        self, *, limit: int = 20, tenant_id: str | None = None
+    ) -> list[dict[str, Any]]:
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT run_id, tenant_id, user_id, text, status, started_at, finished_at,
-                       agent_id, parent_run_id, conversation_id
-                FROM task_runs
-                ORDER BY started_at DESC
-                LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
+            if tenant_id:
+                rows = conn.execute(
+                    """
+                    SELECT run_id, tenant_id, user_id, text, status, started_at, finished_at,
+                           agent_id, parent_run_id, conversation_id
+                    FROM task_runs
+                    WHERE tenant_id = ?
+                    ORDER BY started_at DESC
+                    LIMIT ?
+                    """,
+                    (tenant_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT run_id, tenant_id, user_id, text, status, started_at, finished_at,
+                           agent_id, parent_run_id, conversation_id
+                    FROM task_runs
+                    ORDER BY started_at DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
         return [dict(row) for row in rows]
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
@@ -387,15 +402,26 @@ class SQLiteAuditLog:
             ).fetchone()
         return dict(row) if row is not None else None
 
-    def run_counts_by_status(self) -> dict[str, int]:
+    def run_counts_by_status(self, *, tenant_id: str | None = None) -> dict[str, int]:
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT status, COUNT(*) AS count
-                FROM task_runs
-                GROUP BY status
-                """
-            ).fetchall()
+            if tenant_id:
+                rows = conn.execute(
+                    """
+                    SELECT status, COUNT(*) AS count
+                    FROM task_runs
+                    WHERE tenant_id = ?
+                    GROUP BY status
+                    """,
+                    (tenant_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT status, COUNT(*) AS count
+                    FROM task_runs
+                    GROUP BY status
+                    """
+                ).fetchall()
         return {str(row["status"]): int(row["count"]) for row in rows}
 
     def event_counts_by_type(self, *, limit: int = 20) -> list[dict[str, Any]]:
@@ -637,9 +663,12 @@ class PostgresAuditLog(SQLiteAuditLog):
             for row in rows
         ]
 
-    def list_runs(self, *, limit: int = 20) -> list[dict[str, Any]]:
+    def list_runs(
+        self, *, limit: int = 20, tenant_id: str | None = None
+    ) -> list[dict[str, Any]]:
         with self._connect() as conn:
-            if self._tenant_id:
+            tenant_scope = self._tenant_id or tenant_id
+            if tenant_scope:
                 rows = conn.execute(
                     """
                     SELECT run_id, tenant_id, user_id, text, status, started_at, finished_at,
@@ -649,7 +678,7 @@ class PostgresAuditLog(SQLiteAuditLog):
                     ORDER BY started_at DESC
                     LIMIT %s
                     """,
-                    (self._tenant_id, limit),
+                    (tenant_scope, limit),
                 ).fetchall()
             else:
                 rows = conn.execute(
@@ -798,9 +827,10 @@ class PostgresAuditLog(SQLiteAuditLog):
             ).fetchone()
         return _postgres_run_row(row) if row is not None else None
 
-    def run_counts_by_status(self) -> dict[str, int]:
+    def run_counts_by_status(self, *, tenant_id: str | None = None) -> dict[str, int]:
         with self._connect() as conn:
-            if self._tenant_id:
+            tenant_scope = self._tenant_id or tenant_id
+            if tenant_scope:
                 rows = conn.execute(
                     """
                     SELECT status, COUNT(*) AS count
@@ -808,7 +838,7 @@ class PostgresAuditLog(SQLiteAuditLog):
                     WHERE tenant_id = %s
                     GROUP BY status
                     """,
-                    (self._tenant_id,),
+                    (tenant_scope,),
                 ).fetchall()
             else:
                 rows = conn.execute(

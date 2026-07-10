@@ -401,6 +401,12 @@ def test_operations_uses_run_browser_and_collapsible_json(client, monkeypatch, t
             "unsafe": "</pre><script>alert(1)</script>",
         },
     )
+    other_run_id = audit.start_run(
+        tenant_id="tenant-other",
+        user_id="other-user",
+        text="Other tenant secret request",
+    )
+    audit.record(other_run_id, "run_finished", {"status": "completed"})
     runtime = SimpleNamespace(
         db_path=db_path,
         gateway=SimpleNamespace(audit=audit),
@@ -429,11 +435,17 @@ def test_operations_uses_run_browser_and_collapsible_json(client, monkeypatch, t
     assert 'class="ak-run-timeline ak-event-timeline"' in html
     assert 'class="ak-json-details"' in html
     assert 'class="ak-json-viewer" tabindex="0"' in html
-    assert "&#34;nested&#34;: {" in html
-    assert "你好" in html
+    assert "&#34;nested&#34;: {" not in html
+    assert "你好" not in html
     assert "\\u4f60\\u597d" not in html
     assert "<script>alert(1)</script>" not in html
-    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" not in html
+    assert "Other tenant secret request" not in html
+    assert re.search(
+        r"<dt class=\"ak-stat-card-label\">Total Runs</dt>\s*"
+        r"<dd class=\"ak-stat-card-value\">1</dd>",
+        html,
+    )
 
     pages_css = client.get("/static/css/pages.css").get_data(as_text=True)
     assert ".ak-operations-workspace" in pages_css

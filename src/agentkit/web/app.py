@@ -241,7 +241,8 @@ def overview():
 def management_overview():
     runtime = get_runtime()
     gateway = runtime.gateway
-    counts = _safe_counts(gateway.audit)
+    tenant_id = str(runtime.tenant_config.get("tenant_id") or "")
+    counts = _safe_counts(gateway.audit, tenant_id=tenant_id)
     completed = counts.get("completed", 0)
     failed = counts.get("failed", 0)
     resolved = completed + failed
@@ -284,7 +285,7 @@ def management_overview():
         metrics=metrics,
         impact_rows=[],
         agent_rows=agent_rows,
-        runs=_safe_runs(gateway.audit, limit=8),
+        runs=_safe_runs(gateway.audit, limit=8, tenant_id=tenant_id),
         capabilities=[
             {"name": name, "status": "Live", "description": "Unified execution strategy"}
             for name in runtime.strategy_names
@@ -317,23 +318,24 @@ def agent_network():
 def operations():
     runtime = get_runtime()
     audit = runtime.gateway.audit
-    counts = _safe_counts(audit)
+    tenant_id = str(runtime.tenant_config.get("tenant_id") or "")
+    counts = _safe_counts(audit, tenant_id=tenant_id)
     completed = counts.get("completed", 0)
     running = counts.get("running", 0)
     failed = counts.get("failed", 0)
     blocked = counts.get("waiting_for_approval", 0) + counts.get("rejected", 0)
     total = sum(counts.values())
-    runs = _safe_runs(audit, limit=50)
+    runs = _safe_runs(audit, limit=50, tenant_id=tenant_id)
     selected_run_id = request.args.get("run_id") or (runs[0]["run_id"] if runs else "")
     selected_run = next((run for run in runs if run["run_id"] == selected_run_id), None)
     events = (
         audit.events_for(selected_run_id)
-        if isinstance(audit, SQLiteAuditLog) and selected_run_id
+        if isinstance(audit, SQLiteAuditLog) and selected_run is not None
         else []
     )
     child_runs = (
         audit.child_runs(selected_run_id)
-        if hasattr(audit, "child_runs") and selected_run_id
+        if hasattr(audit, "child_runs") and selected_run is not None
         else []
     )
 
@@ -349,7 +351,7 @@ def operations():
             "timestamp": event["ts"],
             "time": format_timestamp(event["ts"]),
             "type": event["type"],
-            "payload": event.get("payload", {}),
+            "payload": _safe_event_summary(event),
         }
         for event in events
     ]
@@ -1201,7 +1203,11 @@ def _display_conversation_messages(
 @app.get("/api/runs")
 @require_permission(RUNS_VIEW)
 def api_runs():
-    return jsonify({"runs": _safe_runs(get_runtime().gateway.audit, limit=50)})
+    runtime = get_runtime()
+    tenant_id = str(runtime.tenant_config.get("tenant_id") or "")
+    return jsonify(
+        {"runs": _safe_runs(runtime.gateway.audit, limit=50, tenant_id=tenant_id)}
+    )
 
 
 @app.get("/api/runs/<run_id>")
@@ -1348,12 +1354,54 @@ def format_timestamp(value: Any) -> str:
         return str(value)
 
 
-def _safe_counts(audit: Any) -> dict[str, int]:
-    return audit.run_counts_by_status() if isinstance(audit, SQLiteAuditLog) else {}
+def _safe_counts(audit: Any, *, tenant_id: str = "") -> dict[str, int]:
+    if not isinstance(audit, SQLiteAuditLog):
+        return {}
+    return audit.run_counts_by_status(tenant_id=tenant_id or None)
 
 
-def _safe_runs(audit: Any, *, limit: int) -> list[dict[str, Any]]:
-    return audit.list_runs(limit=limit) if isinstance(audit, SQLiteAuditLog) else []
+def _safe_runs(
+    audit: Any,
+    *,
+    limit: int,
+    tenant_id: str = "",
+) -> list[dict[str, Any]]:
+    if not isinstance(audit, SQLiteAuditLog):
+        return []
+    return audit.list_runs(limit=limit, tenant_id=tenant_id or None)
+
+
+_SAFE_EVENT_SUMMARY_FIELDS = frozenset(
+    {
+        "agent_id",
+        "attempts",
+        "cached",
+        "context_id",
+        "duration_ms",
+        "error_code",
+        "error_id",
+        "error_type",
+        "model",
+        "retryable",
+        "skill_id",
+        "stage",
+        "status",
+        "tool",
+    }
+)
+
+
+def _safe_event_summary(event: dict[str, Any]) -> dict[str, Any]:
+    """Return a primitive allow-list summary for the legacy operations page."""
+    payload = event.get("payload")
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        key: value
+        for key, value in payload.items()
+        if key in _SAFE_EVENT_SUMMARY_FIELDS
+        and isinstance(value, str | int | float | bool)
+    }
 
 
 def _as_list(value: Any) -> list[str]:
