@@ -15,7 +15,10 @@ AgentKit 把这类能力分为三个平面：
 
 ```mermaid
 flowchart LR
-    Offline[离线 Eval<br/>Case / Check / Judge / Gate] --> Release[发布门禁]
+    Dataset[Dataset<br/>Golden / Trajectory] --> Suite[Eval Suite<br/>筛选 / 重复 / 并发 / Gate]
+    Suite --> Offline[Target + Runner<br/>Check / Judge]
+    Offline --> Report[版本化 Report<br/>Hash / Baseline Diff]
+    Report --> Release[发布门禁]
     Runtime[在线 Runtime] --> Audit[Audit Run + Event]
     Runtime --> Metrics[Duration / Success / Token / Cost]
     Runtime --> Trace[OpenTelemetry Span]
@@ -58,6 +61,15 @@ classDiagram
     class Target {
       Callable EvalCase to string
     }
+    class EvalSuite {
+      id
+      version
+      target
+      datasets[]
+      filters
+      execution
+      gates
+    }
     class CheckSpec {
       type
       value
@@ -77,6 +89,7 @@ classDiagram
     class CaseResult {
       output
       outcomes[]
+      attempt
       passed
       score
     }
@@ -85,12 +98,20 @@ classDiagram
       mean_score
       gate
     }
+    class RunReport {
+      schema_version
+      environment
+      dataset_hashes
+      baseline_diff
+    }
+    EvalSuite --> EvalCase
     EvalCase --> Target
     EvalCase --> CheckSpec
     Target --> CaseResult
     CheckSpec --> CheckOutcome
     Judge --> CheckOutcome
     CaseResult --> EvalReport
+    EvalReport --> RunReport
 ```
 
 ### 3.1 EvalCase
@@ -125,6 +146,14 @@ classDiagram
 
 `_eval_resume` 是 Eval 控制字段，Target 在构造真实 TaskRequest 前会移除，不会泄漏到业务 Agent Context。
 
+轨迹数据还可以使用以下声明式期望：
+
+- `expected_strategy`：转换为 `response.strategy` 的 `json_path_equals`。
+- `expected_status`：转换为最终 `status` 的 `json_path_equals`。
+- `expected_events`：转换为 `event_sequence`；未显式提供时，根据状态生成最小关键事件序列。
+
+Case 必须至少产生一个可执行 Check。没有 `checks`，也没有可转换的轨迹期望时，Runner 会生成 `configuration` 失败，避免“没有验证任何内容却通过”的假绿灯。
+
 ### 3.2 Check
 
 确定性 Check 当前包括：
@@ -142,7 +171,7 @@ classDiagram
 
 `LLMJudge` 按 Rubric 返回 1–5 分和一句原因。`min_score` 决定通过阈值，`weight` 决定该检查对 Case 总分的贡献。
 
-Judge 失败会得到 0 分而不是让整个 Eval Runner 崩溃。没有配置 Judge 的 `judge` Check 会标记 `skipped`；当前 Case 只有跳过项时按通过处理，因此生产门禁必须另外验证预期 Judge 是否实际启用，不能依赖“跳过即通过”证明质量。
+Judge 失败会得到 0 分而不是让整个 Eval Runner 崩溃。没有配置 Judge 时，默认把 `judge` Check 标记为 `skipped`；Suite 设置 `gates.require_judge: true` 后，未配置 Judge 会变成非跳过失败。因此包含语义质量门禁的生产 Suite 应显式要求 Judge，不能依赖“跳过即通过”证明质量。
 
 ### 3.4 CaseResult 与 EvalReport
 
@@ -151,6 +180,8 @@ Judge 失败会得到 0 分而不是让整个 Eval Runner 崩溃。没有配置 
 - Report 聚合 `total/passed/pass_rate/mean_score`。
 - `gate(min_pass_rate, min_mean_score)` 同时满足两个阈值才通过。
 - 单个 Target 异常被隔离为该 Case 失败，不中断其他 Case。
+- `repetitions` 会为同一 Case 生成多个 Attempt，用于发现非确定性回归。
+- `concurrency` 控制 Case 并发；结果仍按 Case 和 Attempt 保持稳定顺序。
 
 ## 4. 三种 Target
 
@@ -180,7 +211,11 @@ Judge 失败会得到 0 分而不是让整个 Eval Runner 崩溃。没有配置 
 
 若 Case 声明 `_eval_resume` 且初始状态是 `waiting_for_approval`，Target 会恢复原 Thread。因此可以验证“生成 → 暂停 → 审批 → 只执行冻结副作用”的完整轨迹。
 
-## 5. 运行 Eval
+## 5. Eval Suite 与运行方式
+
+### 5.1 单数据集入口
+
+`agentkit eval` 保留为快速执行单个数据集的入口：
 
 ```powershell
 agentkit --tenant company_alpha eval evaluation/datasets/golden.jsonl `
@@ -197,6 +232,89 @@ agentkit --tenant company_alpha eval evaluation/datasets/golden.jsonl `
 - 定期：按生产失败聚类补充 Regression Case。
 
 Golden Dataset 必须版本化，并同时记录模型、Provider、Context Manifest 和租户配置版本；否则分数变化无法归因。
+
+### 5.2 企业级 Suite 入口
+
+[`evaluation/suites/trajectory.yaml`](../../evaluation/suites/trajectory.yaml) 把数据集、Target、执行参数和 Gate 固化为可版本化配置：
+
+```yaml
+id: strategy-trajectory
+version: "1"
+target: gateway-trace
+datasets:
+  - ../datasets/trajectory.jsonl
+execution:
+  repetitions: 1
+  concurrency: 1
+gates:
+  min_pass_rate: 1.0
+  min_mean_score: 1.0
+  require_judge: false
+```
+
+Suite 还支持以下过滤字段：
+
+```yaml
+filters:
+  include_tags: [pr]
+  exclude_tags: [slow, side-effect]
+  case_ids: [direct-customer-answer]
+```
+
+过滤语义是：Case ID 必须匹配指定集合；`include_tags` 至少命中一个；命中任意 `exclude_tags` 时排除。不同阶段建议维护不同 Suite，而不是在 CI 命令中拼接隐含规则。
+
+运行并自动持久化版本化报告：
+
+```powershell
+agentkit --tenant company_alpha eval-suite evaluation/suites/trajectory.yaml
+```
+
+指定报告位置并与历史基线比较：
+
+```powershell
+agentkit --tenant company_alpha eval-suite evaluation/suites/trajectory.yaml `
+  --baseline evaluation/baselines/trajectory.json `
+  --output evaluation/reports/trajectory-current.json
+```
+
+只检查 YAML、数据集路径、过滤结果、重复 ID 和空 Check，不调用模型、Gateway 或 Tool：
+
+```powershell
+agentkit eval-suite evaluation/suites/trajectory.yaml --validate-only --json
+```
+
+### 5.3 版本化报告
+
+[`eval/report.py`](../../src/agentkit/eval/report.py) 生成 Schema Version 为 `1.0` 的 JSON 报告，包含：
+
+- Suite ID/Version、Target、生成时间。
+- Tenant、Provider、Model、Git Commit、Context Manifest Hash。
+- 每个数据集的 SHA256，防止同名数据静默变化。
+- Repetitions、Concurrency、Gate 阈值和 Gate 结果。
+- 每个 Case/Attempt 的输出摘要、Check、得分和失败详情。
+- 可选的 Pass Rate 与 Mean Score 基线差值。
+
+未指定 `--output` 时，报告写入 `evaluation/reports/<suite>-<UTC时间>.json`。该运行目录已被 Git 忽略；需要长期保存的批准基线应复制到单独、受评审的基线目录后显式提交。
+
+### 5.4 CI 与迭代闭环
+
+当前 CI 执行：
+
+```bash
+uv run agentkit eval-suite evaluation/suites/trajectory.yaml --validate-only
+uv run pytest -q
+```
+
+第一条是确定性的 Suite 契约门禁，不执行真实 Target；真实 Runtime 行为由单元/集成测试覆盖。接入真实模型的 Nightly 或发布门禁时，应另行执行不带 `--validate-only` 的 `eval-suite`，并配置隔离租户、无真实副作用 Tool 或显式审批策略。
+
+可迭代流程：
+
+1. 从生产失败、人工复核和新需求提炼 Case，去除敏感数据。
+2. 为状态、权限、Schema、事件序列优先增加确定性 Check。
+3. 只有语义质量难以规则化时增加 Judge，并设置 `require_judge: true`。
+4. 按风险和运行成本打 Tag，把 Case 纳入 PR、Nightly 或 Release Suite。
+5. 运行多次观察波动，保存批准基线并比较差异。
+6. Gate 通过后发布；失败时按 Case、Attempt 和 Check 定位，而不是只看总分。
 
 ## 6. RAG 评估是独立维度
 
@@ -468,7 +586,9 @@ flowchart LR
 | Target | [`eval/targets.py`](../../src/agentkit/eval/targets.py) |
 | Check | [`eval/checks.py`](../../src/agentkit/eval/checks.py) |
 | Judge | [`eval/judge.py`](../../src/agentkit/eval/judge.py) |
-| Runner/Report | [`eval/runner.py`](../../src/agentkit/eval/runner.py) |
+| Runner | [`eval/runner.py`](../../src/agentkit/eval/runner.py) |
+| Eval Suite | [`eval/suite.py`](../../src/agentkit/eval/suite.py) |
+| 版本化报告与基线比较 | [`eval/report.py`](../../src/agentkit/eval/report.py) |
 | Audit 后端与聚合 | [`core/audit.py`](../../src/agentkit/core/audit.py) |
 | 轻量计时 | [`core/metrics.py`](../../src/agentkit/core/metrics.py) |
 | OpenTelemetry | [`core/tracing.py`](../../src/agentkit/core/tracing.py) |
@@ -477,7 +597,8 @@ flowchart LR
 
 ## 17. 测试证据
 
-- [`tests/unit/test_eval.py`](../../tests/unit/test_eval.py)：Checks、Judge、Report、Gate 和 Gateway Trace。
+- [`tests/unit/test_eval.py`](../../tests/unit/test_eval.py)：Checks、Judge、Runner 重复/并发、Gate 和 Gateway Trace。
+- [`tests/unit/test_eval_suite.py`](../../tests/unit/test_eval_suite.py)：Suite 校验、过滤、报告持久化和基线差异。
 - [`tests/integration/test_eval_llm.py`](../../tests/integration/test_eval_llm.py)：真实 Eval Runner 与模型接口。
 - [`tests/integration/test_strategy_eval.py`](../../tests/integration/test_strategy_eval.py)：执行策略轨迹数据集。
 - [`tests/integration/test_timing_events.py`](../../tests/integration/test_timing_events.py)：统一图关键事件顺序。
@@ -514,8 +635,10 @@ flowchart LR
 - OTel 目前重点覆盖 LLM 和 Tool，尚未给每个 Graph Node 建统一 Span。
 - 仓库没有生产 P95/P99、吞吐和业务价值基线，不能从测试时长推断。
 - Judge 存在模型偏差和波动，需要盲评样本、校准和确定性 Check 组合。
-- Eval Dataset 规模和业务覆盖仍需持续扩充。
+- Eval Dataset 规模和业务覆盖仍需持续扩充；当前仓库只有基础 Golden 与 12 条策略轨迹 Case。
+- CI 默认只校验 Suite 契约；真实模型 Eval 需要在有模型凭据和隔离外部依赖的 Nightly/Release 环境运行。
+- 版本化报告当前是文件输出，没有集中式 Eval Registry、趋势 Dashboard 或批准基线工作流。
 - 成本预算在调用前按已累计金额检查，不能阻止单次昂贵调用造成小幅超额。
 - 当前 Cost 以配置单价估算，不是云厂商账单对账系统。
 
-推荐演进包括统一 Graph Node Span、生产指标导出、版本化 Eval Registry、Judge 校准集、业务价值实验平台和预算预估器。它们统一列入 [ROADMAP](ROADMAP.md)，并明确标注未实现。
+推荐演进包括统一 Graph Node Span、生产指标导出、集中式 Eval Registry、Judge 校准集、业务价值实验平台和预算预估器。它们统一列入 [ROADMAP](ROADMAP.md)，并明确标注未实现。

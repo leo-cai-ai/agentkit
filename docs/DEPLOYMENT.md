@@ -609,11 +609,15 @@ agentkit --tenant company_alpha doctor
 按业务补充评估门禁：
 
 ```bash
-agentkit --tenant company_alpha eval evaluation/datasets/golden.jsonl \
-  --target gateway-trace \
-  --threshold 1.0 \
-  --min-mean-score 0.8
+# 确定性预检：不调用模型、Gateway 或 Tool
+agentkit eval-suite evaluation/suites/trajectory.yaml --validate-only
+
+# 连接隔离的模型和外部依赖后执行完整 Suite，并保存可比较报告
+agentkit --tenant company_alpha eval-suite evaluation/suites/trajectory.yaml \
+  --output evaluation/reports/trajectory-release.json
 ```
+
+如果需要与已批准版本比较，可增加 `--baseline <历史报告.json>`。完整 Suite 可能调用模型、浏览器或业务 Tool，部署环境必须使用测试租户、测试账号和副作用隔离策略；`--validate-only` 只证明配置与数据契约有效，不证明 Agent 真实执行通过。
 
 正式放量建议：
 
@@ -767,6 +771,9 @@ agentkit --tenant company_alpha rag-query "退款政策" --roles support_agent -
 
 # 评估
 agentkit --tenant company_alpha eval evaluation/datasets/golden.jsonl --target gateway-trace
+agentkit eval-suite evaluation/suites/trajectory.yaml --validate-only
+agentkit --tenant company_alpha eval-suite evaluation/suites/trajectory.yaml \
+  --output evaluation/reports/trajectory-current.json
 
 # Docker
 docker compose up -d --build
@@ -784,6 +791,9 @@ docker compose down
 - [ ] 父子 Run、Agent、Conversation、Audit 和 Artifact 可追溯。
 - [ ] 高风险 Tool 的暂停、批准、拒绝、重启恢复和幂等通过。
 - [ ] RAG 权限过滤、引用和离线评估通过（启用时）。
+- [ ] Eval Suite 契约校验通过，Case 均有可执行 Check 且无重复 ID。
+- [ ] 发布环境完整 Eval Suite 达到 Pass Rate/Mean Score 门禁，报告包含 Git Commit、模型、Context Hash 和数据集 Hash。
+- [ ] 使用 Judge 的 Suite 已设置 `require_judge: true`，没有把 Judge 跳过误判为质量通过。
 - [ ] 多实例切换后会话、Memory 和审批仍一致。
 - [ ] P95、错误率、Token、成本、连接池和下游配额满足目标。
 - [ ] 数据库备份、应用回滚和外部副作用补偿方案已演练。

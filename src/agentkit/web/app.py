@@ -1205,9 +1205,7 @@ def _display_conversation_messages(
 def api_runs():
     runtime = get_runtime()
     tenant_id = str(runtime.tenant_config.get("tenant_id") or "")
-    return jsonify(
-        {"runs": _safe_runs(runtime.gateway.audit, limit=50, tenant_id=tenant_id)}
-    )
+    return jsonify({"runs": _safe_runs(runtime.gateway.audit, limit=50, tenant_id=tenant_id)})
 
 
 @app.get("/api/runs/<run_id>")
@@ -1399,8 +1397,7 @@ def _safe_event_summary(event: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
         for key, value in payload.items()
-        if key in _SAFE_EVENT_SUMMARY_FIELDS
-        and isinstance(value, str | int | float | bool)
+        if key in _SAFE_EVENT_SUMMARY_FIELDS and isinstance(value, str | int | float | bool)
     }
 
 

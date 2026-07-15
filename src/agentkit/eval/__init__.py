@@ -7,6 +7,17 @@ from .checks import run_check
 from .dataset import load_cases
 from .judge import JudgeResult, LLMJudge
 from .runner import run_case, run_eval
+from .suite import (
+    EvalExecution,
+    EvalFilters,
+    EvalGates,
+    EvalSuite,
+    filter_cases,
+    load_eval_suite,
+    load_suite_cases,
+    resolve_dataset_paths,
+    validate_suite_cases,
+)
 from .targets import extract_text, llm_target, make_gateway_target, make_gateway_trace_target
 
 __all__ = [
@@ -25,4 +36,13 @@ __all__ = [
     "make_gateway_target",
     "make_gateway_trace_target",
     "extract_text",
+    "EvalExecution",
+    "EvalFilters",
+    "EvalGates",
+    "EvalSuite",
+    "filter_cases",
+    "load_eval_suite",
+    "load_suite_cases",
+    "resolve_dataset_paths",
+    "validate_suite_cases",
 ]

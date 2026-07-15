@@ -6,6 +6,8 @@ import json
 from collections import Counter
 from pathlib import Path
 
+from agentkit.eval import load_cases, run_eval
+
 
 def test_strategy_trajectory_dataset_covers_runtime_matrix() -> None:
     path = Path(__file__).resolve().parents[2] / "evaluation" / "datasets" / "trajectory.jsonl"
@@ -37,3 +39,28 @@ def test_every_strategy_case_declares_governance_expectations() -> None:
         assert "expected_strategy" in case
         assert case["expected_status"]
         assert isinstance(case["context"], dict)
+
+
+def test_every_strategy_case_has_executable_assertions() -> None:
+    path = Path(__file__).resolve().parents[2] / "evaluation" / "datasets" / "trajectory.jsonl"
+    cases = load_cases(path)
+
+    assert cases
+    assert all(case.checks for case in cases)
+    assert all(any(check.type == "event_sequence" for check in case.checks) for case in cases)
+
+
+def test_strategy_dataset_rejects_a_completely_wrong_trace() -> None:
+    path = Path(__file__).resolve().parents[2] / "evaluation" / "datasets" / "trajectory.jsonl"
+    cases = load_cases(path)
+    wrong_trace = json.dumps(
+        {
+            "status": "wrong",
+            "response": {"strategy": "wrong"},
+            "audit_event_types": ["wrong"],
+        }
+    )
+
+    report = run_eval(cases, target=lambda case: wrong_trace)
+
+    assert report.pass_rate == 0.0

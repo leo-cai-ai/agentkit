@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 
 import pytest
 
@@ -135,6 +137,56 @@ def test_skipped_only_case_counts_as_passed() -> None:
     assert report.results[0].passed is True
 
 
+def test_case_without_checks_fails_closed() -> None:
+    report = run_eval([EvalCase(id="empty")], target=lambda case: "anything")
+
+    assert report.results[0].passed is False
+    assert report.results[0].outcomes[0].type == "configuration"
+    assert "no checks" in report.results[0].outcomes[0].detail
+
+
+def test_judge_can_be_required_by_the_regression_gate() -> None:
+    report = run_eval(
+        [EvalCase(id="judge", checks=(CheckSpec("judge", rubric="helpful"),))],
+        target=lambda case: "answer",
+        require_judge=True,
+    )
+
+    assert report.results[0].passed is False
+    assert report.results[0].outcomes[0].skipped is False
+    assert "required" in report.results[0].outcomes[0].detail
+
+
+def test_repetitions_and_concurrency_keep_stable_result_order() -> None:
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
+    def target(case: EvalCase) -> str:
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.01)
+        with lock:
+            active -= 1
+        return case.id
+
+    cases = [
+        EvalCase(id="a", checks=(CheckSpec("equals", "a"),)),
+        EvalCase(id="b", checks=(CheckSpec("equals", "b"),)),
+    ]
+    report = run_eval(cases, target, repetitions=2, concurrency=2)
+
+    assert [(result.case_id, result.attempt) for result in report.results] == [
+        ("a", 1),
+        ("a", 2),
+        ("b", 1),
+        ("b", 2),
+    ]
+    assert max_active == 2
+
+
 # --- dataset loading -------------------------------------------------------- #
 
 
@@ -225,3 +277,27 @@ def test_gateway_trace_target_can_resume_without_leaking_eval_control_context() 
     assert "_eval_resume" not in runtime.gateway.request_context
     assert data["initial_status"] == "waiting_for_approval"
     assert data["status"] == "completed"
+
+
+def test_gateway_trace_target_reads_task_response_status_from_top_level() -> None:
+    class _Response:
+        def to_dict(self):
+            return {
+                "status": "waiting_for_approval",
+                "thread_id": "thread-1",
+                "output": {"message": "review required"},
+                "strategy": "workflow",
+                "audit_events": [{"type": "run_paused"}],
+            }
+
+    class _Gateway:
+        def handle(self, request):
+            return _Response()
+
+    class _Runtime:
+        gateway = _Gateway()
+
+    data = json.loads(make_gateway_trace_target(_Runtime())(EvalCase(id="trace")))
+
+    assert data["initial_status"] == "waiting_for_approval"
+    assert data["status"] == "waiting_for_approval"

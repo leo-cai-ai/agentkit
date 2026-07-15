@@ -186,6 +186,7 @@ blocked → 阻止或修订预算耗尽
 | `validate-catalog` | 校验 Agent/Skill/Tool Catalog |
 | `validate-contexts` | 校验 Context Pack |
 | `eval` | Agent/LLM Golden Eval |
+| `eval-suite` | 运行或校验版本化 Eval Suite，支持筛选、重复、并发、报告和基线比较 |
 | `rag-ingest` | 摄取知识 |
 | `rag-query` | 查询 RAG |
 | `rag-eval` | 检索 Eval |
@@ -473,7 +474,7 @@ src/agentkit/
 │   ├── audit.py            # Audit Store
 │   └── cost.py             # Usage/Cost
 ├── llm/                    # Provider、限流、熔断、Failover
-├── eval/                   # Golden Eval
+├── eval/                   # Dataset/Check/Target/Suite/Runner/Report
 └── connectors/             # Browser/OCR/XHS 等边界适配
 
 agents/                     # Agent Manifest
@@ -481,6 +482,7 @@ skills/                     # Skill Package、Tool、Handler
 contexts/                   # Runtime/Business Context Pack
 tenants/                    # 租户装配
 evaluation/datasets/        # Eval Dataset
+evaluation/suites/          # 版本化 Eval Suite 配置
 tests/                      # Unit/Integration
 docs/                       # 架构、部署和专题手册
 ```

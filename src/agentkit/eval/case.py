@@ -51,12 +51,39 @@ class EvalCase:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EvalCase:
+        checks = [CheckSpec.from_dict(check) for check in data.get("checks", [])]
+        expected_strategy = data.get("expected_strategy")
+        if expected_strategy:
+            checks.append(
+                CheckSpec(
+                    "json_path_equals",
+                    {"path": "response.strategy", "equals": expected_strategy},
+                )
+            )
+        expected_status = data.get("expected_status")
+        if expected_status:
+            checks.append(
+                CheckSpec(
+                    "json_path_equals",
+                    {"path": "status", "equals": expected_status},
+                )
+            )
+        expected_events = data.get("expected_events")
+        if expected_events is None and expected_status:
+            expected_events = ["run_started"]
+            if expected_strategy:
+                expected_events.append("strategy_selected")
+            expected_events.append(
+                "run_paused" if expected_status == "waiting_for_approval" else "run_finished"
+            )
+        if expected_events:
+            checks.append(CheckSpec("event_sequence", expected_events))
         return cls(
             id=str(data["id"]),
             system=str(data.get("system", "")),
             user=str(data.get("user", data.get("text", ""))),
             agent=str(data.get("agent", "")),
-            checks=tuple(CheckSpec.from_dict(c) for c in data.get("checks", [])),
+            checks=tuple(checks),
             tags=tuple(str(t) for t in data.get("tags", [])),
             context=dict(data.get("context", {})),
         )
@@ -88,6 +115,7 @@ class CaseResult:
     output: str
     outcomes: tuple[CheckOutcome, ...]
     tags: tuple[str, ...] = ()
+    attempt: int = 1
 
     @property
     def evaluated(self) -> list[CheckOutcome]:
@@ -108,6 +136,7 @@ class CaseResult:
     def to_dict(self) -> dict[str, Any]:
         return {
             "case_id": self.case_id,
+            "attempt": self.attempt,
             "passed": self.passed,
             "score": round(self.score, 3),
             "tags": list(self.tags),
@@ -156,7 +185,8 @@ class EvalReport:
         ]
         for result in self.results:
             mark = "PASS" if result.passed else "FAIL"
-            lines.append(f"  [{mark}] {result.case_id} (score={result.score:.2f})")
+            attempt = f" attempt={result.attempt}" if result.attempt > 1 else ""
+            lines.append(f"  [{mark}] {result.case_id}{attempt} (score={result.score:.2f})")
             for outcome in result.outcomes:
                 if outcome.passed and not outcome.skipped:
                     continue

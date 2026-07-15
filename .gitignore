@@ -19,3 +19,6 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
+
+# 本地评测运行报告（基线报告应按需显式提交到独立目录）
+evaluation/reports/

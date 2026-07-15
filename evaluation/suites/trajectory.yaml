@@ -1,0 +1,12 @@
+id: strategy-trajectory
+version: "1"
+target: gateway-trace
+datasets:
+  - ../datasets/trajectory.jsonl
+execution:
+  repetitions: 1
+  concurrency: 1
+gates:
+  min_pass_rate: 1.0
+  min_mean_score: 1.0
+  require_judge: false
