@@ -77,12 +77,12 @@ def make_gateway_trace_target(
         )
         initial_response = runtime.gateway.handle(request).to_dict()
         response = initial_response
-        initial_output = initial_response.get("output", {})
-        if (
-            isinstance(resume_decision, dict)
-            and initial_output.get("status") == "waiting_for_approval"
-        ):
-            thread_id = str(initial_output.get("thread_id") or "")
+        initial_output = initial_response.get("output", {}) or {}
+        initial_status = initial_response.get("status") or initial_output.get("status", "completed")
+        if isinstance(resume_decision, dict) and initial_status == "waiting_for_approval":
+            thread_id = str(
+                initial_response.get("thread_id") or initial_output.get("thread_id") or ""
+            )
             response = runtime.gateway.resume(
                 thread_id,
                 approved_skills=list(resume_decision.get("approved_skills", [])),
@@ -91,8 +91,9 @@ def make_gateway_trace_target(
             ).to_dict()
         events = response.get("audit_events", [])
         envelope = {
-            "initial_status": initial_output.get("status", "completed"),
-            "status": response.get("output", {}).get("status", "completed"),
+            "initial_status": initial_status,
+            "status": response.get("status")
+            or (response.get("output", {}) or {}).get("status", "completed"),
             "initial_response": initial_response,
             "response": response,
             "audit_event_types": [event.get("type") for event in events if isinstance(event, dict)],

@@ -164,6 +164,7 @@ def run_check(
     *,
     case: EvalCase | None = None,
     judge: Any = None,
+    require_judge: bool = False,
 ) -> CheckOutcome:
     """Evaluate one check against ``output`` (deterministic or LLM-as-judge)."""
     if spec.type == "judge":
@@ -172,9 +173,13 @@ def run_check(
                 type="judge",
                 passed=False,
                 score=0.0,
-                detail="judge not configured (run with --judge)",
+                detail=(
+                    "judge required but not configured"
+                    if require_judge
+                    else "judge not configured (run with --judge)"
+                ),
                 weight=spec.weight,
-                skipped=True,
+                skipped=not require_judge,
             )
         rubric = spec.rubric or str(spec.value or "")
         result = judge.score(output=output, rubric=rubric, user=getattr(case, "user", ""))

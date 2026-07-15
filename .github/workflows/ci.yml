@@ -25,5 +25,7 @@ jobs:
       - name: Type check (informational)
         run: uv run mypy src/agentkit/core
         continue-on-error: true
+      - name: Eval suite contract gate
+        run: uv run agentkit eval-suite evaluation/suites/trajectory.yaml --validate-only
       - name: Test
         run: uv run pytest -q

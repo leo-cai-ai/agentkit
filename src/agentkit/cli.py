@@ -479,6 +479,105 @@ def _run_eval(
     return 0 if passed else 1
 
 
+def _run_eval_suite(
+    suite_path: str,
+    *,
+    use_judge: bool,
+    as_json: bool,
+    tenant_id: str | None,
+    output_path: str | None,
+    baseline_path: str | None,
+    validate_only: bool,
+) -> int:
+    """运行版本化评测套件，并持久化可比较的 JSON 报告。"""
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    configure_logging()
+
+    from datetime import UTC, datetime
+
+    from agentkit.config import get_settings
+    from agentkit.eval import (
+        LLMJudge,
+        llm_target,
+        load_eval_suite,
+        load_suite_cases,
+        make_gateway_target,
+        make_gateway_trace_target,
+        resolve_dataset_paths,
+        run_eval,
+    )
+    from agentkit.eval.report import build_run_report, write_run_report
+
+    suite = load_eval_suite(suite_path)
+    cases = load_suite_cases(suite, suite_path=suite_path)
+    dataset_paths = resolve_dataset_paths(suite, suite_path=suite_path)
+    if validate_only:
+        payload = {
+            "suite": suite.id,
+            "version": suite.version,
+            "target": suite.target,
+            "cases": len(cases),
+            "datasets": [str(path) for path in dataset_paths],
+            "valid": True,
+        }
+        if as_json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print(f"Eval suite valid: {suite.id} ({len(cases)} cases)")
+        return 0
+
+    runtime = None
+    if suite.target == "gateway":
+        runtime = build_runtime(tenant_id=tenant_id)
+        target = make_gateway_target(runtime)
+    elif suite.target == "gateway-trace":
+        runtime = build_runtime(tenant_id=tenant_id)
+        target = make_gateway_trace_target(runtime)
+    else:
+        target = llm_target
+
+    judge = LLMJudge() if use_judge else None
+    report = run_eval(
+        cases,
+        target,
+        judge=judge,
+        require_judge=suite.gates.require_judge,
+        repetitions=suite.execution.repetitions,
+        concurrency=suite.execution.concurrency,
+    )
+    settings = get_settings()
+    context_manifest_hash = ""
+    if runtime is not None:
+        context_manifest_hash = str(runtime.context_invoker.manifest_hash)
+    run_report = build_run_report(
+        report,
+        suite_id=suite.id,
+        suite_version=suite.version,
+        target=suite.target,
+        min_pass_rate=suite.gates.min_pass_rate,
+        min_mean_score=suite.gates.min_mean_score,
+        dataset_paths=dataset_paths,
+        tenant_id=tenant_id or "",
+        provider=settings.llm_provider,
+        model=settings.openai_model or settings.llm_provider,
+        context_manifest_hash=context_manifest_hash,
+        repetitions=suite.execution.repetitions,
+        concurrency=suite.execution.concurrency,
+        baseline_path=baseline_path,
+    )
+    if output_path is None:
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        output_path = str(Path("evaluation") / "reports" / f"{suite.id}-{timestamp}.json")
+    write_run_report(run_report, output_path)
+    if as_json:
+        print(json.dumps(run_report, ensure_ascii=False, indent=2))
+    else:
+        print(report.format_text())
+        print(f"\nReport: {output_path}")
+    return 0 if bool(run_report["gate"]["passed"]) else 1
+
+
 def _parse_csv(value: str | None) -> list[str]:
     if not value:
         return []
@@ -807,6 +906,21 @@ def build_parser() -> argparse.ArgumentParser:
     ev.add_argument("--no-judge", action="store_true", help="Skip LLM-as-judge checks.")
     ev.add_argument("--json", action="store_true", help="Emit the full report as JSON.")
 
+    eval_suite = sub.add_parser(
+        "eval-suite",
+        help="Run or validate a versioned enterprise evaluation suite.",
+    )
+    eval_suite.add_argument("suite", help="Path to an evaluation suite YAML file.")
+    eval_suite.add_argument("--no-judge", action="store_true", help="Disable LLM-as-judge.")
+    eval_suite.add_argument("--output", help="Persist the versioned JSON report to this path.")
+    eval_suite.add_argument("--baseline", help="Compare the run with a previous JSON report.")
+    eval_suite.add_argument(
+        "--validate-only",
+        action="store_true",
+        help="Validate suite configuration and executable checks without running targets.",
+    )
+    eval_suite.add_argument("--json", action="store_true", help="Emit JSON output.")
+
     rag_ingest = sub.add_parser(
         "rag-ingest",
         help="Ingest a file or folder into the configured RAG knowledge store.",
@@ -886,6 +1000,18 @@ def main() -> None:
             tenant_id=args.tenant,
         )
         raise SystemExit(code)
+    elif args.command == "eval-suite":
+        raise SystemExit(
+            _run_eval_suite(
+                args.suite,
+                use_judge=not args.no_judge,
+                as_json=args.json,
+                tenant_id=args.tenant,
+                output_path=args.output,
+                baseline_path=args.baseline,
+                validate_only=args.validate_only,
+            )
+        )
     elif args.command == "rag-ingest":
         raise SystemExit(
             _rag_ingest(

@@ -288,9 +288,7 @@ class SQLiteAuditLog:
             for row in rows
         ]
 
-    def list_runs(
-        self, *, limit: int = 20, tenant_id: str | None = None
-    ) -> list[dict[str, Any]]:
+    def list_runs(self, *, limit: int = 20, tenant_id: str | None = None) -> list[dict[str, Any]]:
         with self._connect() as conn:
             if tenant_id:
                 rows = conn.execute(
@@ -663,9 +661,7 @@ class PostgresAuditLog(SQLiteAuditLog):
             for row in rows
         ]
 
-    def list_runs(
-        self, *, limit: int = 20, tenant_id: str | None = None
-    ) -> list[dict[str, Any]]:
+    def list_runs(self, *, limit: int = 20, tenant_id: str | None = None) -> list[dict[str, Any]]:
         with self._connect() as conn:
             tenant_scope = self._tenant_id or tenant_id
             if tenant_scope:
