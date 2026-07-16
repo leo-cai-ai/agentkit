@@ -175,7 +175,7 @@ def build_runtime(
     if storage_backend in {"postgres", "pg"}:
         audit = PostgresAuditLog(settings, tenant_id=tenant_key)
     elif storage_backend in {"", "sqlite"}:
-        audit = SQLiteAuditLog(db_path)
+        audit = SQLiteAuditLog(db_path, input_mode=settings.audit_input_mode)
     else:
         raise ValueError(f"不支持的 storage_backend: {storage_backend!r}")
 

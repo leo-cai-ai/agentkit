@@ -65,6 +65,41 @@ def test_unauthenticated_redirects_to_login(client):
     assert "/login" in resp.headers["Location"]
 
 
+def test_metrics_requires_auth_and_exports_only_aggregates(client, monkeypatch):
+    response = client.get("/metrics")
+    assert response.status_code == 302
+
+    class _Audit:
+        def run_counts_by_status(self, *, tenant_id=None):
+            return {"completed": 1}
+
+        def event_timing_summary(self):
+            return []
+
+        def cost_summary(self):
+            return {
+                "calls": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cost_usd": 0,
+            }
+
+    import agentkit.web.app as web_app
+
+    monkeypatch.setattr(
+        web_app,
+        "get_runtime",
+        lambda: SimpleNamespace(gateway=SimpleNamespace(audit=_Audit())),
+    )
+    _login(client)
+
+    response = client.get("/metrics")
+
+    assert response.status_code == 200
+    assert response.mimetype == "text/plain"
+    assert 'agentkit_runs_total{status="completed"} 1' in response.get_data(as_text=True)
+
+
 def test_login_wrong_token_rejected(client):
     resp = client.post("/login", data={"token": "nope"})
     assert resp.status_code == 401

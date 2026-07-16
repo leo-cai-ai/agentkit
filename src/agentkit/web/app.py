@@ -32,6 +32,7 @@ from agentkit.core.identity import (
     Principal,
 )
 from agentkit.core.memory.store import ConversationConflictError
+from agentkit.core.operations import render_prometheus_metrics
 from agentkit.core.response_text import (
     format_task_output_text,
     normalize_persisted_assistant_text,
@@ -162,6 +163,45 @@ def clear_runtime_cache() -> None:
 @app.get("/healthz")
 def healthz():
     return jsonify({"status": "ok"})
+
+
+@app.get("/livez")
+def livez():
+    """仅证明 Web 进程存活，不初始化 Runtime 或访问外部依赖。"""
+
+    return jsonify({"status": "alive"})
+
+
+@app.get("/readyz")
+def readyz():
+    """验证 Runtime 已编译且审计存储可读，不返回底层异常细节。"""
+
+    try:
+        runtime = get_runtime()
+        runtime.gateway.audit.list_runs(limit=1, tenant_id=runtime.tenant_id)
+    except Exception:  # noqa: BLE001 - 探针必须返回稳定且不泄密的错误结构
+        return (
+            jsonify(
+                {
+                    "status": "not_ready",
+                    "components": {"runtime": "unavailable"},
+                }
+            ),
+            503,
+        )
+    return jsonify(
+        {
+            "status": "ready",
+            "components": {"runtime": "ready", "audit": "ready"},
+        }
+    )
+
+
+@app.get("/metrics")
+@require_permission(RUNS_VIEW)
+def prometheus_metrics():
+    payload = render_prometheus_metrics(get_runtime().gateway.audit)
+    return Response(payload, content_type="text/plain; version=0.0.4; charset=utf-8")
 
 
 @app.post("/api/admin/reload")

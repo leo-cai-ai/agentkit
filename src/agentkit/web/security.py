@@ -21,7 +21,7 @@ from agentkit.web.identity import resolve_principal
 logger = logging.getLogger("agentkit.web.security")
 
 # Endpoints reachable without authentication.
-PUBLIC_ENDPOINTS = frozenset({"login", "logout", "healthz", "static"})
+PUBLIC_ENDPOINTS = frozenset({"login", "logout", "healthz", "livez", "readyz", "static"})
 STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 

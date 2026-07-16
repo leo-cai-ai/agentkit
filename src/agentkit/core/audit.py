@@ -9,12 +9,65 @@ history in the same database.
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+
+from .safety import redact_pii
+
+AuditInputMode = Literal["raw", "redacted", "hash"]
+
+
+@dataclass(frozen=True)
+class SanitizedAuditInput:
+    """可持久化的输入及其不可逆完整性元数据。"""
+
+    text: str
+    sha256: str
+    length: int
+    mode: AuditInputMode
+
+
+def sanitize_audit_input(text: str, mode: AuditInputMode) -> SanitizedAuditInput:
+    """按租户级策略处理运行输入，默认不持久化已识别的敏感信息。"""
+
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    if mode == "raw":
+        stored = text
+    elif mode == "redacted":
+        stored, _ = redact_pii(text)
+    elif mode == "hash":
+        stored = f"sha256:{digest}"
+    else:
+        raise ValueError(f"不支持的审计输入模式: {mode!r}")
+    return SanitizedAuditInput(stored, digest, len(text), mode)
+
+
+def _run_started_payload(
+    *,
+    sanitized: SanitizedAuditInput,
+    tenant_id: str,
+    user_id: str,
+    agent_id: str | None,
+    parent_run_id: str | None,
+    conversation_id: str | None,
+) -> dict[str, Any]:
+    return {
+        "tenant_id": tenant_id,
+        "user_id": user_id,
+        "text": sanitized.text,
+        "input_mode": sanitized.mode,
+        "input_sha256": sanitized.sha256,
+        "input_length": sanitized.length,
+        "agent_id": agent_id,
+        "parent_run_id": parent_run_id,
+        "conversation_id": conversation_id,
+    }
+
 
 TERMINAL_RUN_STATUSES = frozenset(
     {
@@ -35,6 +88,7 @@ _BLOCKING_RUN_STATUSES = (
 
 @dataclass
 class InMemoryAuditLog:
+    input_mode: AuditInputMode = "redacted"
     _events: list[dict[str, Any]] = field(default_factory=list)
     _runs: dict[str, dict[str, Any]] = field(default_factory=dict)
 
@@ -50,11 +104,12 @@ class InMemoryAuditLog:
     ) -> str:
         run_id = str(uuid.uuid4())
         now = round(time.time(), 3)
+        sanitized = sanitize_audit_input(text, self.input_mode)
         self._runs[run_id] = {
             "run_id": run_id,
             "tenant_id": tenant_id,
             "user_id": user_id,
-            "text": text,
+            "text": sanitized.text,
             "status": "running",
             "agent_id": agent_id,
             "parent_run_id": parent_run_id,
@@ -65,14 +120,14 @@ class InMemoryAuditLog:
         self.record(
             run_id,
             "run_started",
-            {
-                "tenant_id": tenant_id,
-                "user_id": user_id,
-                "text": text,
-                "agent_id": agent_id,
-                "parent_run_id": parent_run_id,
-                "conversation_id": conversation_id,
-            },
+            _run_started_payload(
+                sanitized=sanitized,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                agent_id=agent_id,
+                parent_run_id=parent_run_id,
+                conversation_id=conversation_id,
+            ),
         )
         return run_id
 
@@ -166,8 +221,14 @@ class SQLiteAuditLog:
     not HR, sales, finance, or any other business domain.
     """
 
-    def __init__(self, db_path: str | Path) -> None:
+    def __init__(
+        self,
+        db_path: str | Path,
+        *,
+        input_mode: AuditInputMode = "redacted",
+    ) -> None:
         self._db_path = Path(db_path)
+        self._input_mode = input_mode
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 
@@ -183,6 +244,7 @@ class SQLiteAuditLog:
     ) -> str:
         run_id = str(uuid.uuid4())
         now = round(time.time(), 3)
+        sanitized = sanitize_audit_input(text, self._input_mode)
         with self._connect() as conn:
             conn.execute(
                 """
@@ -196,7 +258,7 @@ class SQLiteAuditLog:
                     run_id,
                     tenant_id,
                     user_id,
-                    text,
+                    sanitized.text,
                     "running",
                     now,
                     agent_id,
@@ -207,14 +269,14 @@ class SQLiteAuditLog:
         self.record(
             run_id,
             "run_started",
-            {
-                "tenant_id": tenant_id,
-                "user_id": user_id,
-                "text": text,
-                "agent_id": agent_id,
-                "parent_run_id": parent_run_id,
-                "conversation_id": conversation_id,
-            },
+            _run_started_payload(
+                sanitized=sanitized,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                agent_id=agent_id,
+                parent_run_id=parent_run_id,
+                conversation_id=conversation_id,
+            ),
         )
         return run_id
 
@@ -530,6 +592,7 @@ class PostgresAuditLog(SQLiteAuditLog):
     def __init__(self, settings: Any = None, *, tenant_id: str | None = None) -> None:
         self._settings = settings
         self._tenant_id = tenant_id
+        self._input_mode = getattr(settings, "audit_input_mode", "redacted")
         self._init_schema()
 
     def start_run(
@@ -544,6 +607,7 @@ class PostgresAuditLog(SQLiteAuditLog):
     ) -> str:
         run_id = str(uuid.uuid4())
         now = round(time.time(), 3)
+        sanitized = sanitize_audit_input(text, self._input_mode)
         with self._connect() as conn:
             conn.execute(
                 """
@@ -557,7 +621,7 @@ class PostgresAuditLog(SQLiteAuditLog):
                     run_id,
                     tenant_id,
                     user_id,
-                    text,
+                    sanitized.text,
                     "running",
                     now,
                     agent_id,
@@ -568,14 +632,14 @@ class PostgresAuditLog(SQLiteAuditLog):
         self.record(
             run_id,
             "run_started",
-            {
-                "tenant_id": tenant_id,
-                "user_id": user_id,
-                "text": text,
-                "agent_id": agent_id,
-                "parent_run_id": parent_run_id,
-                "conversation_id": conversation_id,
-            },
+            _run_started_payload(
+                sanitized=sanitized,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                agent_id=agent_id,
+                parent_run_id=parent_run_id,
+                conversation_id=conversation_id,
+            ),
         )
         return run_id
 

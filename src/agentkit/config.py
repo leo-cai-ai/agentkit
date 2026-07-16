@@ -176,6 +176,8 @@ class Settings(BaseSettings):
     # 最终输出统一经过治理审查；审查异常默认阻断，避免未经检查的内容外发。
     output_review_enabled: bool = True
     output_review_fail_closed: bool = True
+    # raw 仅用于受控调试；redacted 为默认；hash 不保存原始输入。
+    audit_input_mode: Literal["raw", "redacted", "hash"] = "redacted"
 
     # Conversational memory (Phase 4). Only applies to memory-enabled agents.
     memory_window_turns: int = Field(default=6, ge=1)
