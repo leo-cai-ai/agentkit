@@ -357,7 +357,7 @@ gunicorn \
 - SSO/OIDC/SAML。
 - 请求大小、连接数和入口限流。
 - `/livez` 只探测 Web 进程；`/readyz` 探测 Runtime 与 Audit Store；`/healthz` 保留兼容。
-- `/metrics` 需要具备 `runs:view` 权限的认证身份，供 Prometheus 抓取聚合指标。
+- `/metrics` 需要具备 `operations:view` 权限的认证身份，供 Prometheus 抓取聚合指标。
 - SSE 长连接超时。
 
 不要使用 Flask 开发服务器承载生产流量。

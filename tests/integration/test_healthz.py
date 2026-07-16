@@ -78,3 +78,25 @@ def test_readyz_probes_runtime_audit_store(monkeypatch):
         "status": "ready",
         "components": {"runtime": "ready", "audit": "ready"},
     }
+
+
+def test_readyz_identifies_audit_failure_without_error_details(monkeypatch):
+    web_app = importlib.import_module("agentkit.web.app")
+
+    class _Audit:
+        def list_runs(self, *, limit, tenant_id):
+            raise RuntimeError("secret database hostname")
+
+    runtime = SimpleNamespace(
+        tenant_id="company_alpha",
+        gateway=SimpleNamespace(audit=_Audit()),
+    )
+    monkeypatch.setattr(web_app, "get_runtime", lambda: runtime)
+
+    response = web_app.app.test_client().get("/readyz")
+
+    assert response.status_code == 503
+    assert response.get_json() == {
+        "status": "not_ready",
+        "components": {"runtime": "ready", "audit": "unavailable"},
+    }

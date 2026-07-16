@@ -25,6 +25,7 @@ from agentkit.core.contracts import TaskRequest, TaskResponse
 from agentkit.core.identity import (
     CHAT_USE,
     GOVERNANCE_VIEW,
+    OPERATIONS_VIEW,
     RUNS_VIEW,
     RUNTIME_ADMIN,
     TASK_APPROVE,
@@ -178,13 +179,24 @@ def readyz():
 
     try:
         runtime = get_runtime()
-        runtime.gateway.audit.list_runs(limit=1, tenant_id=runtime.tenant_id)
     except Exception:  # noqa: BLE001 - 探针必须返回稳定且不泄密的错误结构
         return (
             jsonify(
                 {
                     "status": "not_ready",
                     "components": {"runtime": "unavailable"},
+                }
+            ),
+            503,
+        )
+    try:
+        runtime.gateway.audit.list_runs(limit=1, tenant_id=runtime.tenant_id)
+    except Exception:  # noqa: BLE001 - 探针必须返回稳定且不泄密的错误结构
+        return (
+            jsonify(
+                {
+                    "status": "not_ready",
+                    "components": {"runtime": "ready", "audit": "unavailable"},
                 }
             ),
             503,
@@ -198,7 +210,7 @@ def readyz():
 
 
 @app.get("/metrics")
-@require_permission(RUNS_VIEW)
+@require_permission(OPERATIONS_VIEW)
 def prometheus_metrics():
     payload = render_prometheus_metrics(get_runtime().gateway.audit)
     return Response(payload, content_type="text/plain; version=0.0.4; charset=utf-8")

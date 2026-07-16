@@ -400,7 +400,7 @@ Resume 不是重放原始请求。若 Checkpoint 缺失或失效，Action 标记
 
 - `GET /livez`：公开、常量时间，不初始化 Runtime。
 - `GET /readyz`：公开，探测当前租户 Runtime 和 Audit Store；失败返回 503，响应不包含底层异常文本。
-- `GET /metrics`：需要 `runs:view` 权限，输出 Prometheus 文本；标签不包含租户、用户、会话或 Run ID。
+- `GET /metrics`：需要 `operations:view` 权限，输出 Prometheus 文本；标签不包含租户、用户、会话或 Run ID。
 
 本地启动与日志命令见 [部署指南](../DEPLOYMENT.md)。
 
