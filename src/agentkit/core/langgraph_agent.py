@@ -42,6 +42,7 @@ from .execution.selector import StrategySelection, StrategySelector
 from .idempotency import IdempotencyStore
 from .langgraph_runtime import invoke_graph_v2
 from .registry import AgentRegistry, SkillRegistry, ToolRegistry
+from .review import OutputReviewChain, OutputReviewContext
 from .router import CapabilityResolutionError, IntentRouter
 from .schema_input_resolver import InputResolution
 from .tool_backends import PythonToolBackend, ToolBackendRegistry
@@ -129,6 +130,7 @@ class UnifiedAgentGraph:
         artifact_store_factory: Callable[[str], ArtifactStore] | None = None,
         tool_backends: ToolBackendRegistry | None = None,
         idempotency_store: IdempotencyStore | None = None,
+        output_review_chain: OutputReviewChain | None = None,
     ) -> None:
         self._tenant_id = tenant_id
         self._tenant_selector = tenant_selector
@@ -157,6 +159,7 @@ class UnifiedAgentGraph:
                 {ToolProvider.PYTHON: PythonToolBackend()}
             )
         self._idempotency_store = idempotency_store
+        self._output_review_chain = output_review_chain
         self._graph = self._build_graph()
 
     def run(self, request: TaskRequest, *, thread_id: str | None = None) -> TaskResponse:
@@ -384,7 +387,15 @@ class UnifiedAgentGraph:
                     output={"reason": f"未知 Agent: {agent_id}"},
                 )
             }
-        self._audit.record(state["run_id"], "agent_loaded", {"agent": agent.name})
+        self._audit.record(
+            state["run_id"],
+            "agent_loaded",
+            {
+                "agent": agent.name,
+                "schema_version": agent.schema_version,
+                "release_version": agent.release_version,
+            },
+        )
         return {"agent": agent}
 
     def _build_context(self, state: UnifiedAgentState) -> dict[str, Any]:
@@ -448,7 +459,13 @@ class UnifiedAgentGraph:
         self._audit.record(
             state["run_id"],
             "capability_resolved",
-            {"skills": list(resolution.candidate_skills)},
+            {
+                "skills": list(resolution.candidate_skills),
+                "skill_versions": {
+                    skill_name: self._skills.get(skill_name).release_version
+                    for skill_name in resolution.candidate_skills
+                },
+            },
         )
         return {"resolution": resolution}
 
@@ -669,9 +686,50 @@ class UnifiedAgentGraph:
 
     def _review_output(self, state: UnifiedAgentState) -> dict[str, Any]:
         result = state.get("result")
-        if result is not None:
+        if result is None:
+            return {}
+        chain = self._output_review_chain
+        if chain is None:
             self._audit.record(state["run_id"], "output_reviewed", {"status": result.status})
-        return {}
+            return {}
+        agent = state.get("agent")
+        selection = state.get("selection")
+        reviewed = chain.review(
+            OutputReviewContext(
+                tenant_id=self._tenant_id,
+                run_id=state["run_id"],
+                agent_id=agent.name if agent is not None else "",
+                strategy=selection.strategy.value if selection is not None else "",
+                status=result.status,
+                output=dict(result.output),
+            )
+        )
+        finding_codes = [finding.code for finding in reviewed.findings]
+        self._audit.record(
+            state["run_id"],
+            "output_reviewed",
+            {
+                "status": result.status,
+                "action": reviewed.action,
+                "finding_codes": finding_codes,
+                "finding_count": len(finding_codes),
+            },
+        )
+        if reviewed.action == "block":
+            return {
+                "result": StrategyResult(
+                    status="blocked",
+                    output={
+                        "reason": "输出未通过治理审查。",
+                        "review": {
+                            "action": "block",
+                            "finding_codes": finding_codes,
+                        },
+                    },
+                    metrics=result.metrics,
+                )
+            }
+        return {"result": replace(result, output=reviewed.output)}
 
     def _finalize(self, state: UnifiedAgentState) -> dict[str, Any]:
         result = state.get("result") or StrategyResult(

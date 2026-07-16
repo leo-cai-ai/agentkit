@@ -173,6 +173,9 @@ class Settings(BaseSettings):
     # call. Default false (flag + audit only) to avoid false-positive blocking.
     safety_block_on_injection: bool = False
     safety_detect_pii: bool = True
+    # 最终输出统一经过治理审查；审查异常默认阻断，避免未经检查的内容外发。
+    output_review_enabled: bool = True
+    output_review_fail_closed: bool = True
 
     # Conversational memory (Phase 4). Only applies to memory-enabled agents.
     memory_window_turns: int = Field(default=6, ge=1)
