@@ -1,4 +1,6 @@
 ---
+schema_version: 1
+release_version: 1.0.0
 id: hr_recruiter
 domain: hr.recruitment
 description: 招聘筛选与候选人排序 Agent。

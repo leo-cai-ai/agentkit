@@ -34,6 +34,35 @@ def test_catalog_compiles_agent_context_execution_and_mcp_tool(tmp_path: Path) -
     assert tool.provider is ToolProvider.MCP
     assert tool.mcp_server == "github"
     assert tool.mcp_tool == "search_code"
+    assert agent.schema_version == 1
+    assert agent.release_version == "1.0.0"
+    assert capability.schema_version == 1
+    assert capability.release_version == "1.0.0"
+
+
+@pytest.mark.parametrize(
+    ("agent_changes", "package_changes", "message"),
+    [
+        ({"schema_version": 2}, None, "schema_version"),
+        ({"release_version": "2026.07"}, None, "release_version"),
+        (None, {"schema_version": 2}, "schema_version"),
+        (None, {"release_version": "latest"}, "release_version"),
+    ],
+)
+def test_catalog_rejects_unsupported_or_invalid_manifest_versions(
+    tmp_path: Path,
+    agent_changes: dict | None,
+    package_changes: dict | None,
+    message: str,
+) -> None:
+    _write_catalog(
+        tmp_path,
+        agent_changes=agent_changes,
+        package_changes=package_changes,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        load_catalog(tmp_path)
 
 
 def test_catalog_registers_new_runtime_contracts(tmp_path: Path) -> None:
@@ -194,6 +223,7 @@ def _write_catalog(
     agent_changes: dict | None = None,
     capability_changes: dict | None = None,
     tool_changes: dict | None = None,
+    package_changes: dict | None = None,
 ) -> None:
     agent_dir = root / "agents" / "research"
     skill_dir = root / "skills" / "research"
@@ -202,6 +232,8 @@ def _write_catalog(
     scripts_dir.mkdir(parents=True)
 
     agent = {
+        "schema_version": 1,
+        "release_version": "1.0.0",
         "id": "research",
         "domain": "knowledge.research",
         "description": "企业研究 Agent",
@@ -299,6 +331,8 @@ def _write_catalog(
         "output_schema": {"type": "object"},
     }
     package = {
+        "schema_version": 1,
+        "release_version": "1.0.0",
         "package_id": "research",
         "tools": [
             {
@@ -315,6 +349,7 @@ def _write_catalog(
         ],
         "capabilities": [capability, summary_capability],
     }
+    package.update(package_changes or {})
     (skill_dir / "skill.yaml").write_text(
         yaml.safe_dump(package, allow_unicode=True, sort_keys=False), encoding="utf-8"
     )

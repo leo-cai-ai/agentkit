@@ -95,6 +95,8 @@ class AgentProfile:
     model: str = "default"
     max_tokens: int = 100_000
     routing_keywords: tuple[str, ...] = ()
+    schema_version: int = 1
+    release_version: str = "0.0.0"
 
 
 @dataclass(frozen=True)
@@ -117,6 +119,8 @@ class SkillDefinition:
     skill_file: str = ""
     skill_instructions: str = ""
     skill_resources: dict[str, list[str]] = field(default_factory=dict)
+    schema_version: int = 1
+    release_version: str = "0.0.0"
 
 
 @dataclass(frozen=True)

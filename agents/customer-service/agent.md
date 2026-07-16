@@ -1,4 +1,6 @@
 ---
+schema_version: 1
+release_version: 1.0.0
 id: customer_service
 domain: support.customer_service
 description: 客服问答、订单查询、物流诊断与退款处理 Agent。
