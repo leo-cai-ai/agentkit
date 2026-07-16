@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from typing import Any, Generic, Literal, Protocol, TypeVar
+from typing import Any, Generic, Literal, Protocol, TypeVar, cast
 
 from .safety import ContentSafetyGuard
 
@@ -118,7 +118,7 @@ def _sanitize_output_value(
         findings.extend(
             OutputReviewFinding(
                 code=f"safety.{finding.category}.{finding.label}",
-                severity=finding.severity,
+                severity=cast(Literal["low", "medium", "high"], finding.severity),
                 message="输出中包含已脱敏的敏感信息。",
                 path=path,
             )

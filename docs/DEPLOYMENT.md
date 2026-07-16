@@ -332,7 +332,8 @@ agentkit --tenant company_alpha web
 - Agent 关系图：`http://127.0.0.1:8501/agents`
 - 运行追踪：`http://127.0.0.1:8501/operations`
 - 治理：`http://127.0.0.1:8501/governance`
-- 健康检查：`http://127.0.0.1:8501/healthz`
+- 存活检查：`http://127.0.0.1:8501/livez`
+- 就绪检查：`http://127.0.0.1:8501/readyz`
 
 Chat 中未使用 `@` 时由 General Agent 决定直接回答、澄清或委派；`@招聘` 等别名只对当前消息生效，下一条未带 `@` 的消息重新交给 General Agent，但仍共享同一 General 会话历史。
 
@@ -355,7 +356,8 @@ gunicorn \
 - TLS 和安全 Header。
 - SSO/OIDC/SAML。
 - 请求大小、连接数和入口限流。
-- `/healthz` 探活。
+- `/livez` 只探测 Web 进程；`/readyz` 探测 Runtime 与 Audit Store；`/healthz` 保留兼容。
+- `/metrics` 需要具备 `runs:view` 权限的认证身份，供 Prometheus 抓取聚合指标。
 - SSE 长连接超时。
 
 不要使用 Flask 开发服务器承载生产流量。

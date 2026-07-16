@@ -301,11 +301,26 @@ agentkit eval-suite evaluation/suites/trajectory.yaml --validate-only --json
 当前 CI 执行：
 
 ```bash
+uv run mypy src/agentkit/core
+uv run agentkit validate-catalog
+uv run agentkit validate-contexts
 uv run agentkit eval-suite evaluation/suites/trajectory.yaml --validate-only
 uv run pytest -q
 ```
 
-第一条是确定性的 Suite 契约门禁，不执行真实 Target；真实 Runtime 行为由单元/集成测试覆盖。接入真实模型的 Nightly 或发布门禁时，应另行执行不带 `--validate-only` 的 `eval-suite`，并配置隔离租户、无真实副作用 Tool 或显式审批策略。
+Catalog、Context 与 Suite 校验都是确定性契约门禁，不执行真实副作用；真实 Runtime 行为由单元/集成测试覆盖。接入真实模型的 Nightly 或发布门禁时，应另行执行不带 `--validate-only` 的 `eval-suite`，并配置隔离租户、无真实副作用 Tool 或显式审批策略。
+
+### 5.5 输出治理、审计与 Prometheus 指标
+
+所有策略的最终 `StrategyResult` 都经过同一条 Output Review Chain。默认审查器递归脱敏字符串字段；审查器异常按 `fail_closed` 阻断，但不会重新执行 Skill、Tool 或副作用。审计事件 `output_reviewed` 只记录 action、finding code 和数量，不记录命中的敏感正文。
+
+运行输入默认采用 `AGENTKIT_AUDIT_INPUT_MODE=redacted`。可选值为：
+
+- `raw`：保留原文，仅允许在隔离调试环境短期开启。
+- `redacted`：持久化脱敏文本，同时记录原输入 SHA-256 和字符长度。
+- `hash`：仅持久化 `sha256:<digest>`，不保存可读原文。
+
+`/metrics` 从 Audit Store 聚合运行状态、LLM Token/Cost 和事件平均耗时。它需要 `runs:view` 权限，并禁止租户、Run ID、用户输入等高基数或敏感标签。
 
 可迭代流程：
 

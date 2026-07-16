@@ -8,8 +8,8 @@ history in the same database.
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import sqlite3
 import time
 import uuid

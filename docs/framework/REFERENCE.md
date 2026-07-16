@@ -133,7 +133,10 @@ blocked → 阻止或修订预算耗尽
 
 | Method | Path | 用途 |
 | --- | --- | --- |
-| GET | `/healthz` | 健康检查 |
+| GET | `/healthz` | 兼容健康检查 |
+| GET | `/livez` | Web 进程存活探针，不初始化 Runtime |
+| GET | `/readyz` | Runtime 与审计存储就绪探针 |
+| GET | `/metrics` | 受 `runs:view` 保护的 Prometheus 聚合指标 |
 | GET | `/`、`/overview` | 概览 |
 | GET | `/chat` | General Chat |
 | GET | `/agents` | Agent Network |

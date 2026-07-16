@@ -389,12 +389,18 @@ Resume 不是重放原始请求。若 Checkpoint 缺失或失效，Action 标记
 
 ### 11.1 调试顺序
 
-1. 先用 `/healthz` 确认进程存活。
+1. 先用 `/livez` 确认 Web 进程存活，再用 `/readyz` 验证 Runtime 与审计存储可用；`/healthz` 仅为兼容入口。
 2. 在浏览器 Session 中确认 Principal 和 CSRF；403 先看平台权限，不能直接归因于 Agent。
 3. 用 `/api/tasks` + 显式 `agent/skill` 隔离业务图问题。
 4. 用 `/api/chat` + 显式 `@Agent` 验证 General 父子委派。
 5. 从 `/api/runs/<run_id>` 查看事件，再沿 `children` 下钻业务子 Run。
 6. 流式问题同时检查 `token/final/error` 和代理缓冲。
+
+生产探针与监控端点：
+
+- `GET /livez`：公开、常量时间，不初始化 Runtime。
+- `GET /readyz`：公开，探测当前租户 Runtime 和 Audit Store；失败返回 503，响应不包含底层异常文本。
+- `GET /metrics`：需要 `runs:view` 权限，输出 Prometheus 文本；标签不包含租户、用户、会话或 Run ID。
 
 本地启动与日志命令见 [部署指南](../DEPLOYMENT.md)。
 
