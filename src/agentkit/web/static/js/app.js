@@ -621,6 +621,21 @@ async function loadConversations(agent) {
 }
 
 function executionFromTimeline(timeline, operation = "") {
+  // 优先使用后端权威的 run 级执行状态（与删除策略同源），
+  // 避免根据最后一个已封存 attempt 的状态误判删除资格。
+  const execution = timeline?.execution;
+  if (execution && typeof execution.status === "string" && execution.status !== "") {
+    return {
+      status: execution.status,
+      operation,
+      retryable: Boolean(execution.retryable),
+      outcome: execution.outcome || execution.status,
+      reason: execution.reason || "",
+      requires_second_delete_confirmation: Boolean(
+        execution.requires_second_delete_confirmation,
+      ),
+    };
+  }
   const turns = timeline?.turns || [];
   const turn = turns.at(-1);
   const attempt = turn?.attempts?.at(-1);
@@ -1498,7 +1513,7 @@ function bindRunFilters() {
   const form = document.querySelector("[data-run-filters]");
   const list = document.querySelector("[data-run-list]");
   if (!form || !list) return;
-  const rows = Array.from(list.querySelectorAll("[data-run-row]"));
+  const groups = Array.from(list.querySelectorAll("[data-run-group]"));
   const query = form.querySelector('[data-run-filter="query"]');
   const status = form.querySelector('[data-run-filter="status"]');
   const agent = form.querySelector('[data-run-filter="agent"]');
@@ -1510,18 +1525,26 @@ function bindRunFilters() {
     const queryValue = normalize(query?.value);
     const statusValue = normalize(status?.value);
     const agentValue = normalize(agent?.value);
-    let visible = 0;
-    for (const row of rows) {
-      const matches = (
-        (!queryValue || normalize(row.dataset.runText).includes(queryValue)) &&
-        (!statusValue || normalize(row.dataset.runStatus) === statusValue) &&
-        (!agentValue || normalize(row.dataset.runAgent).includes(agentValue))
-      );
-      row.hidden = !matches;
-      if (matches) visible += 1;
+    let visibleRows = 0;
+    let visibleGroups = 0;
+    for (const group of groups) {
+      const rows = Array.from(group.querySelectorAll("[data-run-row]"));
+      let matched = 0;
+      for (const row of rows) {
+        const matches = (
+          (!queryValue || normalize(row.dataset.runText).includes(queryValue)) &&
+          (!statusValue || normalize(row.dataset.runStatus) === statusValue) &&
+          (!agentValue || normalize(row.dataset.runAgent).includes(agentValue))
+        );
+        row.hidden = !matches;
+        if (matches) matched += 1;
+      }
+      group.hidden = matched === 0;
+      if (matched) visibleGroups += 1;
+      visibleRows += matched;
     }
-    if (empty) empty.hidden = visible > 0 || rows.length === 0;
-    if (count) count.textContent = String(visible);
+    if (empty) empty.hidden = visibleRows > 0 || groups.length === 0;
+    if (count) count.textContent = String(visibleGroups);
   };
 
   form.addEventListener("input", update);

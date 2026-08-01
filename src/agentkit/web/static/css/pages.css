@@ -828,8 +828,49 @@
 }
 
 .ak-run-filter-empty[hidden],
-.ak-run-list-item[hidden] {
+.ak-run-list-item[hidden],
+.ak-run-group[hidden] {
   display: none;
+}
+
+/* Hierarchical run groups: business sub-runs nest under their coordinator. */
+.ak-run-group + .ak-run-group {
+  border-block-start: 1px solid var(--ak-sys-color-border-default);
+}
+
+.ak-run-group .ak-run-list-item {
+  border-block-end: 0;
+}
+
+.ak-run-group + .ak-run-group > .ak-run-list-item,
+.ak-run-children .ak-run-list-item {
+  border-block-start: 1px solid var(--ak-sys-color-border-default);
+}
+
+.ak-run-children {
+  margin-inline-start: var(--ak-sys-space-4);
+  border-inline-start: 2px solid var(--ak-sys-color-border-interactive);
+}
+
+.ak-run-child {
+  background: var(--ak-sys-color-bg-surface-subtle);
+}
+
+.ak-run-role-tag {
+  display: inline-block;
+  margin-inline-end: var(--ak-sys-space-1);
+  padding: 0 var(--ak-sys-space-1);
+  border-radius: var(--ak-sys-radius-sm);
+  background: var(--ak-sys-color-bg-inset);
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.625rem;
+  font-weight: 700;
+  line-height: 1.4;
+  vertical-align: baseline;
+}
+
+.ak-run-role-tag-child {
+  color: var(--ak-sys-color-accent-default);
 }
 
 .ak-run-chain {
@@ -1128,6 +1169,17 @@
   color: var(--ak-sys-color-text-subtle);
   font-size: 0.75rem;
   line-height: 1.4;
+}
+
+.ak-run-artifacts {
+  margin-block-start: var(--ak-sys-space-5);
+}
+
+.ak-event-summary {
+  margin: 0;
+  color: var(--ak-sys-color-text-primary);
+  font-size: 0.8125rem;
+  line-height: 1.5;
 }
 
 .ak-operations-timeline > .ak-empty-state {
