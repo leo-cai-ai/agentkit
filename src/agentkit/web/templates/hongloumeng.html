@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% from "_components.html" import status_pill %}
+
+{% block page_description %}浏览《红楼梦》Neo4j 知识图谱，并基于图谱进行知识问答。{% endblock %}
+
+{% block content %}
+  <section class="ak-hlm-workspace" aria-label="红楼梦知识图谱工作区">
+    <div class="ak-hlm-layout">
+      <article class="panel ak-panel ak-hlm-graph-panel" aria-label="知识图谱画布">
+        <div class="panel-head ak-panel-header">
+          <div>
+            <span class="ak-eyebrow">Knowledge Graph</span>
+            <h2>《红楼梦》人物关系图谱</h2>
+          </div>
+          <span data-hlm-status class="ak-hlm-status">连接中…</span>
+        </div>
+        <div class="ak-hlm-toolbar">
+          <label class="ak-hlm-search">
+            <span>查找人物</span>
+            <input
+              data-hlm-entity-search
+              type="search"
+              placeholder="输入人名/别名，如：宝玉、凤姐、潇湘妃子"
+              autocomplete="off"
+            >
+          </label>
+          <button class="secondary" data-hlm-reset aria-label="重置图谱视图">重置视图</button>
+          <div class="ak-hlm-zoom" aria-label="缩放控制">
+            <button type="button" data-hlm-zoom-out aria-label="缩小">−</button>
+            <span class="ak-hlm-zoom-value" data-hlm-zoom>100%</span>
+            <button type="button" data-hlm-zoom-in aria-label="放大">＋</button>
+            <button type="button" data-hlm-zoom-reset aria-label="重置缩放" title="适应画布">⤢</button>
+          </div>
+          <div class="ak-hlm-legend" aria-label="图例">
+            <span><i class="dot dot-character"></i>人物</span>
+            <span><i class="dot dot-family"></i>家族</span>
+            <span><i class="dot dot-place"></i>地点</span>
+            <span><i class="dot dot-object"></i>物品</span>
+            <span><i class="dot dot-event"></i>事件</span>
+          </div>
+        </div>
+        <div class="ak-hlm-canvas" data-hlm-canvas aria-label="知识图谱可视化">
+          <svg data-hlm-svg role="img" aria-label="红楼梦知识图谱"></svg>
+          <div class="ak-hlm-empty" data-hlm-empty hidden>图谱为空或未连接。</div>
+        </div>
+      </article>
+
+      <aside class="panel ak-panel ak-hlm-side" aria-label="问答与详情">
+        <div class="panel-head ak-panel-header">
+          <div>
+            <span class="ak-eyebrow">Q&A</span>
+            <h2>知识问答</h2>
+          </div>
+          <span class="ak-hlm-agent-tag">红楼梦 Agent</span>
+        </div>
+        <form class="ak-hlm-ask" data-hlm-ask-form>
+          <label>
+            <span>问题</span>
+            <textarea
+              data-hlm-question
+              rows="3"
+              placeholder="例如：贾宝玉和林黛玉是什么关系？林黛玉住在哪里？"
+            ></textarea>
+          </label>
+          <button data-hlm-ask-submit type="submit">提问</button>
+        </form>
+        <div class="ak-hlm-answer" data-hlm-answer hidden>
+          <h3>回答</h3>
+          <p data-hlm-answer-text></p>
+          <details class="ak-json-details">
+            <summary><span>查看图谱证据</span></summary>
+            <pre class="ak-json-viewer" tabindex="0"><code data-hlm-answer-evidence></code></pre>
+          </details>
+        </div>
+        <div class="ak-hlm-node-info" data-hlm-node-info hidden>
+          <h3>选中节点</h3>
+          <dl data-hlm-node-fields></dl>
+          <div class="ak-hlm-plot" data-hlm-node-plot></div>
+        </div>
+        <div class="ak-hlm-edge-info" data-hlm-edge-info hidden>
+          <h3>关系详情</h3>
+          <dl data-hlm-edge-fields></dl>
+          <div class="ak-hlm-plot" data-hlm-edge-plot></div>
+        </div>
+        <div class="ak-hlm-path-info" data-hlm-path-info hidden>
+          <h3>两点关系</h3>
+          <dl data-hlm-path-fields></dl>
+          <div class="ak-hlm-path" data-hlm-path-text></div>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <script defer src="{{ url_for('static', filename='js/kg_graph.js') }}"></script>
+{% endblock %}

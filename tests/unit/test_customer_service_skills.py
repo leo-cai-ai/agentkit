@@ -13,7 +13,7 @@ from agentkit.runtime.declarative_catalog import load_catalog, register_catalog
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_repository_catalog_has_exactly_three_business_agents() -> None:
+def test_repository_catalog_registers_expected_business_agents() -> None:
     catalog = load_catalog(REPO_ROOT)
 
     assert set(catalog.agents) == {
@@ -21,6 +21,7 @@ def test_repository_catalog_has_exactly_three_business_agents() -> None:
         "customer_service",
         "hr_recruiter",
         "xhs_growth",
+        "hongloumeng",
     }
     assert catalog.agents["general_agent"].skills == ()
 

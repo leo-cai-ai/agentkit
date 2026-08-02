@@ -143,6 +143,8 @@ class _ReviewYaml(_StrictModel):
 
 
 class _AgentYaml(_StrictModel):
+    schema_version: Literal[1]
+    release_version: str = Field(pattern=r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
     id: str = Field(min_length=1)
     domain: str = Field(min_length=1)
     description: str = Field(min_length=1)
@@ -197,6 +199,8 @@ class _CapabilityYaml(_StrictModel):
 
 
 class _SkillPackageYaml(_StrictModel):
+    schema_version: Literal[1]
+    release_version: str = Field(pattern=r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
     package_id: str = Field(min_length=1)
     tools: list[_ToolYaml] = Field(default_factory=list)
     capabilities: list[_CapabilityYaml] = Field(default_factory=list)
@@ -207,6 +211,8 @@ class AgentManifest:
     """单个 ``agent.md`` 的可执行元数据。"""
 
     agent_id: str
+    schema_version: int
+    release_version: str
     domain: str
     description: str
     skills: tuple[str, ...]
@@ -245,6 +251,8 @@ class CapabilityManifest:
 
     capability_id: str
     package_id: str
+    schema_version: int
+    release_version: str
     domain: str
     description: str
     entrypoint: str
@@ -344,6 +352,8 @@ def register_catalog(
                 instructions=manifest.instructions,
                 max_tokens=manifest.autonomy.max_tokens,
                 routing_keywords=manifest.routing_keywords,
+                schema_version=manifest.schema_version,
+                release_version=manifest.release_version,
             )
         )
 
@@ -412,7 +422,13 @@ def _load_skill_packages(
                 raise ValueError(f"{source_path}: 重复的工具 ID {tool.tool_id}")
             tools[tool.tool_id] = tool
         for raw_capability in package.capabilities:
-            capability = _build_capability_manifest(raw_capability, package.package_id, source_path)
+            capability = _build_capability_manifest(
+                raw_capability,
+                package.package_id,
+                package.schema_version,
+                package.release_version,
+                source_path,
+            )
             if capability.capability_id in capabilities:
                 raise ValueError(f"{source_path}: 重复的 capability ID {capability.capability_id}")
             capabilities[capability.capability_id] = capability
@@ -431,6 +447,8 @@ def _build_agent_manifest(
     artifacts = raw.context.artifacts
     return AgentManifest(
         agent_id=raw.id,
+        schema_version=raw.schema_version,
+        release_version=raw.release_version,
         domain=raw.domain,
         description=raw.description,
         skills=tuple(raw.skills),
@@ -497,12 +515,16 @@ def _build_tool_manifest(
 def _build_capability_manifest(
     raw: _CapabilityYaml,
     package_id: str,
+    schema_version: int,
+    release_version: str,
     source_path: Path,
 ) -> CapabilityManifest:
     _validate_entrypoint_format(raw.entrypoint, source_path)
     return CapabilityManifest(
         capability_id=raw.id,
         package_id=package_id,
+        schema_version=schema_version,
+        release_version=release_version,
         domain=raw.domain,
         description=raw.description,
         entrypoint=raw.entrypoint,
@@ -676,6 +698,8 @@ def _compile_capability(root: Path, manifest: CapabilityManifest) -> SkillDefini
         batch_key=manifest.batch_key,
         keywords=list(manifest.keywords),
         composes=manifest.composes,
+        schema_version=manifest.schema_version,
+        release_version=manifest.release_version,
     )
 
 

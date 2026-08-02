@@ -18,7 +18,11 @@ def _build_openai_extra_body(settings: Settings) -> dict[str, Any] | None:
     """
     extra: dict[str, Any] = {}
     if settings.openai_disable_thinking:
+        # vLLM / SGLang 服务 Qwen 系等认 chat_template_kwargs.enable_thinking；
+        # DeepSeek 等托管 API 忽略它，实测需要 thinking.type=disabled 才能关闭
+        # 推理模型的长思考（如 5000 字抽取单块从 ~162s 降到亚秒~十几秒）。
         extra["chat_template_kwargs"] = {"enable_thinking": False}
+        extra["thinking"] = {"type": "disabled"}
 
     raw = settings.openai_extra_body.strip()
     if raw:

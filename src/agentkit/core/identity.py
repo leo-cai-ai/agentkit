@@ -25,20 +25,36 @@ TASK_APPROVE = "task:approve"
 CHAT_USE = "chat:use"
 GOVERNANCE_VIEW = "governance:view"
 RUNS_VIEW = "runs:view"
+OPERATIONS_VIEW = "operations:view"
 RUNTIME_ADMIN = "runtime:admin"
 WILDCARD = "*"  # grants every permission
 
 ALL_PERMISSIONS = frozenset(
-    {TASK_RUN, TASK_APPROVE, CHAT_USE, GOVERNANCE_VIEW, RUNS_VIEW, RUNTIME_ADMIN}
+    {
+        TASK_RUN,
+        TASK_APPROVE,
+        CHAT_USE,
+        GOVERNANCE_VIEW,
+        RUNS_VIEW,
+        OPERATIONS_VIEW,
+        RUNTIME_ADMIN,
+    }
 )
 
 # Built-in role -> permission bindings. Override/extend via settings
 # (AGENTKIT_RBAC_ROLE_PERMISSIONS as a JSON object of role -> [permissions]).
 DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
     "admin": {WILDCARD},
-    "operator": {TASK_RUN, TASK_APPROVE, CHAT_USE, GOVERNANCE_VIEW, RUNS_VIEW},
+    "operator": {
+        TASK_RUN,
+        TASK_APPROVE,
+        CHAT_USE,
+        GOVERNANCE_VIEW,
+        RUNS_VIEW,
+        OPERATIONS_VIEW,
+    },
     "member": {TASK_RUN, CHAT_USE, RUNS_VIEW},
-    "viewer": {GOVERNANCE_VIEW, RUNS_VIEW},
+    "viewer": {GOVERNANCE_VIEW, RUNS_VIEW, OPERATIONS_VIEW},
 }
 
 
@@ -128,6 +144,7 @@ __all__ = [
     "CHAT_USE",
     "GOVERNANCE_VIEW",
     "RUNS_VIEW",
+    "OPERATIONS_VIEW",
     "RUNTIME_ADMIN",
     "WILDCARD",
     "ALL_PERMISSIONS",

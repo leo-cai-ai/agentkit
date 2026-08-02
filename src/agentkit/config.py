@@ -128,12 +128,14 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr | None = None
     openai_model: str | None = None
     openai_api_version: str | None = None
-    # Turn off a reasoning model's <think> output. Most OpenAI-compatible servers
-    # (vLLM / SGLang serving Qwen3, etc.) accept it via
-    # extra_body={"chat_template_kwargs": {"enable_thinking": false}}, which this
-    # flag sends. Governance/JSON calls don't benefit from chain-of-thought, so
-    # disabling it is faster, cheaper, and avoids truncated-JSON errors. Harmless
-    # on endpoints that ignore the flag (e.g. DeepSeek-R1, which can't disable it).
+    # Turn off a reasoning model's <think> output. This is the single unified
+    # switch: when on, factory sends BOTH endpoint-compatible params —
+    # extra_body={"chat_template_kwargs": {"enable_thinking": false}} for
+    # vLLM / SGLang (Qwen3 etc.), and extra_body={"thinking": {"type": "disabled"}}
+    # for DeepSeek's hosted API (api.deepseek.com ignores chat_template_kwargs;
+    # thinking.type=disabled is the verified working one). Governance/JSON calls
+    # don't benefit from chain-of-thought, so disabling it is faster, cheaper,
+    # and avoids truncated-JSON errors. Harmless on endpoints that ignore both.
     openai_disable_thinking: bool = False
     # Raw JSON merged into the OpenAI request body (extra_body) for endpoint-
     # specific params, e.g. '{"enable_thinking": false}' or
@@ -173,6 +175,11 @@ class Settings(BaseSettings):
     # call. Default false (flag + audit only) to avoid false-positive blocking.
     safety_block_on_injection: bool = False
     safety_detect_pii: bool = True
+    # 最终输出统一经过治理审查；审查异常默认阻断，避免未经检查的内容外发。
+    output_review_enabled: bool = True
+    output_review_fail_closed: bool = True
+    # raw 仅用于受控调试；redacted 为默认；hash 不保存原始输入。
+    audit_input_mode: Literal["raw", "redacted", "hash"] = "redacted"
 
     # Conversational memory (Phase 4). Only applies to memory-enabled agents.
     memory_window_turns: int = Field(default=6, ge=1)

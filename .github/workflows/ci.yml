@@ -22,9 +22,12 @@ jobs:
         run: uv run ruff check .
       - name: Format check
         run: uv run ruff format --check .
-      - name: Type check (informational)
+      - name: Type check
         run: uv run mypy src/agentkit/core
-        continue-on-error: true
+      - name: Agent and skill contract gate
+        run: uv run agentkit validate-catalog
+      - name: Context contract gate
+        run: uv run agentkit validate-contexts
       - name: Eval suite contract gate
         run: uv run agentkit eval-suite evaluation/suites/trajectory.yaml --validate-only
       - name: Test

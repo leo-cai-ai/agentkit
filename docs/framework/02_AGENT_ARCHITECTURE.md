@@ -60,6 +60,8 @@ Agent 声明由一份 `agent.md` 组成：
 
 ```markdown
 ---
+schema_version: 1
+release_version: 1.0.0
 id: hr_recruiter
 domain: hr.recruitment
 description: 招聘筛选与候选人排序 Agent。
@@ -88,6 +90,8 @@ routing_keywords: [招聘, 候选人, 简历, 排序]
 
 只读取当前租户授权的招聘知识、职位和候选人数据……
 ```
+
+`schema_version` 表示声明结构版本，当前只接受整数 `1`；`release_version` 表示 Agent 行为发布版本，必须使用严格 SemVer。Skill Package 顶层使用相同字段。Catalog 在 Runtime 启动前拒绝不支持的 Schema 或非法版本，运行审计中的 `agent_loaded`、`capability_resolved` 会记录实际装载版本，从而支持回滚、问题复现和 Eval 基线关联。
 
 YAML Front Matter 是机器可验证的治理契约；Markdown 正文是 Agent 业务指令的唯一来源。不要在 Python Runtime 中再维护一份同义 Prompt。
 

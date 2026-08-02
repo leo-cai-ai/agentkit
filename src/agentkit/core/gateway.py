@@ -25,7 +25,9 @@ from .idempotency import IdempotencyStore
 from .intent import IntentDecomposer
 from .langgraph_agent import InputResolver, IntentResolver, UnifiedAgentGraph
 from .registry import AgentRegistry, SkillRegistry, ToolRegistry
+from .review import OutputReviewChain, OutputSafetyReviewer
 from .router import IntentRouter
+from .safety import build_safety_guard
 from .schema_input_resolver import SchemaInputResolver
 from .tool_backends import ToolBackendRegistry
 
@@ -55,6 +57,7 @@ class AgentGateway:
         artifact_store_factory: Callable[[str], ArtifactStore] | None = None,
         tool_backends: ToolBackendRegistry | None = None,
         idempotency_store: IdempotencyStore | None = None,
+        output_review_chain: OutputReviewChain | None = None,
     ) -> None:
         self._tenant_id = tenant_id
         self._tenant_selector = tenant_selector
@@ -92,6 +95,15 @@ class AgentGateway:
             tenant_id=tenant_id,
             tenant_selector=tenant_selector,
         )
+        if output_review_chain is None:
+            from agentkit.config import get_settings
+
+            settings = get_settings()
+            if settings.output_review_enabled:
+                output_review_chain = OutputReviewChain(
+                    [OutputSafetyReviewer(build_safety_guard(settings))],
+                    fail_closed=settings.output_review_fail_closed,
+                )
         self._agent_graph = UnifiedAgentGraph(
             tenant_id=tenant_id,
             tenant_selector=tenant_selector,
@@ -112,6 +124,7 @@ class AgentGateway:
             artifact_store_factory=artifact_store_factory,
             tool_backends=tool_backends,
             idempotency_store=idempotency_store,
+            output_review_chain=output_review_chain,
         )
 
     def handle(self, request: TaskRequest) -> TaskResponse:

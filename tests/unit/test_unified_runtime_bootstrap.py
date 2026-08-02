@@ -10,6 +10,7 @@ def test_runtime_registers_only_enabled_business_agents(tmp_path) -> None:
         "customer_service",
         "hr_recruiter",
         "xhs_growth",
+        "hongloumeng",
     }
     assert agents["customer_service"].context_policy.rag.enabled is True
     assert agents["xhs_growth"].context_policy.rag.enabled is False

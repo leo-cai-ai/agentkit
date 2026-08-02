@@ -1,4 +1,6 @@
 ---
+schema_version: 1
+release_version: 1.0.0
 id: general_agent
 domain: general.coordination
 description: 统一聊天、需求澄清和业务 Agent 协调入口。

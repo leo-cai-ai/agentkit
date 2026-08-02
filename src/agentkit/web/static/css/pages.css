@@ -828,8 +828,49 @@
 }
 
 .ak-run-filter-empty[hidden],
-.ak-run-list-item[hidden] {
+.ak-run-list-item[hidden],
+.ak-run-group[hidden] {
   display: none;
+}
+
+/* Hierarchical run groups: business sub-runs nest under their coordinator. */
+.ak-run-group + .ak-run-group {
+  border-block-start: 1px solid var(--ak-sys-color-border-default);
+}
+
+.ak-run-group .ak-run-list-item {
+  border-block-end: 0;
+}
+
+.ak-run-group + .ak-run-group > .ak-run-list-item,
+.ak-run-children .ak-run-list-item {
+  border-block-start: 1px solid var(--ak-sys-color-border-default);
+}
+
+.ak-run-children {
+  margin-inline-start: var(--ak-sys-space-4);
+  border-inline-start: 2px solid var(--ak-sys-color-border-interactive);
+}
+
+.ak-run-child {
+  background: var(--ak-sys-color-bg-surface-subtle);
+}
+
+.ak-run-role-tag {
+  display: inline-block;
+  margin-inline-end: var(--ak-sys-space-1);
+  padding: 0 var(--ak-sys-space-1);
+  border-radius: var(--ak-sys-radius-sm);
+  background: var(--ak-sys-color-bg-inset);
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.625rem;
+  font-weight: 700;
+  line-height: 1.4;
+  vertical-align: baseline;
+}
+
+.ak-run-role-tag-child {
+  color: var(--ak-sys-color-accent-default);
 }
 
 .ak-run-chain {
@@ -1128,6 +1169,17 @@
   color: var(--ak-sys-color-text-subtle);
   font-size: 0.75rem;
   line-height: 1.4;
+}
+
+.ak-run-artifacts {
+  margin-block-start: var(--ak-sys-space-5);
+}
+
+.ak-event-summary {
+  margin: 0;
+  color: var(--ak-sys-color-text-primary);
+  font-size: 0.8125rem;
+  line-height: 1.5;
 }
 
 .ak-operations-timeline > .ak-empty-state {
@@ -2261,5 +2313,535 @@ button.conversation-new {
 
   .ak-governance-tabs [data-tab-panel][hidden] {
     display: grid !important;
+  }
+}
+
+/* Hongloumeng Knowledge Graph */
+.ak-hlm-workspace {
+  margin-block-start: var(--ak-sys-space-grid);
+}
+
+.ak-hlm-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(19rem, 22rem);
+  gap: var(--ak-sys-space-grid);
+  align-items: start;
+}
+
+.ak-hlm-graph-panel,
+.ak-hlm-side {
+  min-inline-size: 0;
+  overflow: hidden;
+}
+
+.ak-hlm-graph-panel {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.ak-hlm-status {
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.ak-hlm-status-ok { color: var(--ak-sys-color-status-success-fg); }
+.ak-hlm-status-err { color: var(--ak-sys-color-status-danger-fg); }
+
+.ak-hlm-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ak-sys-space-2) var(--ak-sys-space-3);
+  padding: 0 var(--ak-sys-space-4) var(--ak-sys-space-3);
+  border-block-end: 1px solid var(--ak-sys-color-border-default);
+}
+
+.ak-hlm-search {
+  min-inline-size: 0;
+  flex: 1 1 16rem;
+  display: grid;
+  gap: var(--ak-sys-space-1);
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.6875rem;
+  font-weight: 650;
+}
+
+.ak-hlm-search input {
+  inline-size: 100%;
+  min-block-size: var(--ak-sys-size-control-md);
+  padding-inline: var(--ak-sys-space-2);
+  border: 1px solid var(--ak-sys-color-border-interactive);
+  border-radius: var(--ak-sys-radius-control);
+  color: var(--ak-sys-color-text-primary);
+  background: var(--ak-sys-color-bg-inset);
+  font: inherit;
+}
+
+.ak-hlm-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ak-sys-space-2) var(--ak-sys-space-3);
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.6875rem;
+}
+
+.ak-hlm-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ak-sys-space-1);
+}
+
+.ak-hlm-legend .dot {
+  inline-size: 0.625rem;
+  block-size: 0.625rem;
+  border-radius: 999px;
+}
+.dot-character { background: var(--ak-sys-color-accent-default); }
+.dot-family { background: var(--ak-sys-color-status-warning-fg); }
+.dot-place { background: var(--ak-sys-color-status-success-fg); }
+.dot-object { background: var(--ak-sys-color-status-info-fg); }
+.dot-event { background: var(--ak-sys-color-status-danger-fg); }
+
+/* 缩放控制 */
+.ak-hlm-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ak-sys-space-1);
+  padding: 2px;
+  border: 1px solid var(--ak-sys-color-border-interactive);
+  border-radius: var(--ak-sys-radius-control);
+  background: var(--ak-sys-color-bg-inset);
+}
+
+.ak-hlm-zoom button {
+  inline-size: 1.625rem;
+  block-size: 1.625rem;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--ak-sys-radius-control);
+  color: var(--ak-sys-color-text-secondary);
+  background: transparent;
+  font: inherit;
+  font-size: 0.9375rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ak-hlm-zoom button:hover {
+  background: var(--ak-sys-color-bg-hover);
+  color: var(--ak-sys-color-text-primary);
+}
+
+.ak-hlm-zoom-value {
+  min-inline-size: 2.75rem;
+  text-align: center;
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.ak-hlm-canvas {
+  position: relative;
+  min-block-size: 34rem;
+  block-size: calc(100dvh - 16rem);
+  overflow: hidden;
+  background:
+    linear-gradient(rgb(255 255 255 / 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(255 255 255 / 0.025) 1px, transparent 1px),
+    var(--ak-sys-color-bg-surface);
+  background-size: 28px 28px, 28px 28px, auto;
+}
+
+.ak-hlm-canvas svg {
+  inline-size: 100%;
+  block-size: 100%;
+  touch-action: none;
+  display: block;
+  cursor: grab;
+}
+
+.ak-hlm-canvas svg:active {
+  cursor: grabbing;
+}
+
+.ak-hlm-edge {
+  stroke: var(--ak-sys-color-border-interactive);
+  stroke-width: 1.25;
+  transition: opacity 160ms ease;
+  pointer-events: stroke;
+}
+
+.ak-hlm-edge-group {
+  cursor: pointer;
+}
+
+.ak-hlm-edge-group:hover .ak-hlm-edge {
+  stroke: var(--ak-sys-color-accent-default);
+  stroke-width: 2.5;
+}
+
+.ak-hlm-edge-group.ak-hlm-edge-selected .ak-hlm-edge {
+  stroke: var(--ak-sys-color-accent-default);
+  stroke-width: 2.75;
+}
+
+/* 与选中节点直接相连的边：醒目强调、不置灰 */
+.ak-hlm-edge-group.ak-hlm-edge-connected .ak-hlm-edge {
+  stroke: var(--ak-sys-color-accent-default);
+  stroke-width: 2.5;
+}
+
+.ak-hlm-edge-group.ak-hlm-edge-connected .ak-hlm-edge-label {
+  fill: var(--ak-sys-color-accent-default);
+  font-weight: 700;
+}
+
+/* 多跳邻域内的边：清晰可见（比默认更实、更粗，区别于置灰背景） */
+.ak-hlm-edge-group.ak-hlm-edge-neighborhood .ak-hlm-edge {
+  stroke: color-mix(in srgb, var(--ak-sys-color-accent-default) 55%, var(--ak-sys-color-border-interactive));
+  stroke-width: 2;
+}
+
+.ak-hlm-edge-group.ak-hlm-edge-neighborhood .ak-hlm-edge-label {
+  opacity: 1;
+  font-weight: 600;
+}
+
+/* 双选最短路径上的边：最强高亮 */
+.ak-hlm-edge-group.ak-hlm-edge-path .ak-hlm-edge {
+  stroke: var(--ak-sys-color-accent-default);
+  stroke-width: 3;
+}
+
+.ak-hlm-edge-group.ak-hlm-edge-path .ak-hlm-edge-label {
+  fill: var(--ak-sys-color-accent-default);
+  font-weight: 800;
+}
+
+/* 双选路径上的节点（两端点已有光环，中间节点加虚线描边环） */
+.ak-hlm-node.ak-hlm-node-path .ak-hlm-node-inner circle {
+  stroke: var(--ak-sys-color-accent-default);
+  stroke-width: 2.5px;
+  stroke-dasharray: 4 3;
+}
+
+/* 两点关系面板 */
+.ak-hlm-path-info {
+  margin-inline: var(--ak-sys-space-4);
+  padding: var(--ak-sys-space-3);
+  border: 1px solid var(--ak-sys-color-border-default);
+  border-radius: var(--ak-sys-radius-md);
+  background: var(--ak-sys-color-bg-surface-subtle);
+}
+
+.ak-hlm-path-info[hidden] { display: none; }
+
+.ak-hlm-path-info h3 {
+  margin: 0 0 var(--ak-sys-space-2);
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.6875rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.ak-hlm-path-info dl {
+  display: grid;
+  gap: var(--ak-sys-space-1);
+  margin: 0;
+}
+
+.ak-hlm-path-info dt {
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.6875rem;
+  font-weight: 650;
+}
+
+.ak-hlm-path-info dd {
+  margin: 0 0 var(--ak-sys-space-2);
+  color: var(--ak-sys-color-text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.ak-hlm-path {
+  margin-block-start: var(--ak-sys-space-2);
+  color: var(--ak-sys-color-text-primary);
+  font-size: 0.8125rem;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+/* 选中节点：光环高亮 */
+.ak-hlm-node.ak-hlm-node-selected .ak-hlm-node-inner circle {
+  stroke: var(--ak-sys-color-accent-default);
+  stroke-width: 3px;
+  filter: drop-shadow(0 0 6px var(--ak-sys-color-accent-default));
+  animation: ak-hlm-glow 1.6s ease-in-out infinite;
+}
+
+.ak-hlm-node.ak-hlm-node-selected .ak-hlm-node-label {
+  fill: var(--ak-sys-color-accent-default);
+  font-weight: 800;
+}
+
+@keyframes ak-hlm-glow {
+  0%, 100% { filter: drop-shadow(0 0 3px var(--ak-sys-color-accent-default)); }
+  50% { filter: drop-shadow(0 0 10px var(--ak-sys-color-accent-default)); }
+}
+
+.ak-hlm-arrow { fill: var(--ak-sys-color-border-interactive); }
+
+.ak-hlm-edge-label {
+  fill: var(--ak-sys-color-text-subtle);
+  font-size: 7px;
+  letter-spacing: 0.04em;
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+.ak-hlm-node {
+  transition: opacity 160ms ease;
+  user-select: none;
+}
+
+/* 流式揭示：节点逐个淡入缩放 */
+.ak-hlm-node-inner {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+@keyframes ak-hlm-pop {
+  from { opacity: 0; transform: scale(0.3); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes ak-hlm-edge-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.ak-hlm-node-label {
+  fill: var(--ak-sys-color-text-primary);
+  font-size: 10px;
+  font-weight: 700;
+  text-anchor: middle;
+  pointer-events: none;
+  paint-order: stroke;
+  stroke: var(--ak-sys-color-bg-canvas);
+  stroke-width: 3px;
+}
+
+.ak-hlm-dim {
+  opacity: 0.12;
+}
+
+.ak-hlm-empty {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.875rem;
+  text-align: center;
+  transform: translate(-50%, -50%);
+}
+
+.ak-hlm-empty[hidden] { display: none; }
+
+.ak-hlm-side {
+  display: grid;
+  gap: var(--ak-sys-space-4);
+  padding-block-end: var(--ak-sys-space-4);
+}
+
+.ak-hlm-agent-tag {
+  padding: 0 var(--ak-sys-space-2);
+  border: 1px solid var(--ak-sys-color-border-interactive);
+  border-radius: var(--ak-sys-radius-full);
+  color: var(--ak-sys-color-accent-default);
+  background: var(--ak-sys-color-accent-soft);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.ak-hlm-ask {
+  display: grid;
+  gap: var(--ak-sys-space-2);
+  padding: 0 var(--ak-sys-space-4);
+}
+
+.ak-hlm-ask label {
+  display: grid;
+  gap: var(--ak-sys-space-1);
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.6875rem;
+  font-weight: 650;
+}
+
+.ak-hlm-ask textarea {
+  inline-size: 100%;
+  padding: var(--ak-sys-space-2);
+  border: 1px solid var(--ak-sys-color-border-interactive);
+  border-radius: var(--ak-sys-radius-control);
+  color: var(--ak-sys-color-text-primary);
+  background: var(--ak-sys-color-bg-inset);
+  font: inherit;
+  resize: vertical;
+}
+
+.ak-hlm-ask button {
+  min-block-size: var(--ak-sys-size-control-md);
+  justify-self: end;
+  padding-inline: var(--ak-sys-space-4);
+}
+
+.ak-hlm-answer,
+.ak-hlm-node-info {
+  margin-inline: var(--ak-sys-space-4);
+  padding: var(--ak-sys-space-3);
+  border: 1px solid var(--ak-sys-color-border-default);
+  border-radius: var(--ak-sys-radius-md);
+  background: var(--ak-sys-color-bg-surface-subtle);
+}
+
+.ak-hlm-answer[hidden],
+.ak-hlm-node-info[hidden] { display: none; }
+
+.ak-hlm-answer h3,
+.ak-hlm-node-info h3 {
+  margin: 0 0 var(--ak-sys-space-2);
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.6875rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.ak-hlm-answer p {
+  margin: 0 0 var(--ak-sys-space-2);
+  color: var(--ak-sys-color-text-primary);
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.ak-hlm-node-info dl {
+  display: grid;
+  gap: var(--ak-sys-space-1);
+  margin: 0;
+}
+
+.ak-hlm-node-info dt {
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.6875rem;
+  font-weight: 650;
+}
+
+.ak-hlm-node-info dd {
+  margin: 0 0 var(--ak-sys-space-2);
+  color: var(--ak-sys-color-text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.ak-hlm-edge-info {
+  margin-inline: var(--ak-sys-space-4);
+  padding: var(--ak-sys-space-3);
+  border: 1px solid var(--ak-sys-color-border-default);
+  border-radius: var(--ak-sys-radius-md);
+  background: var(--ak-sys-color-bg-surface-subtle);
+}
+
+.ak-hlm-edge-info[hidden] { display: none; }
+
+.ak-hlm-edge-info h3 {
+  margin: 0 0 var(--ak-sys-space-2);
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.6875rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.ak-hlm-edge-info dl {
+  display: grid;
+  gap: var(--ak-sys-space-1);
+  margin: 0;
+}
+
+.ak-hlm-edge-info dt {
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.6875rem;
+  font-weight: 650;
+}
+
+.ak-hlm-edge-info dd {
+  margin: 0 0 var(--ak-sys-space-2);
+  color: var(--ak-sys-color-text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.ak-hlm-plot {
+  margin-block-start: var(--ak-sys-space-3);
+  border-block-start: 1px solid var(--ak-sys-color-border-default);
+  padding-block-start: var(--ak-sys-space-2);
+}
+
+.ak-hlm-plot h4 {
+  margin: 0 0 var(--ak-sys-space-2);
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.6875rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.ak-hlm-plot-item {
+  margin-block-end: var(--ak-sys-space-3);
+}
+
+.ak-hlm-plot-item strong {
+  display: block;
+  margin-block-end: var(--ak-sys-space-1);
+  color: var(--ak-sys-color-text-primary);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.ak-hlm-plot-item p {
+  margin: 0;
+  color: var(--ak-sys-color-text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.ak-hlm-plot-empty {
+  margin: 0;
+  color: var(--ak-sys-color-text-subtle);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+@media (max-width: 75rem) {
+  .ak-hlm-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ak-hlm-canvas {
+    block-size: 42rem;
+  }
+}
+
+@media (max-width: 45rem) {
+  .ak-hlm-canvas {
+    block-size: 30rem;
   }
 }

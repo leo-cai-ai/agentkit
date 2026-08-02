@@ -1,3 +1,5 @@
+schema_version: 1
+release_version: 1.0.0
 package_id: candidate-rank
 tools:
   - id: ats.get_job

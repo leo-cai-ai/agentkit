@@ -1,0 +1,59 @@
+schema_version: 1
+release_version: 1.0.0
+package_id: hongloumeng
+tools:
+  - id: hlm.kg.ask
+    provider: python
+    description: 基于《红楼梦》Neo4j 知识图谱端到端回答一个常识/关系类问题。
+    entrypoint: scripts.tools:ask_tool
+    factory_entrypoint: scripts.tools:build_handlers
+    risk: read_only
+    permissions: []
+    idempotent: true
+    timeout_seconds: 120
+  - id: hlm.graph.query
+    provider: python
+    description: 在《红楼梦》知识图谱上执行一条经只读校验的 Cypher 查询。
+    entrypoint: scripts.tools:query_tool
+    factory_entrypoint: scripts.tools:build_handlers
+    risk: read_only
+    permissions: []
+    idempotent: true
+    timeout_seconds: 30
+  - id: hlm.entity.search
+    provider: python
+    description: 按名称/别名搜索《红楼梦》人物实体。
+    entrypoint: scripts.tools:search_tool
+    factory_entrypoint: scripts.tools:build_handlers
+    risk: read_only
+    permissions: []
+    idempotent: true
+    timeout_seconds: 10
+capabilities:
+  - id: hongloumeng.qa
+    domain: knowledge.hongloumeng
+    description: 基于 Neo4j 知识图谱回答《红楼梦》人物、关系、地点与事件问题。
+    entrypoint: scripts.handlers:answer_question
+    execution: {reasoning: direct, orchestration: single, tool_policy: read_only}
+    autonomy: {max_model_calls: 6, max_tool_calls: 4, max_iterations: 3, max_plan_steps: 1, max_replans: 0, max_tokens: 8000, timeout_seconds: 180}
+    permissions: []
+    tools: [hlm.kg.ask, hlm.graph.query, hlm.entity.search]
+    input_schema:
+      type: object
+      required: [question]
+      x-agentkit-infer-from-message: true
+      properties:
+        question:
+          type: string
+          minLength: 1
+          maxLength: 300
+          description: 关于《红楼梦》人物关系、身份、居所、事件等的自然语言问题。
+          x-agentkit-label: 问题
+    output_schema:
+      type: object
+      required: [answer]
+      properties:
+        answer: {type: string, description: 基于知识图谱证据的回答}
+        entities: {type: array, items: {type: string}}
+        strategy: {type: string}
+    keywords: [红楼梦, 红楼, 贾宝玉, 林黛玉, 宝钗, 大观园, hongloumeng, redmansion, 贾府, 人物关系]

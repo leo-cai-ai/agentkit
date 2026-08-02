@@ -772,6 +772,119 @@ def _rag_query(
     return 0
 
 
+def _hlm_seed(
+    command: str,
+    *,
+    tenant_id: str | None,
+    as_json: bool,
+) -> int:
+    """灌入/清空/统计《红楼梦》Neo4j 知识图谱。
+
+    连接参数取租户配置的 ``hongloumeng`` 块，缺失时回退环境变量。
+    """
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    configure_logging()
+    from agentkit.core.knowledge.seeder import run as hlm_run
+    from agentkit.runtime.bootstrap import load_tenant_config, resolve_tenant_id
+
+    resolved = resolve_tenant_id(tenant_id)
+    block: dict[str, Any] = {}
+    try:
+        block = dict(load_tenant_config(resolved).get("hongloumeng") or {})
+    except Exception:  # noqa: BLE001 - 租户配置缺失时仍可用环境变量兜底
+        block = {}
+    code = hlm_run(command, config=block)
+    if as_json:
+        print(json.dumps({"command": command, "tenant": resolved, "ok": code == 0}))
+    return code
+
+
+def _kg_ingest(
+    pdf: str,
+    *,
+    kg_name: str,
+    tenant_id: str | None,
+    clear: bool,
+    max_chunks: int,
+    start_page: int,
+    max_pages: int,
+    chunk_size: int,
+    chunk_overlap: int,
+    chunk_strategy: str,
+    as_json: bool,
+) -> int:
+    """从任意 PDF 抽取实体/关系并 MERGE 进对应知识图库（kg-ingest）。"""
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    configure_logging()
+    from agentkit.core.knowledge.ingest import (
+        DEFAULT_CHUNK_OVERLAP,
+        DEFAULT_CHUNK_SIZE,
+        run_ingest,
+    )
+    from agentkit.runtime.bootstrap import load_tenant_config, resolve_tenant_id
+
+    chunk_size = chunk_size or DEFAULT_CHUNK_SIZE
+    chunk_overlap = chunk_overlap or DEFAULT_CHUNK_OVERLAP
+    resolved = resolve_tenant_id(tenant_id)
+    tenant_config = load_tenant_config(resolved)
+    kg_config = dict(tenant_config.get(kg_name) or {})
+    if not kg_config.get("neo4j_uri") and not kg_config.get("neo4j_user"):
+        print(
+            f"[FAIL] 租户 {resolved} 没有 {kg_name} 知识库配置（tenants/{resolved}.json）",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        report = run_ingest(
+            pdf,
+            kg_config,
+            clear=clear,
+            start_page=start_page,
+            max_chunks=max_chunks,
+            max_pages=max_pages,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            chunk_strategy=chunk_strategy,
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI 输出安全错误摘要
+        message = (str(exc).splitlines() or [type(exc).__name__])[0]
+        print(f"[FAIL] 入库失败: {message}", file=sys.stderr)
+        return 1
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "kg": kg_name,
+                    "tenant": resolved,
+                    "pdf": pdf,
+                    "chunks": report.chunks,
+                    "entities": report.entities,
+                    "chapters": report.chapters,
+                    "relationships_created": report.relationships_created,
+                    "relationships_skipped": report.relationships_skipped,
+                    "chunks_failed": report.chunks_failed,
+                    "timing_seconds": {
+                        "llm": report.llm_seconds,
+                        "db": report.db_seconds,
+                        "total": report.total_seconds,
+                    },
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+    else:
+        print(
+            f"[ok] 已入库 {pdf} -> {kg_name}: {report.chunks} 块, "
+            f"{report.entities} 实体, {report.chapters} 章节, "
+            f"{report.relationships_created} 关系 "
+            f"(跳过 {report.relationships_skipped}, 失败块 {report.chunks_failed})"
+        )
+    return 0
+
+
 def _rag_eval(
     dataset: str,
     *,
@@ -953,6 +1066,81 @@ def build_parser() -> argparse.ArgumentParser:
     rag_eval.add_argument("--min-mrr", type=float, default=0.0)
     rag_eval.add_argument("--json", action="store_true", help="Emit JSON report.")
 
+    hlm_seed = sub.add_parser(
+        "hlm-seed",
+        help="Seed/clear/count the Hongloumeng Neo4j knowledge graph.",
+    )
+    hlm_seed.add_argument(
+        "--command",
+        dest="hlm_command",
+        choices=["seed", "clear", "count"],
+        default="seed",
+        help="Operation. Default seed (idempotent; re-runnable).",
+    )
+    hlm_seed.add_argument("--json", action="store_true", help="Emit JSON result.")
+
+    kg_ingest = sub.add_parser(
+        "kg-ingest",
+        help="Extract entities/relations from a PDF and merge them into a Neo4j "
+        "knowledge graph (generic; per-KG schema from the tenant config).",
+    )
+    kg_ingest.add_argument("pdf", help="Path to the source PDF.")
+    kg_ingest.add_argument(
+        "--kg",
+        default="hongloumeng",
+        help="Key of the KG config block in tenants/<id>.json. Default hongloumeng.",
+    )
+    kg_ingest.add_argument(
+        "--clear",
+        action="store_true",
+        help="Wipe the ENTIRE graph before ingesting (full rebuild). Always clears "
+        "all nodes/relationships regardless of --start-page; use --clear for a "
+        "fresh rebuild, omit it to append/incrementally ingest.",
+    )
+    kg_ingest.add_argument(
+        "--start-page",
+        "--start_page",
+        dest="start_page",
+        type=int,
+        default=0,
+        help="Skip the first N pages (e.g. cover/front-matter); reading starts at "
+        "page N (1-based). Default 0 = from the beginning.",
+    )
+    kg_ingest.add_argument(
+        "--max-chunks",
+        type=int,
+        default=0,
+        help="Only process the first N chunks (0 = all).",
+    )
+    kg_ingest.add_argument(
+        "--max-pages",
+        type=int,
+        default=0,
+        help="Only read the first N pages of the PDF (0 = all).",
+    )
+    kg_ingest.add_argument(
+        "--chunk-size",
+        type=int,
+        default=0,
+        help="Characters per chunk (0 = default 1800). Larger = fewer LLM calls "
+        "but longer per-call latency and higher truncation risk.",
+    )
+    kg_ingest.add_argument(
+        "--chunk-overlap",
+        type=int,
+        default=0,
+        help="Overlap characters between adjacent chunks (0 = default 200).",
+    )
+    kg_ingest.add_argument(
+        "--chunk-strategy",
+        choices=["character", "paragraph", "sentence", "recursive"],
+        default="paragraph",
+        help="Chunking strategy: character (fixed window), paragraph (merge "
+        "paragraphs, default), sentence (merge CJK/EN sentences), recursive "
+        "(paragraph -> sentence -> char).",
+    )
+    kg_ingest.add_argument("--json", action="store_true", help="Emit JSON report.")
+
     return parser
 
 
@@ -1041,6 +1229,26 @@ def main() -> None:
                 tenant_id=args.tenant,
                 min_hit_rate=args.min_hit_rate,
                 min_mrr=args.min_mrr,
+                as_json=args.json,
+            )
+        )
+    elif args.command == "hlm-seed":
+        raise SystemExit(
+            _hlm_seed(args.hlm_command or "seed", tenant_id=args.tenant, as_json=args.json)
+        )
+    elif args.command == "kg-ingest":
+        raise SystemExit(
+            _kg_ingest(
+                args.pdf,
+                kg_name=args.kg,
+                tenant_id=args.tenant,
+                clear=args.clear,
+                max_chunks=args.max_chunks,
+                start_page=args.start_page,
+                max_pages=args.max_pages,
+                chunk_size=args.chunk_size,
+                chunk_overlap=args.chunk_overlap,
+                chunk_strategy=args.chunk_strategy,
                 as_json=args.json,
             )
         )

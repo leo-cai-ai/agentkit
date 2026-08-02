@@ -13,7 +13,7 @@
           <span class="ak-eyebrow">Run Browser</span>
           <h2 id="recent-requests-title">运行记录</h2>
         </div>
-        <span><span data-run-filter-count>{{ runs | length }}</span> 条</span>
+        <span><span data-run-filter-count>{{ run_groups | length }}</span> 条</span>
       </div>
 
       <form class="ak-run-filters" data-run-filters role="search" aria-label="过滤当前运行列表">
@@ -38,23 +38,51 @@
       </form>
 
       <div class="ak-run-list" data-run-list>
-        {% for run in runs %}
-          <a
-            class="ak-run-list-item"
-            href="{{ url_for('operations', run_id=run.run_id) }}#run-detail"
-            data-run-row
-            data-run-status="{{ run.status }}"
-            data-run-agent="{{ run.agent_id or '' }}"
-            data-run-text="{{ run.text }} {{ run.user_id }}"
-            {% if run.run_id == selected_run_id %}aria-current="location"{% endif %}
-          >
-            <div>
-              {{ status_pill(run.status) }}
-              <time datetime="{{ run.started_at | datetime_ts }}">{{ run.started_at | format_ts }}</time>
-            </div>
-            <strong title="{{ run.text }}">{{ run.text }}</strong>
-            <span>{{ run.agent_id or '未记录 Agent' }} · {{ run.user_id }}</span>
-          </a>
+        {% for group in run_groups %}
+          {% set parent = group.parent %}
+          <div class="ak-run-group" data-run-group>
+            <a
+              class="ak-run-list-item"
+              href="{{ url_for('operations', run_id=parent.run_id) }}#run-detail"
+              data-run-row
+              data-run-status="{{ parent.status }}"
+              data-run-agent="{{ parent.agent_id or '' }}"
+              data-run-text="{{ parent.text }} {{ parent.user_id }}"
+              {% if parent.run_id == selected_run_id %}aria-current="location"{% endif %}
+            >
+              <div>
+                {{ status_pill(parent.status) }}
+                <time datetime="{{ parent.started_at | datetime_ts }}">{{ parent.started_at | format_ts }}</time>
+              </div>
+              <strong title="{{ parent.text }}">{{ parent.text }}</strong>
+              <span>
+                {% if group.children %}<span class="ak-run-role-tag">协调</span>{% endif %}
+                {{ parent.agent_id or '未记录 Agent' }} · {{ parent.user_id }}
+              </span>
+            </a>
+            {% if group.children %}
+              <div class="ak-run-children" data-run-children>
+                {% for child in group.children %}
+                  <a
+                    class="ak-run-list-item ak-run-child"
+                    href="{{ url_for('operations', run_id=child.run_id) }}#run-detail"
+                    data-run-row
+                    data-run-status="{{ child.status }}"
+                    data-run-agent="{{ child.agent_id or '' }}"
+                    data-run-text="{{ child.text }} {{ child.user_id }}"
+                    {% if child.run_id == selected_run_id %}aria-current="location"{% endif %}
+                  >
+                    <div>
+                      {{ status_pill(child.status) }}
+                      <time datetime="{{ child.started_at | datetime_ts }}">{{ child.started_at | format_ts }}</time>
+                    </div>
+                    <strong title="{{ child.text }}">{{ child.text }}</strong>
+                    <span><span class="ak-run-role-tag ak-run-role-tag-child">业务</span> {{ child.agent_id or '未记录 Agent' }} · {{ child.user_id }}</span>
+                  </a>
+                {% endfor %}
+              </div>
+            {% endif %}
+          </div>
         {% else %}
           <div class="ak-empty-state">暂无运行记录。</div>
         {% endfor %}
@@ -140,6 +168,42 @@
           </li>
         {% endfor %}
       </ol>
+
+      {% if selected_run %}
+        <section class="ak-run-artifacts" aria-label="运行工件明细">
+          <div class="ak-run-summary-heading">
+            <h3>工件明细（含错误详情）</h3>
+          </div>
+          {% if artifacts %}
+            <ol class="ak-event-timeline ak-artifact-list" aria-label="运行工件">
+              {% for artifact in artifacts %}
+                <li class="ak-event-item">
+                  <div class="ak-event-heading">
+                    <span class="ak-event-name" title="{{ artifact.kind }}">{{ artifact.kind | replace('_', ' ') | title }}</span>
+                    <time class="ak-event-time" datetime="{{ artifact.created_at | datetime_ts }}">{{ artifact.time }}</time>
+                  </div>
+                  {% if artifact.summary %}
+                    <p class="ak-event-summary">{{ artifact.summary }}</p>
+                  {% endif %}
+                  {% if artifact.payload %}
+                    <details class="ak-json-details">
+                      <summary aria-label="查看 {{ artifact.kind | replace('_', ' ') }} 的完整载荷">
+                        <span>查看完整载荷</span>
+                        <span>{{ artifact.payload | length }} 个字段</span>
+                      </summary>
+                      <pre class="ak-json-viewer" tabindex="0"><code>{{ artifact.payload | json_pretty }}</code></pre>
+                    </details>
+                  {% else %}
+                    <span class="ak-event-empty">无载荷</span>
+                  {% endif %}
+                </li>
+              {% endfor %}
+            </ol>
+          {% else %}
+            <p class="ak-empty-state">当前运行没有工件明细。</p>
+          {% endif %}
+        </section>
+      {% endif %}
     </article>
   </section>
 {% endblock %}

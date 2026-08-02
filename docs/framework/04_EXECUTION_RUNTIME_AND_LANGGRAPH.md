@@ -105,7 +105,7 @@ flowchart TD
 | `execute_strategy` | 目标、参数、策略、预算 | `StrategyResult`、Artifact、Metrics | 策略定义的受控终态 |
 | `post_execution_approval` | `deferred_action` | 把冻结副作用标记为待审 | 无 deferred action 时跳过 |
 | `deferred_approval` | 冻结 Tool Calls 与审批 | 审批后调用 ToolExecutor | 拒绝、再次暂停或完成 |
-| `review_output` | 最终 `StrategyResult` | 记录 `output_reviewed` | 不改变业务结果 |
+| `review_output` | 最终 `StrategyResult` | 执行通用 Output Review Chain，递归脱敏并记录安全摘要 | `pass/flag` 保留处理后的结果；`block` 形成稳定终态，绝不自动重跑业务流程 |
 | `persist_turn` | 会话与终态 | 写用户/助手消息、摘要、长期 Memory | 等待审批时不写完成消息 |
 | `finalize` | `StrategyResult` | 记录 `run_finished` | 无结果时归一为 `failed` |
 

@@ -1,4 +1,6 @@
 ---
+schema_version: 1
+release_version: 1.0.0
 id: xhs_growth
 domain: marketing.social_growth
 description: 小红书研究、策略、文案、审核、发布准备和指标跟踪 Agent。

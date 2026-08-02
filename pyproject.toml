@@ -62,6 +62,14 @@ browser = [
 mcp = [
     "mcp>=1.0.0,<2.0.0",
 ]
+# 《红楼梦》Neo4j 知识图谱（hongloumeng agent 与 hlm-seed 灌图）。连接配置见
+# tenants/<id>.json 的 hongloumeng 块；本地 Neo4j 用 docker-compose.neo4j.yml。
+# pymupdf 优先、pypdf 兜底供 kg-ingest（任意 PDF -> 知识图谱）读取文本。
+kg = [
+    "neo4j>=5.26,<6",
+    "pymupdf>=1.24,<2",
+    "pypdf>=4.0,<7",
+]
 
 [build-system]
 requires = ["hatchling"]

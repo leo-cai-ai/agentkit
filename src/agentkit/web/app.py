@@ -20,11 +20,13 @@ from flask import (
 )
 
 from agentkit.config import get_settings
+from agentkit.core.artifacts import build_artifact_store
 from agentkit.core.audit import SQLiteAuditLog
 from agentkit.core.contracts import TaskRequest, TaskResponse
 from agentkit.core.identity import (
     CHAT_USE,
     GOVERNANCE_VIEW,
+    OPERATIONS_VIEW,
     RUNS_VIEW,
     RUNTIME_ADMIN,
     TASK_APPROVE,
@@ -32,6 +34,7 @@ from agentkit.core.identity import (
     Principal,
 )
 from agentkit.core.memory.store import ConversationConflictError
+from agentkit.core.operations import render_prometheus_metrics
 from agentkit.core.response_text import (
     format_task_output_text,
     normalize_persisted_assistant_text,
@@ -162,6 +165,56 @@ def clear_runtime_cache() -> None:
 @app.get("/healthz")
 def healthz():
     return jsonify({"status": "ok"})
+
+
+@app.get("/livez")
+def livez():
+    """仅证明 Web 进程存活，不初始化 Runtime 或访问外部依赖。"""
+
+    return jsonify({"status": "alive"})
+
+
+@app.get("/readyz")
+def readyz():
+    """验证 Runtime 已编译且审计存储可读，不返回底层异常细节。"""
+
+    try:
+        runtime = get_runtime()
+    except Exception:  # noqa: BLE001 - 探针必须返回稳定且不泄密的错误结构
+        return (
+            jsonify(
+                {
+                    "status": "not_ready",
+                    "components": {"runtime": "unavailable"},
+                }
+            ),
+            503,
+        )
+    try:
+        runtime.gateway.audit.list_runs(limit=1, tenant_id=runtime.tenant_id)
+    except Exception:  # noqa: BLE001 - 探针必须返回稳定且不泄密的错误结构
+        return (
+            jsonify(
+                {
+                    "status": "not_ready",
+                    "components": {"runtime": "ready", "audit": "unavailable"},
+                }
+            ),
+            503,
+        )
+    return jsonify(
+        {
+            "status": "ready",
+            "components": {"runtime": "ready", "audit": "ready"},
+        }
+    )
+
+
+@app.get("/metrics")
+@require_permission(OPERATIONS_VIEW)
+def prometheus_metrics():
+    payload = render_prometheus_metrics(get_runtime().gateway.audit)
+    return Response(payload, content_type="text/plain; version=0.0.4; charset=utf-8")
 
 
 @app.post("/api/admin/reload")
@@ -326,6 +379,7 @@ def operations():
     blocked = counts.get("waiting_for_approval", 0) + counts.get("rejected", 0)
     total = sum(counts.values())
     runs = _safe_runs(audit, limit=50, tenant_id=tenant_id)
+    run_groups = _group_runs(runs)
     selected_run_id = request.args.get("run_id") or (runs[0]["run_id"] if runs else "")
     selected_run = next((run for run in runs if run["run_id"] == selected_run_id), None)
     events = (
@@ -337,6 +391,11 @@ def operations():
         audit.child_runs(selected_run_id)
         if hasattr(audit, "child_runs") and selected_run is not None
         else []
+    )
+    artifacts = _safe_run_artifacts(
+        runtime,
+        tenant_id=tenant_id,
+        run_id=selected_run_id or "",
     )
 
     metrics = [
@@ -361,11 +420,131 @@ def operations():
         title="Operations Monitor",
         metrics=metrics,
         runs=runs,
+        run_groups=run_groups,
         selected_run_id=selected_run_id,
         selected_run=selected_run,
         event_rows=event_rows,
         child_runs=child_runs,
+        artifacts=artifacts,
     )
+
+
+def _hlm_client():
+    """从租户配置构建《红楼梦》Neo4j 客户端（未配置时返回 None）。"""
+    from agentkit.core.knowledge.graph import build_hlm_client
+
+    runtime = get_runtime()
+    configured = runtime.tenant_config.get("hongloumeng", {})
+    if not isinstance(configured, dict):
+        configured = {}
+    return build_hlm_client(configured)
+
+
+@app.get("/hongloumeng")
+@require_permission(CHAT_USE)
+def hongloumeng():
+    return render_template(
+        "hongloumeng.html",
+        active="hongloumeng",
+        title="红楼梦知识图谱",
+        tenant_id=str(get_runtime().tenant_config.get("tenant_id") or ""),
+    )
+
+
+@app.get("/api/hongloumeng/graph")
+@require_permission(CHAT_USE)
+def api_hongloumeng_graph():
+    client = _hlm_client()
+    if client is None:
+        return jsonify({"error": "红楼梦知识图谱未配置", "nodes": [], "edges": []}), 503
+    try:
+        limit = int(request.args.get("limit") or 120)
+    except (TypeError, ValueError):
+        limit = 120
+    try:
+        return jsonify(client.graph_snapshot(limit=limit))
+    except Exception as exc:  # noqa: BLE001 - 图谱不可用时给出可读提示
+        return jsonify({"error": f"无法连接 Neo4j 图谱：{exc}", "nodes": [], "edges": []}), 503
+
+
+@app.get("/api/hongloumeng/entities")
+@require_permission(CHAT_USE)
+def api_hongloumeng_entities():
+    client = _hlm_client()
+    if client is None:
+        return jsonify({"error": "红楼梦知识图谱未配置", "entities": []}), 503
+    query = str(request.args.get("q") or "").strip()
+    try:
+        return jsonify({"entities": client.search_entities(query)})
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": f"无法连接 Neo4j 图谱：{exc}", "entities": []}), 503
+
+
+@app.post("/api/hongloumeng/ask")
+@require_permission(CHAT_USE)
+def api_hongloumeng_ask():
+    client = _hlm_client()
+    if client is None:
+        return jsonify({"error": "红楼梦知识图谱未配置"}), 503
+    payload = request.get_json(silent=True) or {}
+    question = str(payload.get("question") or "").strip()
+    if not question:
+        return jsonify({"error": "question 不能为空"}), 400
+    try:
+        return jsonify(client.ask(question))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": f"问答失败：{exc}"}), 503
+
+
+@app.post("/api/hongloumeng/node-detail")
+@require_permission(CHAT_USE)
+def api_hongloumeng_node_detail():
+    client = _hlm_client()
+    if client is None:
+        return jsonify({"error": "红楼梦知识图谱未配置"}), 503
+    payload = request.get_json(silent=True) or {}
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "name 不能为空"}), 400
+    try:
+        return jsonify(client.entity_detail(name))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": f"查询节点详情失败：{exc}"}), 503
+
+
+@app.post("/api/hongloumeng/edge-detail")
+@require_permission(CHAT_USE)
+def api_hongloumeng_edge_detail():
+    client = _hlm_client()
+    if client is None:
+        return jsonify({"error": "红楼梦知识图谱未配置"}), 503
+    payload = request.get_json(silent=True) or {}
+    source = str(payload.get("source") or "").strip()
+    relation = str(payload.get("relation") or "").strip()
+    target = str(payload.get("target") or "").strip()
+    if not source or not relation or not target:
+        return jsonify({"error": "source/relation/target 不能为空"}), 400
+    try:
+        return jsonify(client.edge_detail(source, relation, target))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": f"查询关系详情失败：{exc}"}), 503
+
+
+@app.post("/api/hongloumeng/path")
+@require_permission(CHAT_USE)
+def api_hongloumeng_path():
+    client = _hlm_client()
+    if client is None:
+        return jsonify({"error": "红楼梦知识图谱未配置"}), 503
+    payload = request.get_json(silent=True) or {}
+    source = str(payload.get("source") or "").strip()
+    target = str(payload.get("target") or "").strip()
+    if not source or not target:
+        return jsonify({"error": "source/target 不能为空"}), 400
+    try:
+        return jsonify(client.path_between(source, target))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": f"查询两点关系失败：{exc}"}), 503
 
 
 @app.get("/governance")
@@ -600,6 +779,31 @@ def _scoped_timeline(
         user_id=user_id,
         expected_agent="general_agent",
     )
+
+
+def _conversation_execution_payload(
+    runtime: AgentKitRuntime,
+    principal: Principal,
+    conversation_id: str,
+) -> dict[str, Any]:
+    """Return the authoritative run-level execution state for a conversation.
+
+    This is the same projection the deletion service enforces (run status plus
+    ``requires_second_delete_confirmation``), so the UI's delete/force-delete
+    decision matches the backend policy instead of being derived from the last
+    sealed attempt status, which can diverge for legacy/failed runs.
+    """
+    tenant_id, user_id = _request_scope(runtime, principal)
+    try:
+        execution = runtime.conversation_runs.resolve(
+            conversation_id=conversation_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            reconcile=False,
+        )
+        return execution.to_dict()
+    except Exception:  # noqa: BLE001 - 状态投影失败不应影响 timeline 渲染
+        return {}
 
 
 def _require_action_scope(
@@ -1048,7 +1252,15 @@ def api_conversation_timeline_by_client_message():
         )
     except KeyError:
         return jsonify({"error": "会话不存在"}), 404
-    return jsonify(timeline.to_dict())
+    payload = timeline.to_dict()
+    conversation_id = str((timeline.conversation or {}).get("id") or "")
+    if conversation_id:
+        payload["execution"] = _conversation_execution_payload(
+            runtime,
+            current_principal(),
+            conversation_id,
+        )
+    return jsonify(payload)
 
 
 @app.get("/api/conversations/<conversation_id>/timeline")
@@ -1060,7 +1272,13 @@ def api_conversation_timeline(conversation_id: str):
         timeline = _scoped_timeline(runtime, principal, conversation_id)
     except KeyError:
         return jsonify({"error": "会话不存在"}), 404
-    return jsonify(timeline.to_dict())
+    payload = timeline.to_dict()
+    payload["execution"] = _conversation_execution_payload(
+        runtime,
+        principal,
+        conversation_id,
+    )
+    return jsonify(payload)
 
 
 @app.post("/api/conversations")
@@ -1092,7 +1310,10 @@ def api_delete_conversation(conversation_id: str):
     except ConversationNotFoundError:
         return jsonify({"error": "会话不存在"}), 404
     except ConversationBusyError:
-        return jsonify({"error": "该会话仍有任务正在执行或等待审批，请先结束任务"}), 409
+        return (
+            jsonify({"error": "该会话仍有任务正在执行或需二次确认，请先结束任务或使用强制删除"}),
+            409,
+        )
     except Exception:  # noqa: BLE001 - API 边界隐藏存储与向量后端内部细节
         app.logger.exception(
             "conversation deletion failed",
@@ -1369,8 +1590,38 @@ def _safe_runs(
     return audit.list_runs(limit=limit, tenant_id=tenant_id or None)
 
 
+def _group_runs(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group child runs under their parent so the browser shows one entry per
+    logical request instead of a flat parent/child pair.
+
+    A run whose ``parent_run_id`` resolves inside the window is a child and is
+    nested under its parent. Roots (and any run whose parent fell outside the
+    window) are top-level groups. No run is dropped.
+    """
+    by_id = {str(run["run_id"]): run for run in runs}
+    children: dict[str, list[dict[str, Any]]] = {}
+    roots: list[dict[str, Any]] = []
+    for run in runs:
+        parent_id = str(run.get("parent_run_id") or "")
+        if parent_id and parent_id in by_id:
+            children.setdefault(parent_id, []).append(run)
+        else:
+            roots.append(run)
+    groups: list[dict[str, Any]] = [
+        {"parent": root, "children": children.get(str(root["run_id"]), [])} for root in roots
+    ]
+    shown: set[str] = {
+        str(run["run_id"]) for group in groups for run in [group["parent"], *group["children"]]
+    }
+    for run in runs:
+        if str(run["run_id"]) not in shown:
+            groups.append({"parent": run, "children": children.get(str(run["run_id"]), [])})
+    return groups
+
+
 _SAFE_EVENT_SUMMARY_FIELDS = frozenset(
     {
+        # 基础执行字段
         "agent_id",
         "attempts",
         "cached",
@@ -1379,12 +1630,38 @@ _SAFE_EVENT_SUMMARY_FIELDS = frozenset(
         "error_code",
         "error_id",
         "error_type",
+        "error_summary",
         "model",
         "retryable",
         "skill_id",
         "stage",
         "status",
         "tool",
+        "timeout_s",
+        # 编排 / 决策诊断
+        "action",
+        "type",
+        "reason",
+        "confidence",
+        "target_agent",
+        "source_agent",
+        "parent_run_id",
+        "child_run_id",
+        "strategy",
+        "skills",
+        "intent_type",
+        "missing_fields",
+        "resolved_fields",
+        # 工件与治理诊断（含“为何被拦截”的错误摘要）
+        "kind",
+        "summary",
+        "step",
+        "attempt",
+        "backend",
+        "payload_bytes",
+        "finding_codes",
+        "finding_count",
+        "blocked",
     }
 )
 
@@ -1399,6 +1676,60 @@ def _safe_event_summary(event: dict[str, Any]) -> dict[str, Any]:
         for key, value in payload.items()
         if key in _SAFE_EVENT_SUMMARY_FIELDS and isinstance(value, str | int | float | bool)
     }
+
+
+def _safe_run_artifacts(
+    runtime: AgentKitRuntime,
+    *,
+    tenant_id: str,
+    run_id: str,
+    max_payload_characters: int = 60_000,
+) -> list[dict[str, Any]]:
+    """Return run-scoped workflow artifacts so the monitor can show full errors.
+
+    The audit timeline only stores artifact *references* (kind/summary); the
+    actionable detail (review findings, error codes such as
+    ``BrowserChallengeRequired``) lives in the persisted payload. Reading goes
+    through the project's backend-aware ``build_artifact_store`` factory, so the
+    configured storage backend (``storage_backend`` in settings / .env) is
+    honored instead of hardcoding SQLite.
+    """
+    if not run_id:
+        return []
+    settings = get_settings()
+    backend = str(getattr(settings, "storage_backend", "sqlite")).lower()
+    try:
+        store = build_artifact_store(
+            backend=backend,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            sqlite_path=runtime.db_path,
+            settings=settings,
+        )
+        records = store.list()
+    except Exception:  # noqa: BLE001 - 监控页在存储不可用时降级为空列表
+        return []
+    artifacts: list[dict[str, Any]] = []
+    for record in records:
+        payload_raw = json.dumps(record.payload, ensure_ascii=False, default=str)
+        if len(payload_raw) > max_payload_characters:
+            payload_raw = payload_raw[:max_payload_characters]
+        try:
+            payload = json.loads(payload_raw)
+        except (ValueError, TypeError):
+            payload = {"raw": payload_raw[:4000]}
+        artifacts.append(
+            {
+                "artifact_id": record.artifact_id,
+                "kind": record.kind,
+                "summary": record.summary,
+                "metadata": dict(record.metadata),
+                "created_at": record.created_at,
+                "time": format_timestamp(record.created_at),
+                "payload": payload,
+            }
+        )
+    return artifacts
 
 
 def _as_list(value: Any) -> list[str]:

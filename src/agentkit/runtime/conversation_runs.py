@@ -89,6 +89,7 @@ class ConversationRunStateResolver:
         conversation_id: str,
         tenant_id: str,
         user_id: str,
+        reconcile: bool = True,
     ) -> ConversationExecution:
         runs = self._audit.runs_for_conversation(
             conversation_id=conversation_id,
@@ -101,12 +102,14 @@ class ConversationRunStateResolver:
         root = max(roots, key=lambda run: float(run.get("started_at") or 0.0))
         root_id = str(root["run_id"])
         children = [run for run in runs if str(run.get("parent_run_id") or "") == root_id]
-        return self._resolve_latest(root, children)
+        return self._resolve_latest(root, children, reconcile=reconcile)
 
     def _resolve_latest(
         self,
         root: dict[str, Any],
         children: list[dict[str, Any]],
+        *,
+        reconcile: bool = True,
     ) -> ConversationExecution:
         root_id = str(root["run_id"])
         root_status = str(root.get("status") or "running")
@@ -147,7 +150,7 @@ class ConversationRunStateResolver:
                     non_terminal=non_terminal,
                 )
             reason = "子任务已经结束，但父任务未完成结果保存，" "系统已将任务结束为失败状态。"
-            return self._reconcile(root, events, reason=reason)
+            return self._reconcile(root, events, reason=reason, persist=reconcile)
 
         if root_status == "running":
             has_failure = any(event.get("type") == "run_failed" for event in events)
@@ -162,6 +165,7 @@ class ConversationRunStateResolver:
                     root,
                     events,
                     reason="任务执行失败，请在运行追踪中查看详情。",
+                    persist=reconcile,
                 )
             started_at = float(root.get("started_at") or self._clock())
             if self._clock() - started_at > self._timeout_seconds + 60.0:
@@ -169,6 +173,7 @@ class ConversationRunStateResolver:
                     root,
                     events,
                     reason="任务超过平台最长执行时间，已结束为失败状态。",
+                    persist=reconcile,
                 )
             return self._state(
                 root,
@@ -192,10 +197,11 @@ class ConversationRunStateResolver:
         events: list[dict[str, Any]],
         *,
         reason: str,
+        persist: bool = True,
     ) -> ConversationExecution:
         root_id = str(root["run_id"])
         already_reconciled = any(event.get("type") == "run_reconciled" for event in events)
-        if not already_reconciled:
+        if persist and not already_reconciled:
             self._audit.record(
                 root_id,
                 "run_reconciled",

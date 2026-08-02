@@ -9,9 +9,14 @@ def test_production_code_has_no_legacy_prompt_runtime() -> None:
 
 
 def test_no_production_node_calls_require_chat_directly() -> None:
+    # core/knowledge 的 graph/ingest 是独立于 Agent 运行时节点的叶子工具
+    # （CLI kg-ingest 与 Web 图谱 API 直连，不经过 Context 装配管线），
+    # 与 llm_client 一样属于基础设施层，直接使用 require_chat*。
     allowed = {
         Path("src/agentkit/core/llm_client.py"),
         Path("src/agentkit/core/context/invocation.py"),
+        Path("src/agentkit/core/knowledge/graph.py"),
+        Path("src/agentkit/core/knowledge/ingest.py"),
     }
     offenders = []
     for root in (Path("src/agentkit"), Path("skills")):

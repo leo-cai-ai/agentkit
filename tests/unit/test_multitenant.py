@@ -15,6 +15,7 @@ def test_load_tenant_config_by_id() -> None:
         "hr_recruiter",
         "xhs_growth",
         "customer_service",
+        "hongloumeng",
     ]
 
 
