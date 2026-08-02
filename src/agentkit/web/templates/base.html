@@ -57,6 +57,13 @@
             href="{{ url_for('operations') }}"
           >{{ icon("activity") }}<span>运行追踪</span></a>
           <a
+            class="{{ 'active' if active == 'hongloumeng' else '' }}"
+            data-nav-label="红楼梦知识图谱"
+            aria-label="红楼梦知识图谱"
+            {% if active == 'hongloumeng' %}aria-current="page"{% endif %}
+            href="{{ url_for('hongloumeng') }}"
+          >{{ icon("topology-star") }}<span>知识图谱</span></a>
+          <a
             class="{{ 'active' if active == 'governance' else '' }}"
             data-nav-label="治理"
             aria-label="治理"

@@ -429,6 +429,124 @@ def operations():
     )
 
 
+def _hlm_client():
+    """从租户配置构建《红楼梦》Neo4j 客户端（未配置时返回 None）。"""
+    from agentkit.core.knowledge.graph import build_hlm_client
+
+    runtime = get_runtime()
+    configured = runtime.tenant_config.get("hongloumeng", {})
+    if not isinstance(configured, dict):
+        configured = {}
+    return build_hlm_client(configured)
+
+
+@app.get("/hongloumeng")
+@require_permission(CHAT_USE)
+def hongloumeng():
+    return render_template(
+        "hongloumeng.html",
+        active="hongloumeng",
+        title="红楼梦知识图谱",
+        tenant_id=str(get_runtime().tenant_config.get("tenant_id") or ""),
+    )
+
+
+@app.get("/api/hongloumeng/graph")
+@require_permission(CHAT_USE)
+def api_hongloumeng_graph():
+    client = _hlm_client()
+    if client is None:
+        return jsonify({"error": "红楼梦知识图谱未配置", "nodes": [], "edges": []}), 503
+    try:
+        limit = int(request.args.get("limit") or 120)
+    except (TypeError, ValueError):
+        limit = 120
+    try:
+        return jsonify(client.graph_snapshot(limit=limit))
+    except Exception as exc:  # noqa: BLE001 - 图谱不可用时给出可读提示
+        return jsonify({"error": f"无法连接 Neo4j 图谱：{exc}", "nodes": [], "edges": []}), 503
+
+
+@app.get("/api/hongloumeng/entities")
+@require_permission(CHAT_USE)
+def api_hongloumeng_entities():
+    client = _hlm_client()
+    if client is None:
+        return jsonify({"error": "红楼梦知识图谱未配置", "entities": []}), 503
+    query = str(request.args.get("q") or "").strip()
+    try:
+        return jsonify({"entities": client.search_entities(query)})
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": f"无法连接 Neo4j 图谱：{exc}", "entities": []}), 503
+
+
+@app.post("/api/hongloumeng/ask")
+@require_permission(CHAT_USE)
+def api_hongloumeng_ask():
+    client = _hlm_client()
+    if client is None:
+        return jsonify({"error": "红楼梦知识图谱未配置"}), 503
+    payload = request.get_json(silent=True) or {}
+    question = str(payload.get("question") or "").strip()
+    if not question:
+        return jsonify({"error": "question 不能为空"}), 400
+    try:
+        return jsonify(client.ask(question))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": f"问答失败：{exc}"}), 503
+
+
+@app.post("/api/hongloumeng/node-detail")
+@require_permission(CHAT_USE)
+def api_hongloumeng_node_detail():
+    client = _hlm_client()
+    if client is None:
+        return jsonify({"error": "红楼梦知识图谱未配置"}), 503
+    payload = request.get_json(silent=True) or {}
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "name 不能为空"}), 400
+    try:
+        return jsonify(client.entity_detail(name))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": f"查询节点详情失败：{exc}"}), 503
+
+
+@app.post("/api/hongloumeng/edge-detail")
+@require_permission(CHAT_USE)
+def api_hongloumeng_edge_detail():
+    client = _hlm_client()
+    if client is None:
+        return jsonify({"error": "红楼梦知识图谱未配置"}), 503
+    payload = request.get_json(silent=True) or {}
+    source = str(payload.get("source") or "").strip()
+    relation = str(payload.get("relation") or "").strip()
+    target = str(payload.get("target") or "").strip()
+    if not source or not relation or not target:
+        return jsonify({"error": "source/relation/target 不能为空"}), 400
+    try:
+        return jsonify(client.edge_detail(source, relation, target))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": f"查询关系详情失败：{exc}"}), 503
+
+
+@app.post("/api/hongloumeng/path")
+@require_permission(CHAT_USE)
+def api_hongloumeng_path():
+    client = _hlm_client()
+    if client is None:
+        return jsonify({"error": "红楼梦知识图谱未配置"}), 503
+    payload = request.get_json(silent=True) or {}
+    source = str(payload.get("source") or "").strip()
+    target = str(payload.get("target") or "").strip()
+    if not source or not target:
+        return jsonify({"error": "source/target 不能为空"}), 400
+    try:
+        return jsonify(client.path_between(source, target))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": f"查询两点关系失败：{exc}"}), 503
+
+
 @app.get("/governance")
 @require_permission(GOVERNANCE_VIEW)
 def governance():
@@ -1192,7 +1310,12 @@ def api_delete_conversation(conversation_id: str):
     except ConversationNotFoundError:
         return jsonify({"error": "会话不存在"}), 404
     except ConversationBusyError:
-        return jsonify({"error": "该会话仍有任务正在执行或需二次确认，请先结束任务或使用强制删除"}), 409
+        return (
+            jsonify(
+                {"error": "该会话仍有任务正在执行或需二次确认，请先结束任务或使用强制删除"}
+            ),
+            409,
+        )
     except Exception:  # noqa: BLE001 - API 边界隐藏存储与向量后端内部细节
         app.logger.exception(
             "conversation deletion failed",

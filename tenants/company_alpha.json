@@ -1,6 +1,6 @@
 {
   "tenant_id": "AI-ABC",
-  "enabled_agents": ["general_agent", "hr_recruiter", "xhs_growth", "customer_service"],
+  "enabled_agents": ["general_agent", "hr_recruiter", "xhs_growth", "customer_service", "hongloumeng"],
   "agent_directory": {
     "general_agent": {
       "label": "General Agent",
@@ -17,6 +17,10 @@
     "xhs_growth": {
       "label": "小红书 Agent",
       "aliases": ["小红书", "XHS", "内容增长"]
+    },
+    "hongloumeng": {
+      "label": "红楼梦 Agent",
+      "aliases": ["红楼梦", "红楼", "hlm", "贾府", "知识图谱"]
     }
   },
   "agent_identity": {
@@ -30,7 +34,8 @@
     "demo_prompts": {
       "hr_recruiter": "请对 JOB-001 的候选人进行排序，选出前 3 名并说明原因。",
       "xhs_growth": "围绕“AI 改变生活”研究小红书 Top 5 内容，生成今日草稿并准备发布。",
-      "customer_service": "我上周买的东西还没收到，请帮我查询物流。"
+      "customer_service": "我上周买的东西还没收到，请帮我查询物流。",
+      "hongloumeng": "贾宝玉和林黛玉是什么关系？"
     },
     "default_user_id": "u-001",
     "available_roles": ["recruiter", "hr_admin", "employee", "growth_manager", "support_agent"],
@@ -77,6 +82,23 @@
   "field_mappings": {
     "candidate_id": "candidate_id",
     "job_id": "job_id"
+  },
+  "hongloumeng": {
+    "neo4j_uri": "neo4j://localhost:7687",
+    "neo4j_user": "neo4j",
+    "neo4j_password": "neo4j123",
+    "max_rows": 200,
+    "neighborhood_depth": 2,
+    "neighborhood_limit": 40,
+    "schema": {
+      "node_labels": ["Character", "Family", "Place", "Object", "Event", "Chapter"],
+      "rel_types": [
+        "FATHER_OF", "MOTHER_OF", "SPOUSE_OF", "SIBLING_OF", "COUSIN_OF",
+        "AUNT_OF", "GRANDMOTHER_OF", "LOVES", "SERVES", "FRIEND_OF",
+        "BELONGS_TO", "LIVES_AT", "OWNS", "APPEARS_IN", "LOCATED_IN",
+        "IN_CHAPTER"
+      ]
+    }
   },
   "mcp_servers": {}
 }
