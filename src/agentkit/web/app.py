@@ -1311,9 +1311,7 @@ def api_delete_conversation(conversation_id: str):
         return jsonify({"error": "会话不存在"}), 404
     except ConversationBusyError:
         return (
-            jsonify(
-                {"error": "该会话仍有任务正在执行或需二次确认，请先结束任务或使用强制删除"}
-            ),
+            jsonify({"error": "该会话仍有任务正在执行或需二次确认，请先结束任务或使用强制删除"}),
             409,
         )
     except Exception:  # noqa: BLE001 - API 边界隐藏存储与向量后端内部细节
@@ -1609,14 +1607,11 @@ def _group_runs(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             children.setdefault(parent_id, []).append(run)
         else:
             roots.append(run)
-    groups = [
-        {"parent": root, "children": children.get(str(root["run_id"]), [])}
-        for root in roots
+    groups: list[dict[str, Any]] = [
+        {"parent": root, "children": children.get(str(root["run_id"]), [])} for root in roots
     ]
-    shown = {
-        str(run["run_id"])
-        for group in groups
-        for run in [group["parent"], *group["children"]]
+    shown: set[str] = {
+        str(run["run_id"]) for group in groups for run in [group["parent"], *group["children"]]
     }
     for run in runs:
         if str(run["run_id"]) not in shown:

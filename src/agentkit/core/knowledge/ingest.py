@@ -91,17 +91,9 @@ class IngestReport:
 # ------------------------------------------------------------- 连接参数
 def _connection(config: dict[str, Any] | None) -> tuple[str, str, str]:
     block = config or {}
-    uri = (
-        block.get("neo4j_uri")
-        or os.environ.get("NEO4J_URI")
-        or "neo4j://localhost:7687"
-    )
+    uri = block.get("neo4j_uri") or os.environ.get("NEO4J_URI") or "neo4j://localhost:7687"
     user = block.get("neo4j_user") or os.environ.get("NEO4J_USER") or "neo4j"
-    password = (
-        block.get("neo4j_password")
-        or os.environ.get("NEO4J_PASSWORD")
-        or "neo4j123"
-    )
+    password = block.get("neo4j_password") or os.environ.get("NEO4J_PASSWORD") or "neo4j123"
     return uri, user, password
 
 
@@ -257,9 +249,7 @@ def _normalize_chapter(
         return None
     known = {ent["name"] for ent in entities.values()}
     participants = [
-        str(p).strip()
-        for p in (raw.get("participants") or [])
-        if str(p).strip() in known
+        str(p).strip() for p in (raw.get("participants") or []) if str(p).strip() in known
     ]
     return {"no": no, "title": title, "summary": summary, "participants": participants}
 
@@ -281,9 +271,7 @@ def _ensure_schema(driver: Any, schema: dict[str, Any]) -> None:
     with driver.session() as session:
         for label in schema["node_labels"]:
             safe = re.sub(r"[^A-Za-z0-9_]", "_", label).lower()
-            session.run(
-                f"CREATE INDEX {safe}_name IF NOT EXISTS FOR (n:{label}) ON (n.name)"
-            )
+            session.run(f"CREATE INDEX {safe}_name IF NOT EXISTS FOR (n:{label}) ON (n.name)")
             session.run(
                 f"CREATE FULLTEXT INDEX {safe}_search IF NOT EXISTS "
                 f"FOR (n:{label}) ON EACH [n.name, n.aliases]"
@@ -454,9 +442,7 @@ def run_ingest(
                     all_entities[key] = ent
                 else:
                     existing = all_entities[key]
-                    existing["aliases"] = list(
-                        dict.fromkeys(existing["aliases"] + ent["aliases"])
-                    )
+                    existing["aliases"] = list(dict.fromkeys(existing["aliases"] + ent["aliases"]))
                     if ent["brief"] and not existing["brief"]:
                         existing["brief"] = ent["brief"]
             all_relationships.extend(relationships)

@@ -30,17 +30,9 @@ from agentkit.core.knowledge.seed_data import (
 def _connection(config: dict[str, Any] | None) -> tuple[str, str, str]:
     """解析 Neo4j 连接参数：租户配置优先，其次环境变量，最后默认值。"""
     block = config or {}
-    uri = (
-        block.get("neo4j_uri")
-        or os.environ.get("NEO4J_URI")
-        or "neo4j://localhost:7687"
-    )
+    uri = block.get("neo4j_uri") or os.environ.get("NEO4J_URI") or "neo4j://localhost:7687"
     user = block.get("neo4j_user") or os.environ.get("NEO4J_USER") or "neo4j"
-    password = (
-        block.get("neo4j_password")
-        or os.environ.get("NEO4J_PASSWORD")
-        or "neo4j123"
-    )
+    password = block.get("neo4j_password") or os.environ.get("NEO4J_PASSWORD") or "neo4j123"
     return uri, user, password
 
 

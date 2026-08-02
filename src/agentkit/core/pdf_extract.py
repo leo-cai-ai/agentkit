@@ -94,9 +94,7 @@ def extract_pdf(
             min_page_text_chars=min_page_text_chars,
         )
     if extract_tables or extract_images or ocr_provider is not None:
-        raise RuntimeError(
-            "表格/图片/OCR 提取需要 PyMuPDF；请安装: pip install 'agentkit[kg]'"
-        )
+        raise RuntimeError("表格/图片/OCR 提取需要 PyMuPDF；请安装: pip install 'agentkit[kg]'")
     return _extract_with_pypdf(path, start_page=start_page, max_pages=max_pages)
 
 
@@ -227,9 +225,7 @@ def _extract_with_pypdf(
     for index in range(begin, end):
         clean = (reader.pages[index].extract_text() or "").strip()
         if clean:
-            blocks.append(
-                PdfBlock(text=clean, kind="page_text", page=index + 1, source="pdf_text")
-            )
+            blocks.append(PdfBlock(text=clean, kind="page_text", page=index + 1, source="pdf_text"))
     if not blocks:
         raise ValueError(f"PDF 未提取到任何文本: {path}")
     text = "\n\n".join(block.text for block in blocks)

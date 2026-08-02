@@ -73,7 +73,7 @@ class HlmKgClient:
         self._max_rows = int(max_rows)
         self._depth = int(neighborhood_depth)
         self._limit = int(neighborhood_limit)
-        self._driver = None
+        self._driver: Any = None
 
     # ------------------------------------------------------------------ 连接
     def _get_driver(self) -> Any:
@@ -548,9 +548,9 @@ def _text2cypher(question: str, entities: list[str]) -> dict[str, Any]:
         "关系: FATHER_OF(父->子) MOTHER_OF(母->子) SPOUSE_OF SIBLING_OF COUSIN_OF "
         "AUNT_OF GRANDMOTHER_OF LOVES SERVES FRIEND_OF BELONGS_TO LIVES_AT OWNS "
         "APPEARS_IN LOCATED_IN。\n"
-        "要求: 只返回 JSON {\"cypher\": \"...\"}。只生成只读 MATCH/WITH/RETURN 查询，"
+        '要求: 只返回 JSON {"cypher": "..."}。只生成只读 MATCH/WITH/RETURN 查询，'
         "禁止写语句。人物名称用参数或直接字面量（如 '贾宝玉'）。若无法构造查询，"
-        "返回 {\"cypher\": \"\"}。"
+        '返回 {"cypher": ""}。'
     )
     user = (
         f"问题：{question}\n已识别实体：{json.dumps(entities, ensure_ascii=False)}\n"
@@ -577,7 +577,7 @@ def _synthesize(
             "或“抄检大观园有哪些人参与”。"
         )
     lines = []
-    for item in evidence[: 40]:
+    for item in evidence[:40]:
         src = item.get("source") or ""
         rel = item.get("relation") or ""
         dst = item.get("target") or ""
@@ -602,7 +602,7 @@ def _synthesize(
         return "\n".join(lines)
 
 
-def build_hlm_client(config: dict[str, Any]) -> HlmKgClient:
+def build_hlm_client(config: dict[str, Any]) -> HlmKgClient | None:
     """从租户配置构造客户端（未配置 Neo4j 时返回 None）。"""
     cfg = config or {}
     uri = str(cfg.get("neo4j_uri") or "").strip()

@@ -14,9 +14,7 @@ def test_normalize_extracts_entities_relationships_and_chapter():
             {"name": "贾宝玉", "label": "Person", "aliases": ["宝玉"], "brief": "主角"},
             {"name": "林黛玉", "label": "Person", "aliases": [], "brief": "女主角"},
         ],
-        "relationships": [
-            {"source": "贾宝玉", "relation": "FRIEND_OF", "target": "林黛玉"}
-        ],
+        "relationships": [{"source": "贾宝玉", "relation": "FRIEND_OF", "target": "林黛玉"}],
         "chapter": {
             "no": 23,
             "title": "西厢记妙词通戏语 牡丹亭艳曲警芳心",
@@ -56,9 +54,7 @@ def test_normalize_filters_chapter_entity_label():
 def test_normalize_rejects_unknown_labels_and_rels():
     data = {
         "entities": [{"name": "张三", "label": "Unknown", "brief": ""}],
-        "relationships": [
-            {"source": "贾宝玉", "relation": "HACKS", "target": "林黛玉"}
-        ],
+        "relationships": [{"source": "贾宝玉", "relation": "HACKS", "target": "林黛玉"}],
     }
     entities, relationships, _ = _normalize(data, SCHEMA, 40)
     assert entities == {}
