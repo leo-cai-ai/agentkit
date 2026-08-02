@@ -3,11 +3,11 @@
   "use strict";
 
   const LABEL_COLORS = {
-    Character: "#7048e8",
-    Family: "#f59f00",
-    Place: "#37b24d",
-    Object: "#1c7ed6",
-    Event: "#e64980",
+    Character: "#cf674d",
+    Family: "#f5b73d",
+    Place: "#34d399",
+    Object: "#60a5fa",
+    Event: "#f87171",
   };
   const LABEL_ORDER = ["Character", "Family", "Place", "Object", "Event"];
 

@@ -13,8 +13,6 @@ import json
 import re
 from typing import Any
 
-from neo4j import GraphDatabase
-
 from agentkit.core.llm_client import require_chat, require_chat_json
 
 # 只读保护：仅允许 SELECT 类查询，拒绝任何写/DDL/过程调用
@@ -78,6 +76,8 @@ class HlmKgClient:
     # ------------------------------------------------------------------ 连接
     def _get_driver(self) -> Any:
         if self._driver is None:
+            from neo4j import GraphDatabase
+
             self._driver = GraphDatabase.driver(
                 self._uri,
                 auth=(self._user, self._password),

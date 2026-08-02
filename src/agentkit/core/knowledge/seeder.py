@@ -13,8 +13,6 @@ import os
 import sys
 from typing import Any
 
-from neo4j import GraphDatabase
-
 from agentkit.core.knowledge.seed_data import (
     _SKIP_NODES,
     CHAPTERS,
@@ -37,6 +35,8 @@ def _connection(config: dict[str, Any] | None) -> tuple[str, str, str]:
 
 
 def _driver(config: dict[str, Any] | None) -> Any:
+    from neo4j import GraphDatabase
+
     uri, user, password = _connection(config)
     return GraphDatabase.driver(uri, auth=(user, password))
 

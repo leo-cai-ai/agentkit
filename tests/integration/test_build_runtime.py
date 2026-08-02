@@ -15,6 +15,7 @@ def test_build_runtime_registers_expected_components(tmp_path):
         "customer_service",
         "hr_recruiter",
         "xhs_growth",
+        "hongloumeng",
     }
     assert runtime.tenant_config["tenant_id"]
     assert runtime.manifest

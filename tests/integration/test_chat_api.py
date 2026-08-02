@@ -270,7 +270,7 @@ def test_delete_conversation_rejects_blocking_run(client, status) -> None:
     )
 
     assert response.status_code == 409
-    assert "正在执行或等待审批" in response.get_json()["error"]
+    assert "正在执行或需二次确认" in response.get_json()["error"]
     assert runtime.conversations.get_conversation(conversation_id) is not None
 
 
