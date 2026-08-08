@@ -396,6 +396,7 @@ def operations():
     else:
         runs = _safe_runs(audit, limit=50, tenant_id=tenant_id)
         initial_cursor = ""
+    run_groups = _group_runs(runs) if runs else []
     selected_run_id = request.args.get("run_id") or (runs[0]["run_id"] if runs else "")
 
     detail = None
@@ -426,6 +427,7 @@ def operations():
         title="Operations Monitor",
         metrics=metrics,
         runs=runs,
+        run_groups=run_groups,
         initial_cursor=initial_cursor,
         selected_run_id=selected_run_id,
         detail=detail,

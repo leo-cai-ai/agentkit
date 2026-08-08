@@ -132,11 +132,13 @@ def test_compact_navigation_explains_icons_with_tooltips(client) -> None:
     html = client.get("/chat").get_data(as_text=True)
     css = client.get("/static/css/layout.css").get_data(as_text=True)
 
-    assert html.count("data-nav-label=") == 5
+    assert html.count("data-nav-label=") == 6
     assert html.count('aria-label="聊天"') == 1
     assert html.count('aria-label="Agent Network"') == 1
     assert 'data-nav-label="聊天"' in html
     assert 'data-nav-label="Agent Network"' in html
+    assert 'data-nav-label="评估"' in html
+    assert 'data-nav-label="红楼梦知识图谱"' in html
     assert 'data-nav-label="评估"' in html
     assert "content: attr(data-nav-label)" in css
     assert ".ak-primary-nav a:focus-visible::after" in css
