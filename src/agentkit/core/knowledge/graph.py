@@ -521,18 +521,70 @@ def _to_primitive(value: Any) -> Any:
     return value
 
 
+# 关系列候选名（按优先级）：任意匹配到其一即视为关系类型
+_RELATION_KEYS = (
+    "relation", "rel_type", "relationship", "rel", "edge_type",
+    "r_type", "relation_type", "type", "r", "relationship_type",
+)
+_SOURCE_KEYS = (
+    "a", "source", "person1", "entity1", "from", "start",
+    "left", "subject", "left_name", "source_name", "name",
+)
+_TARGET_KEYS = (
+    "b", "target", "person2", "entity2", "to", "end",
+    "right", "object", "right_name", "target_name", "name_2",
+)
+
+
+def _pick_value(row: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        if key in row and row[key] is not None:
+            return row[key]
+    return None
+
+
+def _normalize_relation(value: Any) -> str:
+    """把关系值规范成关系类型字符串（兼容 Relationship 转 primitive 后的 dict）。"""
+    if isinstance(value, dict):
+        value = value.get("type") or value.get("relation") or value.get("name") or ""
+    text = str(value or "")
+    # 去掉常见 Cypher 包裹形式，如 "[SPOUSE_OF]" 或 "{type: SPOUSE_OF}"
+    text = text.strip("[]{}'\"")
+    return text
+
+
 def _flatten_cypher_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
-    """把 Cypher 行结果转成可读的 relation 证据（对齐邻域查询结构）。"""
+    """把 Cypher 行结果转成可读的 relation 证据（对齐邻域查询结构）。
+
+    优先识别约定列名（a/r/b 或 source/relation/target）；对 LLM 生成的自定义
+    列名（如 person1/rel_type/person2、name/relationship）做容错规范化，
+    避免 evidence 退化成无结构 JSON 行导致合成回答读不出关系类型。
+    """
     out: list[dict[str, Any]] = []
     for row in result["rows"]:
-        # 兼容 MATCH (a)-[r]->(b) RETURN a.name AS a, type(r) AS r, b.name AS b
-        # 也兼容直接 RETURN name 等单值结果
+        if not isinstance(row, dict):
+            out.append({"value": str(row)})
+            continue
         if {"a", "r", "b"} <= set(row) or {"source", "relation", "target"} <= set(row):
             out.append(
                 {
                     "source": str(row.get("a") or row.get("source") or ""),
-                    "relation": str(row.get("r") or row.get("relation") or ""),
+                    "relation": _normalize_relation(
+                        row.get("r") or row.get("relation") or ""
+                    ),
                     "target": str(row.get("b") or row.get("target") or ""),
+                }
+            )
+            continue
+        source = _pick_value(row, _SOURCE_KEYS)
+        relation = _pick_value(row, _RELATION_KEYS)
+        target = _pick_value(row, _TARGET_KEYS)
+        if source is not None and target is not None:
+            out.append(
+                {
+                    "source": str(source),
+                    "relation": _normalize_relation(relation),
+                    "target": str(target),
                 }
             )
         else:
@@ -551,6 +603,8 @@ def _text2cypher(question: str, entities: list[str]) -> dict[str, Any]:
         '要求: 只返回 JSON {"cypher": "..."}。只生成只读 MATCH/WITH/RETURN 查询，'
         "禁止写语句。人物名称用参数或直接字面量（如 '贾宝玉'）。若无法构造查询，"
         '返回 {"cypher": ""}。'
+        "RETURN 子句必须使用约定列名：关系两侧节点用 a / b，关系类型用 r，"
+        '即 RETURN a.name AS a, type(r) AS r, b.name AS b（不得自定义列名）。'
     )
     user = (
         f"问题：{question}\n已识别实体：{json.dumps(entities, ensure_ascii=False)}\n"
