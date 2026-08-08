@@ -601,4 +601,5 @@ def test_explicit_mention_applies_to_one_turn_and_trace_keeps_parent_child(clien
 
     assert second["response"]["governance"]["route"]["type"] == "general_delegate"
     trace = client.get(f"/api/runs/{first['run_id']}").get_json()
-    assert any(run["run_id"] == child_run_id for run in trace["children"])
+    children = (trace.get("relationships") or {}).get("children") or []
+    assert any(run["run_id"] == child_run_id for run in children)

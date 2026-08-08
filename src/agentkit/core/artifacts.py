@@ -12,6 +12,7 @@ import json
 import sqlite3
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -385,6 +386,42 @@ def build_artifact_store(
     raise ValueError(f"Unsupported artifact backend: {backend!r}")
 
 
+class RunArtifactReader:
+    """只读 Run Artifact Adapter：按 (tenant, run) 作用域读取 Artifact。
+
+    复用现有 Tenant+Run Scoped Store 工厂，不创建第二套 Artifact SQL；
+    任何租户不匹配的查询都返回空/抛 ``KeyError``，避免跨租户枚举。
+    """
+
+    def __init__(
+        self,
+        *,
+        tenant_id: str,
+        store_factory: Callable[[str], ArtifactStore],
+    ) -> None:
+        self._tenant_id = tenant_id
+        self._store_factory = store_factory
+
+    def list_for_run(self, *, tenant_id: str, run_id: str) -> list[ArtifactRecord]:
+        if tenant_id != self._tenant_id:
+            return []
+        try:
+            return self._store_factory(run_id).list()
+        except KeyError:
+            return []
+
+    def get_for_run(
+        self,
+        *,
+        tenant_id: str,
+        run_id: str,
+        artifact_id: str,
+    ) -> ArtifactRecord:
+        if tenant_id != self._tenant_id:
+            raise KeyError(artifact_id)
+        return self._store_factory(run_id).get(artifact_id)
+
+
 def _sqlite_record(row: sqlite3.Row) -> ArtifactRecord:
     return ArtifactRecord(
         artifact_id=str(row["artifact_id"]),
@@ -417,6 +454,7 @@ __all__ = [
     "ArtifactStore",
     "InMemoryArtifactStore",
     "PostgresArtifactStore",
+    "RunArtifactReader",
     "SqliteArtifactStore",
     "build_artifact_store",
     "canonical_json",

@@ -418,6 +418,7 @@ def test_login_error_uses_accessible_field_state(client):
 def test_operations_uses_run_browser_and_collapsible_json(client, monkeypatch, tmp_path):
     import agentkit.web.app as web_app
     from agentkit.core.audit import SQLiteAuditLog
+    from agentkit.runtime.run_detail import RunDetailService
 
     db_path = tmp_path / "operations.sqlite"
     audit = SQLiteAuditLog(db_path)
@@ -442,10 +443,20 @@ def test_operations_uses_run_browser_and_collapsible_json(client, monkeypatch, t
         text="Other tenant secret request",
     )
     audit.record(other_run_id, "run_finished", {"status": "completed"})
+    run_details = RunDetailService(
+        tenant_id="tenant-test",
+        audit=audit,
+        conversation_projection=None,
+        artifact_reader=SimpleNamespace(
+            list_for_run=lambda **_: [],
+            get_for_run=lambda **_: (_ for _ in ()).throw(KeyError("none")),
+        ),
+    )
     runtime = SimpleNamespace(
         db_path=db_path,
         gateway=SimpleNamespace(audit=audit),
         tenant_config={"tenant_id": "tenant-test"},
+        run_details=run_details,
     )
     monkeypatch.setattr(web_app, "get_runtime", lambda: runtime)
 
@@ -466,7 +477,6 @@ def test_operations_uses_run_browser_and_collapsible_json(client, monkeypatch, t
         r'<time datetime="\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}">',
         html,
     )
-    assert 'class="ak-operations-back-link" href="#recent-requests-title"' in html
     assert 'class="ak-run-timeline ak-event-timeline"' in html
     assert 'class="ak-json-details"' in html
     assert 'class="ak-json-viewer" tabindex="0"' in html

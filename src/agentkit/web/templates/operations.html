@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% from "_components.html" import metric_grid, status_pill %}
 
-{% block page_description %}查看运行记录、父子 Agent 链路与真实审计事件。{% endblock %}
+{% block page_description %}查看运行记录、父子 Agent 链路、审计事件、会话、Artifact 与诊断。{% endblock %}
 
 {% block content %}
   {{ metric_grid(metrics, '运行关键指标') }}
@@ -16,14 +16,14 @@
         <span><span data-run-filter-count>{{ run_groups | length }}</span> 条</span>
       </div>
 
-      <form class="ak-run-filters" data-run-filters role="search" aria-label="过滤当前运行列表">
+      <form class="ak-run-filters" data-run-filters role="search" aria-label="过滤当前运行列表" method="get" action="{{ url_for('operations') }}">
         <label class="ak-run-filter-query">
           <span>搜索</span>
-          <input data-run-filter="query" aria-label="搜索运行" type="search" placeholder="请求或用户">
+          <input data-run-filter="query" name="query" aria-label="搜索运行" type="search" placeholder="请求或用户">
         </label>
         <label>
           <span>状态</span>
-          <select data-run-filter="status" aria-label="按状态筛选">
+          <select data-run-filter="status" name="status" aria-label="按状态筛选">
             <option value="">全部状态</option>
             {% for status in ('queued', 'running', 'waiting_for_approval', 'completed', 'failed', 'rejected', 'blocked', 'unknown') %}
               <option value="{{ status }}">{{ status | replace('_', ' ') }}</option>
@@ -32,7 +32,7 @@
         </label>
         <label>
           <span>Agent</span>
-          <input data-run-filter="agent" aria-label="按 Agent 筛选" type="search" placeholder="Agent ID">
+          <input data-run-filter="agent" name="agent_id" aria-label="按 Agent 筛选" type="search" placeholder="Agent ID">
         </label>
         <button class="secondary" type="reset" aria-label="清除运行过滤条件">清除</button>
       </form>
@@ -87,123 +87,270 @@
           <div class="ak-empty-state">暂无运行记录。</div>
         {% endfor %}
         <div class="ak-empty-state ak-run-filter-empty" data-run-filter-empty hidden>当前列表没有匹配的运行。</div>
+        <button
+          class="ak-run-load-more secondary"
+          type="button"
+          data-run-load-more
+          data-next-cursor="{{ initial_cursor }}"
+          {% if not initial_cursor %}hidden{% endif %}
+        >加载更多</button>
       </div>
     </aside>
 
     <article class="panel ak-panel ak-run-inspector" id="run-detail" data-run-detail aria-labelledby="run-timeline-title">
       <div class="panel-head ak-panel-header">
         <div>
-          <span class="ak-eyebrow">Run Inspector</span>
+          <span class="ak-eyebrow">Run 360 Inspector</span>
           <h2 id="run-timeline-title">运行详情</h2>
         </div>
         <span>{{ selected_run_id[:8] if selected_run_id else '未选择' }}</span>
       </div>
-      <a class="ak-operations-back-link" href="#recent-requests-title">返回运行记录</a>
 
-      <nav class="ak-run-chain" data-run-chain aria-label="父子运行链路">
-        {% if selected_run and selected_run.parent_run_id %}
-          <a href="{{ url_for('operations', run_id=selected_run.parent_run_id) }}#run-detail">General 父运行</a>
-          <span aria-hidden="true">/</span>
-        {% endif %}
-        {% if selected_run %}
-          <span aria-current="page">{{ selected_run.agent_id or '当前运行' }}</span>
+      {% if not selected_run_id %}
+        <div class="ak-empty-state">选择一条运行以查看 Run 360 详情。</div>
+      {% elif not detail %}
+        <div class="ak-empty-state">运行详情暂不可用（观测后端未就绪或运行不存在）。</div>
+      {% else %}
+        {% set overview = detail.overview %}
+        {% set relationships = detail.relationships %}
+        {% if overview.execution_status == 'failed' %}
+          {% set default_tab = 'diagnostics' %}
+        {% elif overview.execution_status == 'waiting_for_approval' %}
+          {% set default_tab = 'timeline' %}
         {% else %}
-          <span>尚未选择运行</span>
+          {% set default_tab = 'overview' %}
         {% endif %}
-        {% for child in child_runs %}
-          <span aria-hidden="true">/</span>
-          <a href="{{ url_for('operations', run_id=child.run_id) }}#run-detail">{{ child.agent_id or '业务子运行' }}</a>
-        {% endfor %}
-      </nav>
 
-      {% if selected_run %}
-        <section class="ak-run-summary" aria-label="当前运行摘要">
-          <div class="ak-run-summary-heading">
-            <h3>请求摘要</h3>
-            {{ status_pill(selected_run.status) }}
+        <nav class="ak-run-chain" data-run-chain aria-label="父子运行链路">
+          {% if relationships.parent %}
+            <a href="{{ url_for('operations', run_id=relationships.parent.run_id) }}#run-detail">General 父运行</a>
+            <span aria-hidden="true">/</span>
+          {% endif %}
+          <span aria-current="page">{{ overview.agent_id or '当前运行' }}</span>
+          {% for child in relationships.children %}
+            <span aria-hidden="true">/</span>
+            <a href="{{ url_for('operations', run_id=child.run_id) }}#run-detail">{{ child.agent_id or '业务子运行' }}</a>
+          {% endfor %}
+        </nav>
+
+        <div class="ak-run-tabs" data-run-tabs>
+          <div role="tablist" class="ak-tab-list" aria-label="Run 360 详情" data-run-tablist>
+            <button role="tab" class="ak-tab" data-run-tab="overview" aria-selected="false" tabindex="-1">Overview</button>
+            <button role="tab" class="ak-tab" data-run-tab="timeline" aria-selected="false" tabindex="-1">Timeline</button>
+            <button role="tab" class="ak-tab" data-run-tab="conversation" aria-selected="false" tabindex="-1">Conversation</button>
+            <button role="tab" class="ak-tab" data-run-tab="artifacts" aria-selected="false" tabindex="-1">Artifacts</button>
+            <button role="tab" class="ak-tab" data-run-tab="diagnostics" aria-selected="false" tabindex="-1">Diagnostics</button>
           </div>
-          <p>{{ selected_run.text }}</p>
-          <dl class="ak-run-facts">
-            <div><dt>用户</dt><dd>{{ selected_run.user_id }}</dd></div>
-            <div><dt>Agent</dt><dd>{{ selected_run.agent_id or '未记录' }}</dd></div>
-            <div>
-              <dt>开始时间</dt>
-              <dd class="ak-run-fact-time"><time datetime="{{ selected_run.started_at | datetime_ts }}">{{ selected_run.started_at | format_ts }}</time></dd>
-            </div>
-            <div>
-              <dt>结束时间</dt>
-              <dd class="ak-run-fact-time">
-                {% if selected_run.finished_at %}
-                  <time datetime="{{ selected_run.finished_at | datetime_ts }}">{{ selected_run.finished_at | format_ts }}</time>
-                {% else %}—{% endif %}
-              </dd>
-            </div>
-            <div class="ak-run-fact-wide"><dt>Run ID</dt><dd><code title="{{ selected_run.run_id }}">{{ selected_run.run_id }}</code></dd></div>
-          </dl>
-        </section>
-      {% endif %}
 
-      <ol class="ak-run-timeline ak-event-timeline" data-run-timeline aria-label="运行审计时间线">
-        {% for event in event_rows %}
-          <li class="ak-event-item">
-            <div class="ak-event-heading">
-              <span class="ak-event-name" title="{{ event.type }}">{{ event.type | replace('_', ' ') | title }}</span>
-              <time class="ak-event-time" datetime="{{ event.timestamp | datetime_ts }}">{{ event.time }}</time>
+          <section role="tabpanel" data-run-panel="overview" hidden>
+            <div class="ak-run-summary" aria-label="四维状态">
+              <div class="ak-run-summary-heading">
+                <h3>执行状态</h3>
+                {{ status_pill(overview.execution_status) }}
+              </div>
+              <dl class="ak-run-facts ak-status-facts">
+                <div><dt>Review</dt><dd>{{ overview.review_status or 'unknown' }}</dd></div>
+                <div><dt>业务结果</dt><dd>{{ overview.business_outcome or 'unknown' }}</dd></div>
+                <div><dt>评估结果</dt><dd>{{ overview.evaluation_result or 'unknown' }}</dd></div>
+                <div><dt>策略</dt><dd>{{ overview.strategy or 'unknown' }}</dd></div>
+              </dl>
             </div>
-            {% if event.payload %}
-              <details class="ak-json-details">
-                <summary aria-label="查看 {{ event.type | replace('_', ' ') }} 的事件摘要">
-                  <span>查看事件摘要</span>
-                  <span>{% if event.payload is mapping %}{{ event.payload | length }} 个字段{% else %}JSON{% endif %}</span>
-                </summary>
-                <pre class="ak-json-viewer" tabindex="0"><code>{{ event.payload | json_pretty }}</code></pre>
-              </details>
-            {% else %}
-              <span class="ak-event-empty">无事件载荷</span>
+            <dl class="ak-run-facts">
+              <div><dt>用户</dt><dd>{{ overview.user_id }}</dd></div>
+              <div><dt>Agent</dt><dd>{{ overview.agent_id or '未记录' }}</dd></div>
+              <div><dt>Conversation</dt><dd>{{ overview.conversation_id or '—' }}</dd></div>
+              <div>
+                <dt>开始时间</dt>
+                <dd class="ak-run-fact-time"><time datetime="{{ overview.started_at | datetime_ts }}">{{ overview.started_at | format_ts }}</time></dd>
+              </div>
+              <div>
+                <dt>结束时间</dt>
+                <dd class="ak-run-fact-time">
+                  {% if overview.finished_at %}
+                    <time datetime="{{ overview.finished_at | datetime_ts }}">{{ overview.finished_at | format_ts }}</time>
+                  {% else %}—{% endif %}
+                </dd>
+              </div>
+              <div class="ak-run-fact-wide"><dt>Run ID</dt><dd><code title="{{ detail.run_id }}">{{ detail.run_id }}</code></dd></div>
+            </dl>
+            <dl class="ak-run-facts">
+              <div><dt>LLM 调用</dt><dd>{{ overview.llm_calls }}</dd></div>
+              <div><dt>总 Token</dt><dd>{{ overview.total_tokens }}</dd></div>
+              <div><dt>成本 (USD)</dt><dd>{{ '%.6f' | format(overview.cost_usd) }}</dd></div>
+              <div><dt>执行耗时</dt><dd>{{ '%.0f' | format(overview.duration_ms or 0) }} ms</dd></div>
+            </dl>
+            {% if relationships.children %}
+              <h3>调用树</h3>
+              <ul class="ak-run-tree">
+                {% for child in relationships.children %}
+                  <li>
+                    <a href="{{ url_for('operations', run_id=child.run_id) }}#run-detail">
+                      {{ child.agent_id or '业务子运行' }} · {{ status_pill(child.status) }}
+                    </a>
+                  </li>
+                {% endfor %}
+              </ul>
             {% endif %}
-          </li>
-        {% else %}
-          <li class="ak-empty-state">
-            {% if selected_run %}当前运行没有可显示的审计事件。{% else %}选择一条运行以查看审计时间线。{% endif %}
-          </li>
-        {% endfor %}
-      </ol>
+            <p class="ak-run-request-text">{{ overview.text }}</p>
+          </section>
 
-      {% if selected_run %}
-        <section class="ak-run-artifacts" aria-label="运行工件明细">
-          <div class="ak-run-summary-heading">
-            <h3>工件明细（含错误详情）</h3>
-          </div>
-          {% if artifacts %}
-            <ol class="ak-event-timeline ak-artifact-list" aria-label="运行工件">
-              {% for artifact in artifacts %}
-                <li class="ak-event-item">
+          <section role="tabpanel" data-run-panel="timeline" hidden>
+            <ol class="ak-run-timeline ak-event-timeline" aria-label="运行审计时间线">
+              {% for event in detail.timeline %}
+                <li class="ak-event-item" data-event-type="{{ event.type }}">
                   <div class="ak-event-heading">
-                    <span class="ak-event-name" title="{{ artifact.kind }}">{{ artifact.kind | replace('_', ' ') | title }}</span>
-                    <time class="ak-event-time" datetime="{{ artifact.created_at | datetime_ts }}">{{ artifact.time }}</time>
+                    <span class="ak-event-name" title="{{ event.type }}">{{ event.type | replace('_', ' ') | title }}</span>
+                    <time class="ak-event-time" datetime="{{ event.ts | datetime_ts }}">{{ event.ts | format_ts }}</time>
                   </div>
-                  {% if artifact.summary %}
-                    <p class="ak-event-summary">{{ artifact.summary }}</p>
-                  {% endif %}
-                  {% if artifact.payload %}
+                  {% if event.payload %}
                     <details class="ak-json-details">
-                      <summary aria-label="查看 {{ artifact.kind | replace('_', ' ') }} 的完整载荷">
-                        <span>查看完整载荷</span>
-                        <span>{{ artifact.payload | length }} 个字段</span>
+                      <summary aria-label="查看 {{ event.type | replace('_', ' ') }} 的事件摘要">
+                        <span>查看事件摘要</span>
+                        <span>{% if event.payload is mapping %}{{ event.payload | length }} 个字段{% else %}JSON{% endif %}</span>
                       </summary>
-                      <pre class="ak-json-viewer" tabindex="0"><code>{{ artifact.payload | json_pretty }}</code></pre>
+                      <pre class="ak-json-viewer" tabindex="0"><code>{{ event.payload | json_pretty }}</code></pre>
                     </details>
                   {% else %}
-                    <span class="ak-event-empty">无载荷</span>
+                    <span class="ak-event-empty">无事件载荷</span>
                   {% endif %}
                 </li>
+              {% else %}
+                <li class="ak-empty-state">当前运行没有可显示的审计事件。</li>
               {% endfor %}
             </ol>
-          {% else %}
-            <p class="ak-empty-state">当前运行没有工件明细。</p>
-          {% endif %}
-        </section>
+            <details class="ak-json-details ak-raw-audit">
+              <summary>查看原始安全 Audit JSON</summary>
+              <pre class="ak-json-viewer" tabindex="0"><code>{{ detail.timeline | tojson(indent=2) }}</code></pre>
+            </details>
+          </section>
+
+          <section role="tabpanel" data-run-panel="conversation" hidden>
+            {% if detail.restrictions.content_restricted %}
+              <div class="ak-empty-state">你没有读取完整会话内容的权限（需要 <code>runs:content:read</code>）。</div>
+            {% elif detail.conversation %}
+              <pre class="ak-json-viewer ak-conversation-viewer" tabindex="0"><code>{{ detail.conversation | tojson(indent=2) }}</code></pre>
+            {% else %}
+              <div class="ak-empty-state">该运行没有会话投影。</div>
+            {% endif %}
+          </section>
+
+          <section role="tabpanel" data-run-panel="artifacts" hidden>
+            {% if detail.restrictions.artifact_payload_restricted %}
+              <div class="ak-empty-state">你没有读取 Artifact Payload 的权限（需要 <code>runs:artifact:read</code>）。</div>
+            {% endif %}
+            {% for artifact in detail.artifacts %}
+              <div class="ak-artifact-row">
+                <div>
+                  <strong>{{ artifact.kind }}</strong>
+                  <span>{{ artifact.summary }}</span>
+                  <small>
+                    {{ artifact.payload_bytes }} bytes ·
+                    {{ artifact.payload_sha256[:12] }}…
+                  </small>
+                </div>
+                <button
+                  class="secondary"
+                  type="button"
+                  data-artifact-viewer
+                  data-run-id="{{ detail.run_id }}"
+                  data-artifact-id="{{ artifact.artifact_id }}"
+                  data-artifact-kind="{{ artifact.kind }}"
+                  {% if detail.restrictions.artifact_payload_restricted %}disabled{% endif %}
+                >查看 Payload</button>
+              </div>
+            {% else %}
+              <div class="ak-empty-state">该运行没有 Artifact。</div>
+            {% endfor %}
+            <div class="ak-artifact-viewer" data-artifact-output hidden>
+              <div class="ak-artifact-viewer-head">
+                <strong data-artifact-title>Artifact Payload</strong>
+                <button class="secondary" type="button" data-artifact-close aria-label="关闭 Payload 查看器">关闭</button>
+              </div>
+              <pre class="ak-json-viewer" tabindex="0"><code data-artifact-payload></code></pre>
+              <div class="ak-empty-state" data-artifact-error hidden></div>
+            </div>
+          </section>
+
+          <section role="tabpanel" data-run-panel="diagnostics" hidden>
+            {% for error in detail.errors %}
+              <div class="ak-error-card" data-error-stage="{{ error.stage }}">
+                <div class="ak-error-card-head">
+                  <strong>{{ error.error_type }}</strong>
+                  <span>{{ error.stage }}</span>
+                  <code>{{ error.error_id }}</code>
+                </div>
+                <p>{{ error.safe_message }}</p>
+                <dl class="ak-run-facts">
+                  <div><dt>Code</dt><dd>{{ error.code }}</dd></div>
+                  <div><dt>Tool</dt><dd>{{ error.tool_id or '—' }}</dd></div>
+                  <div><dt>Skill</dt><dd>{{ error.skill_id or '—' }}</dd></div>
+                  <div><dt>可重试</dt><dd>{{ '是' if error.retryable else '否' }}</dd></div>
+                  <div><dt>来源</dt><dd>{{ '历史兼容投影' if error.compatibility_projection else 'run_error 事件' }}</dd></div>
+                </dl>
+                <details class="ak-json-details">
+                  <summary>查看错误指纹</summary>
+                  <pre class="ak-json-viewer" tabindex="0"><code>{{ error.fingerprint }}</code></pre>
+                </details>
+              </div>
+            {% else %}
+              <div class="ak-empty-state">没有检测到错误。</div>
+            {% endfor %}
+
+            <h3>LLM 摘要</h3>
+            <dl class="ak-run-facts">
+              <div><dt>调用</dt><dd>{{ detail.llm_summary.calls }}</dd></div>
+              <div><dt>Input Tokens</dt><dd>{{ detail.llm_summary.input_tokens }}</dd></div>
+              <div><dt>Output Tokens</dt><dd>{{ detail.llm_summary.output_tokens }}</dd></div>
+              <div><dt>Total</dt><dd>{{ detail.llm_summary.total_tokens }}</dd></div>
+              <div><dt>Cost (USD)</dt><dd>{{ '%.6f' | format(detail.llm_summary.cost_usd) }}</dd></div>
+            </dl>
+
+            <h3>Tool 摘要</h3>
+            <div class="table-wrap ak-table-wrap">
+              <table class="data-table ak-data-table" aria-label="Tool 调用摘要">
+                <thead>
+                  <tr><th scope="col">Tool</th><th scope="col">调用</th><th scope="col">失败</th><th scope="col">耗时 (ms)</th></tr>
+                </thead>
+                <tbody>
+                  {% for row in detail.tool_summary %}
+                    <tr>
+                      <td>{{ row.tool }}</td>
+                      <td>{{ row.calls }}</td>
+                      <td>{{ row.failed }}</td>
+                      <td>{{ '%.1f' | format(row.duration_ms) }}</td>
+                    </tr>
+                  {% else %}
+                    <tr><td colspan="4">没有 Tool 调用。</td></tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+
+            <div class="ak-run-facts">
+              {% if detail.external_links.log_url %}
+                <div><dt>日志</dt><dd><a href="{{ detail.external_links.log_url }}" target="_blank" rel="noopener noreferrer">打开外部日志</a></dd></div>
+              {% endif %}
+              {% if detail.external_links.trace_url %}
+                <div><dt>Trace</dt><dd><a href="{{ detail.external_links.trace_url }}" target="_blank" rel="noopener noreferrer">打开外部 Trace</a></dd></div>
+              {% endif %}
+            </div>
+
+            {% if detail.section_errors %}
+              <h3>降级提示</h3>
+              <ul class="ak-section-errors">
+                {% for section, message in detail.section_errors.items() %}
+                  <li><code>{{ section }}</code>：{{ message }}</li>
+                {% endfor %}
+              </ul>
+            {% endif %}
+          </section>
+        </div>
+        <input type="hidden" data-default-run-tab value="{{ default_tab }}">
       {% endif %}
     </article>
   </section>
+{% endblock %}
+
+{% block page_scripts %}
+  <script defer src="{{ url_for('static', filename='js/operations.js') }}"></script>
 {% endblock %}

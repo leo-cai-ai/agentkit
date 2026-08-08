@@ -14,6 +14,7 @@
     <script defer src="{{ url_for('static', filename='js/chat_session.js') }}"></script>
     <script defer src="{{ url_for('static', filename='js/chat_timeline.js') }}"></script>
     <script defer src="{{ url_for('static', filename='js/app.js') }}"></script>
+    {% block page_scripts %}{% endblock %}
   </head>
   <body class="ak-app-page" data-page="{{ active }}">
     <a class="ak-skip-link" href="#main-content">Skip to main content</a>
@@ -70,6 +71,13 @@
             {% if active == 'governance' %}aria-current="page"{% endif %}
             href="{{ url_for('governance') }}"
           >{{ icon("shield-check") }}<span>治理</span></a>
+          <a
+            class="{{ 'active' if active == 'evaluations' else '' }}"
+            data-nav-label="评估"
+            aria-label="评估"
+            {% if active == 'evaluations' %}aria-current="page"{% endif %}
+            href="{{ url_for('evaluations') }}"
+          >{{ icon("flask") }}<span>评估</span></a>
         </nav>
         <button class="sidebar-card ak-tenant-summary" type="button" aria-label="当前租户 {{ tenant_id }}">
           <span aria-hidden="true">AI</span>

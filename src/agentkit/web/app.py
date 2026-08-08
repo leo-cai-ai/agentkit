@@ -21,17 +21,21 @@ from flask import (
 
 from agentkit.config import get_settings
 from agentkit.core.artifacts import build_artifact_store
-from agentkit.core.audit import SQLiteAuditLog
+from agentkit.core.audit import RunListFilter, SQLiteAuditLog
 from agentkit.core.contracts import TaskRequest, TaskResponse
 from agentkit.core.identity import (
     CHAT_USE,
     GOVERNANCE_VIEW,
     OPERATIONS_VIEW,
+    RUNS_ARTIFACT_READ,
+    RUNS_CONTENT_READ,
     RUNS_VIEW,
     RUNTIME_ADMIN,
     TASK_APPROVE,
     TASK_RUN,
     Principal,
+    has_permission,
+    load_role_permissions,
 )
 from agentkit.core.memory.store import ConversationConflictError
 from agentkit.core.operations import render_prometheus_metrics
@@ -50,6 +54,11 @@ from agentkit.runtime.conversation_deletion import (
     ConversationNotFoundError,
 )
 from agentkit.runtime.conversation_projection_models import AcceptedTurn
+from agentkit.runtime.run_detail import (
+    ObservabilityBackendUnavailable,
+    RunDetailAccess,
+    RunDetailNotFound,
+)
 from agentkit.web.identity import current_principal, require_permission
 from agentkit.web.security import configure_security
 from agentkit.web.streaming import stream_response
@@ -368,6 +377,7 @@ def agent_network():
 
 
 @app.get("/operations")
+@require_permission(RUNS_VIEW)
 def operations():
     runtime = get_runtime()
     audit = runtime.gateway.audit
@@ -378,25 +388,30 @@ def operations():
     failed = counts.get("failed", 0)
     blocked = counts.get("waiting_for_approval", 0) + counts.get("rejected", 0)
     total = sum(counts.values())
-    runs = _safe_runs(audit, limit=50, tenant_id=tenant_id)
-    run_groups = _group_runs(runs)
+    run_details = getattr(runtime, "run_details", None)
+    if run_details is not None:
+        page = run_details.list_runs(RunListFilter(tenant_id=tenant_id, limit=50))
+        runs = list(page.items)
+        initial_cursor = page.next_cursor
+    else:
+        runs = _safe_runs(audit, limit=50, tenant_id=tenant_id)
+        initial_cursor = ""
     selected_run_id = request.args.get("run_id") or (runs[0]["run_id"] if runs else "")
-    selected_run = next((run for run in runs if run["run_id"] == selected_run_id), None)
-    events = (
-        audit.events_for(selected_run_id)
-        if isinstance(audit, SQLiteAuditLog) and selected_run is not None
-        else []
-    )
-    child_runs = (
-        audit.child_runs(selected_run_id)
-        if hasattr(audit, "child_runs") and selected_run is not None
-        else []
-    )
-    artifacts = _safe_run_artifacts(
-        runtime,
-        tenant_id=tenant_id,
-        run_id=selected_run_id or "",
-    )
+
+    detail = None
+    if selected_run_id and run_details is not None:
+        principal = current_principal()
+        mapping = load_role_permissions(get_settings())
+        access = RunDetailAccess(
+            can_read_content=has_permission(principal, RUNS_CONTENT_READ, mapping),
+            can_read_artifacts=has_permission(principal, RUNS_ARTIFACT_READ, mapping),
+        )
+        try:
+            detail = run_details.get_detail(
+                tenant_id=tenant_id, run_id=selected_run_id, access=access
+            )
+        except (RunDetailNotFound, ObservabilityBackendUnavailable):
+            detail = None
 
     metrics = [
         {"label": "Total Runs", "value": total, "helper": "Recorded executions"},
@@ -405,27 +420,15 @@ def operations():
         {"label": "Blocked", "value": blocked, "helper": "Awaiting or rejected approval"},
         {"label": "Failed", "value": failed, "helper": "Requires attention"},
     ]
-    event_rows = [
-        {
-            "timestamp": event["ts"],
-            "time": format_timestamp(event["ts"]),
-            "type": event["type"],
-            "payload": _safe_event_summary(event),
-        }
-        for event in events
-    ]
     return render_template(
         "operations.html",
         active="operations",
         title="Operations Monitor",
         metrics=metrics,
         runs=runs,
-        run_groups=run_groups,
+        initial_cursor=initial_cursor,
         selected_run_id=selected_run_id,
-        selected_run=selected_run,
-        event_rows=event_rows,
-        child_runs=child_runs,
-        artifacts=artifacts,
+        detail=detail,
     )
 
 
@@ -545,6 +548,75 @@ def api_hongloumeng_path():
         return jsonify(client.path_between(source, target))
     except Exception as exc:  # noqa: BLE001
         return jsonify({"error": f"查询两点关系失败：{exc}"}), 503
+
+
+@app.get("/evaluations")
+@require_permission(GOVERNANCE_VIEW)
+def evaluations():
+    """Eval 报告只读页：列出版本化报告并展示选中报告的明细与门禁结果。"""
+    reports_dir = AGENTKIT_ROOT / "evaluation" / "reports"
+    reports = _load_eval_reports(reports_dir)
+    selected_name = request.args.get("report") or (reports[0]["name"] if reports else "")
+    selected_detail = next(
+        (item["data"] for item in reports if item["name"] == selected_name),
+        None,
+    )
+    passed_gates = sum(1 for item in reports if item["gate"].get("passed"))
+    latest = reports[0] if reports else None
+    summary = latest["summary"] if latest else {}
+    latest_suite = latest["suite_id"] if latest else "—"
+    metrics = [
+        {"label": "报告数", "value": len(reports), "helper": "版本化 Eval 报告"},
+        {"label": "门禁通过", "value": passed_gates, "helper": "pass_rate 与 mean_score 双达标"},
+        {
+            "label": "最新 Pass Rate",
+            "value": f"{summary.get('pass_rate', 0.0):.0%}",
+            "helper": latest_suite,
+        },
+        {
+            "label": "最新 Mean Score",
+            "value": f"{summary.get('mean_score', 0.0):.2f}",
+            "helper": "0–1 加权分",
+        },
+    ]
+    return render_template(
+        "evaluations.html",
+        active="evaluations",
+        title="Eval Reports",
+        metrics=metrics,
+        reports=reports,
+        selected_name=selected_name,
+        selected_detail=selected_detail,
+    )
+
+
+def _load_eval_reports(reports_dir: Path) -> list[dict[str, Any]]:
+    """读取 evaluation/reports 下的版本化 JSON 报告，损坏文件跳过。"""
+    if not reports_dir.is_dir():
+        return []
+    items: list[dict[str, Any]] = []
+    for path in sorted(reports_dir.glob("*.json"), reverse=True):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        suite = data.get("suite") or {}
+        items.append(
+            {
+                "name": path.name,
+                "created_at": data.get("created_at", ""),
+                "suite_id": str(suite.get("id") or "unknown"),
+                "suite_version": str(suite.get("version") or ""),
+                "target": data.get("target", ""),
+                "summary": data.get("summary") or {},
+                "gate": data.get("gate") or {},
+                "baseline_diff": data.get("baseline_diff"),
+                "data": data,
+            }
+        )
+    return items
 
 
 @app.get("/governance")
@@ -1421,24 +1493,102 @@ def _display_conversation_messages(
     return displayed
 
 
+def _optional_float(raw: str | None) -> float | None:
+    if raw is None or raw == "":
+        return None
+    return float(raw)
+
+
+def _api_error(message: str, status: int) -> tuple[Any, int]:
+    response = jsonify({"error": message})
+    response.headers["Cache-Control"] = "no-store"
+    return response, status
+
+
 @app.get("/api/runs")
 @require_permission(RUNS_VIEW)
 def api_runs():
+    """Run 列表：服务端过滤 + 稳定游标分页，所有查询都带租户边界。"""
     runtime = get_runtime()
     tenant_id = str(runtime.tenant_config.get("tenant_id") or "")
-    return jsonify({"runs": _safe_runs(runtime.gateway.audit, limit=50, tenant_id=tenant_id)})
+    try:
+        limit = int(request.args.get("limit", 50))
+        started_after = _optional_float(request.args.get("started_after"))
+        started_before = _optional_float(request.args.get("started_before"))
+    except (TypeError, ValueError):
+        return _api_error("invalid_run_filter", 400)
+    filters = RunListFilter(
+        tenant_id=tenant_id,
+        limit=limit,
+        cursor=request.args.get("cursor", ""),
+        status=request.args.get("status", ""),
+        agent_id=request.args.get("agent_id", ""),
+        conversation_id=request.args.get("conversation_id", ""),
+        started_after=started_after,
+        started_before=started_before,
+    )
+    if runtime.run_details is None:
+        return _api_error("observability_backend_unavailable", 503)
+    try:
+        page = runtime.run_details.list_runs(filters)
+    except ValueError:
+        return _api_error("invalid_run_filter", 400)
+    response = jsonify(
+        {
+            "items": list(page.items),
+            "next_cursor": page.next_cursor,
+            "has_more": page.has_more,
+        }
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/api/runs/<run_id>")
 @require_permission(RUNS_VIEW)
-def api_run_events(run_id: str):
-    audit = get_runtime().gateway.audit
-    return jsonify(
-        {
-            "events": audit.events_for(run_id),
-            "children": audit.child_runs(run_id) if hasattr(audit, "child_runs") else [],
-        }
+def api_run_detail(run_id: str):
+    """Run 360 详情：根据调用方权限过滤 Conversation 与 Artifact Payload。"""
+    runtime = get_runtime()
+    tenant_id = str(runtime.tenant_config.get("tenant_id") or "")
+    if runtime.run_details is None:
+        return _api_error("observability_backend_unavailable", 503)
+    principal = current_principal()
+    mapping = load_role_permissions(get_settings())
+    access = RunDetailAccess(
+        can_read_content=has_permission(principal, RUNS_CONTENT_READ, mapping),
+        can_read_artifacts=has_permission(principal, RUNS_ARTIFACT_READ, mapping),
     )
+    try:
+        detail = runtime.run_details.get_detail(tenant_id=tenant_id, run_id=run_id, access=access)
+    except RunDetailNotFound:
+        return _api_error("run_not_found", 404)
+    except ObservabilityBackendUnavailable:
+        return _api_error("observability_backend_unavailable", 503)
+    response = jsonify(detail)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/api/runs/<run_id>/artifacts/<artifact_id>")
+@require_permission(RUNS_VIEW)
+@require_permission(RUNS_ARTIFACT_READ)
+def api_run_artifact(run_id: str, artifact_id: str):
+    """受控 Artifact Payload：仅显式授权角色可读，脱敏后内联返回。"""
+    runtime = get_runtime()
+    tenant_id = str(runtime.tenant_config.get("tenant_id") or "")
+    if runtime.run_details is None:
+        return _api_error("observability_backend_unavailable", 503)
+    try:
+        result = runtime.run_details.get_artifact_payload(
+            tenant_id=tenant_id, run_id=run_id, artifact_id=artifact_id
+        )
+    except RunDetailNotFound:
+        return _api_error("artifact_not_found", 404)
+    except ObservabilityBackendUnavailable:
+        return _api_error("observability_backend_unavailable", 503)
+    response = jsonify(result)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/api/registry")

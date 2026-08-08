@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from agentkit.config import get_settings, validate_runtime_settings
-from agentkit.core.artifacts import ArtifactRecord, build_artifact_store
+from agentkit.core.artifacts import ArtifactRecord, RunArtifactReader, build_artifact_store
 from agentkit.core.audit import PostgresAuditLog, SQLiteAuditLog
 from agentkit.core.context import (
     ContextAssembler,
@@ -64,6 +64,7 @@ from agentkit.runtime.declarative_catalog import (
     resolve_enabled_agent_ids,
 )
 from agentkit.runtime.ocr import build_configured_ocr_provider
+from agentkit.runtime.run_detail import RunDetailService
 
 AGENTKIT_ROOT = Path(
     os.environ.get("AGENTKIT_ROOT") or Path(__file__).resolve().parents[3]
@@ -91,6 +92,7 @@ class AgentKitRuntime:
     conversation_recovery: ConversationRecoveryService
     metrics: RuntimeMetricsRecorder
     manifest: dict[str, Any] | None = None
+    run_details: RunDetailService | None = None
     # 迁移期间保留属性形状，但不再存在第二套 Chat Runtime。
     chat_service: MultiAgentCoordinator | None = None
 
@@ -367,6 +369,17 @@ def build_runtime(
         tenant_id=tenant_key,
         interval_seconds=float(settings.conversation_recovery_interval_seconds),
     )
+    run_details = RunDetailService(
+        tenant_id=tenant_key,
+        audit=audit,
+        conversation_projection=conversation_projection,
+        artifact_reader=RunArtifactReader(
+            tenant_id=tenant_key,
+            store_factory=artifact_store_factory,
+        ),
+        log_url_template=str(getattr(settings, "log_url_template", "") or ""),
+        trace_url_template=str(getattr(settings, "trace_url_template", "") or ""),
+    )
     strategy_names = ("direct", "workflow", "batch", "parallel", "react", "plan_execute")
     return AgentKitRuntime(
         gateway=gateway,
@@ -384,6 +397,7 @@ def build_runtime(
         conversation_recovery=conversation_recovery,
         metrics=metrics,
         manifest=manifest,
+        run_details=run_details,
         chat_service=chat_service,
     )
 

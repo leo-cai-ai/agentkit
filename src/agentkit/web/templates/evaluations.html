@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% from "_components.html" import metric_grid, status_pill %}
+
+{% block page_description %}查看版本化 Eval 报告、门禁结果与逐 Case 明细。{% endblock %}
+
+{% block content %}
+  {{ metric_grid(metrics, 'Eval 评估概览') }}
+
+  <section class="ak-operations-workspace ak-eval-workspace" aria-label="Eval 报告工作区">
+    <aside class="panel ak-panel ak-run-browser" aria-labelledby="eval-reports-title">
+      <div class="panel-head ak-panel-header">
+        <div>
+          <span class="ak-eyebrow">Eval Reports</span>
+          <h2 id="eval-reports-title">报告列表</h2>
+        </div>
+        <span>{{ reports | length }} 份</span>
+      </div>
+
+      <div class="ak-run-list" data-eval-report-list>
+        {% for report in reports %}
+          <a
+            class="ak-run-list-item"
+            href="{{ url_for('evaluations', report=report.name) }}#eval-detail"
+            data-eval-report-row
+            {% if report.name == selected_name %}aria-current="location"{% endif %}
+          >
+            <div>
+              <span class="status-pill status-{{ 'completed' if report.gate.passed else 'failed' }}">
+                {{ 'PASS' if report.gate.passed else 'FAIL' }}
+              </span>
+              <time datetime="{{ report.created_at }}">{{ report.created_at[:19] | replace('T', ' ') }}</time>
+            </div>
+            <strong title="{{ report.name }}">{{ report.suite_id }} · v{{ report.suite_version }}</strong>
+            <span>{{ report.target }} · pass {{ '%.0f' | format((report.summary.pass_rate or 0.0) * 100) }}% · score {{ '%.2f' | format(report.summary.mean_score or 0.0) }}</span>
+          </a>
+        {% else %}
+          <div class="ak-empty-state">暂无 Eval 报告。运行 <code>agentkit eval-suite &lt;suite.yaml&gt;</code> 生成报告。</div>
+        {% endfor %}
+      </div>
+    </aside>
+
+    <article class="panel ak-panel ak-run-inspector" id="eval-detail" data-eval-detail aria-labelledby="eval-detail-title">
+      <div class="panel-head ak-panel-header">
+        <div>
+          <span class="ak-eyebrow">Report Detail</span>
+          <h2 id="eval-detail-title">评估明细</h2>
+        </div>
+        <span>{{ selected_name[:32] if selected_name else '未选择' }}</span>
+      </div>
+
+      {% if not selected_detail %}
+        <div class="ak-empty-state">选择一份报告以查看评估明细。</div>
+      {% else %}
+        {% set suite = selected_detail.suite %}
+        {% set summary = selected_detail.summary %}
+        {% set gate = selected_detail.gate %}
+        {% set env = selected_detail.environment %}
+
+        <section class="ak-run-summary" aria-label="门禁结果">
+          <div class="ak-run-summary-heading">
+            <h3>门禁</h3>
+            {{ status_pill('completed' if gate.passed else 'failed') }}
+          </div>
+          <dl class="ak-run-facts ak-status-facts">
+            <div><dt>Pass Rate</dt><dd>{{ '%.1f%%' | format((summary.pass_rate or 0.0) * 100) }} / {{ '%.0f%%' | format((gate.min_pass_rate or 0.0) * 100) }}</dd></div>
+            <div><dt>Mean Score</dt><dd>{{ '%.2f' | format(summary.mean_score or 0.0) }} / {{ '%.2f' | format(gate.min_mean_score or 0.0) }}</dd></div>
+            <div><dt>通过 / 总数</dt><dd>{{ summary.passed }} / {{ summary.total }}</dd></div>
+            <div><dt>Target</dt><dd>{{ selected_detail.target }}</dd></div>
+          </dl>
+          {% if selected_detail.baseline_diff %}
+            <dl class="ak-run-facts">
+              <div><dt>基线 Pass Rate 增量</dt><dd>{{ '%+.1f%%' | format((selected_detail.baseline_diff.pass_rate_delta or 0.0) * 100) }}</dd></div>
+              <div><dt>基线 Mean Score 增量</dt><dd>{{ '%+.3f' | format(selected_detail.baseline_diff.mean_score_delta or 0.0) }}</dd></div>
+              <div><dt>基线报告</dt><dd>{{ selected_detail.baseline_diff.baseline_path }}</dd></div>
+            </dl>
+          {% endif %}
+        </section>
+
+        <dl class="ak-run-facts">
+          <div><dt>Suite</dt><dd>{{ suite.id }} v{{ suite.version }}</dd></div>
+          <div><dt>生成时间</dt><dd>{{ selected_detail.created_at }}</dd></div>
+          <div><dt>Provider</dt><dd>{{ env.provider or '—' }}</dd></div>
+          <div><dt>Model</dt><dd>{{ env.model or '—' }}</dd></div>
+          <div><dt>Git Commit</dt><dd><code>{{ env.git_commit or 'unknown' }}</code></dd></div>
+          <div><dt>Context Hash</dt><dd><code>{{ env.context_manifest_hash or '—' }}</code></dd></div>
+        </dl>
+
+        <h3>逐 Case 结果</h3>
+        <div class="table-wrap ak-table-wrap">
+          <table class="data-table ak-data-table" aria-label="逐 Case 评估结果">
+            <thead>
+              <tr>
+                <th scope="col">Case</th>
+                <th scope="col">Attempt</th>
+                <th scope="col">Score</th>
+                <th scope="col">结果</th>
+                <th scope="col">Tags</th>
+                <th scope="col">Checks</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for result in selected_detail.results %}
+                <tr>
+                  <td><strong>{{ result.case_id }}</strong></td>
+                  <td>{{ result.attempt }}</td>
+                  <td>{{ '%.2f' | format(result.score) }}</td>
+                  <td>{{ status_pill('completed' if result.passed else 'failed') }}</td>
+                  <td>{{ result.tags | join(', ') or '—' }}</td>
+                  <td>
+                    {% for outcome in result.outcomes %}
+                      <span class="ak-check-chip ak-check-{{ 'pass' if outcome.passed else 'fail' }}{{ ' ak-check-skip' if outcome.skipped else '' }}"
+                            title="{{ outcome.detail }}">
+                        {{ outcome.type }}{% if outcome.skipped %} (skip){% endif %}
+                      </span>
+                    {% endfor %}
+                  </td>
+                </tr>
+              {% else %}
+                <tr><td colspan="6">该报告没有 Case 结果。</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+
+        {% if selected_detail.datasets %}
+          <h3>数据集指纹</h3>
+          <dl class="ak-run-facts">
+            {% for path, digest in selected_detail.datasets.items() %}
+              <div class="ak-run-fact-wide"><dt>{{ path }}</dt><dd><code>{{ digest }}</code></dd></div>
+            {% endfor %}
+          </dl>
+        {% endif %}
+      {% endif %}
+    </article>
+  </section>
+{% endblock %}

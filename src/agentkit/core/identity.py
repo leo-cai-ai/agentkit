@@ -26,6 +26,8 @@ CHAT_USE = "chat:use"
 GOVERNANCE_VIEW = "governance:view"
 RUNS_VIEW = "runs:view"
 OPERATIONS_VIEW = "operations:view"
+RUNS_CONTENT_READ = "runs:content:read"
+RUNS_ARTIFACT_READ = "runs:artifact:read"
 RUNTIME_ADMIN = "runtime:admin"
 WILDCARD = "*"  # grants every permission
 
@@ -37,6 +39,8 @@ ALL_PERMISSIONS = frozenset(
         GOVERNANCE_VIEW,
         RUNS_VIEW,
         OPERATIONS_VIEW,
+        RUNS_CONTENT_READ,
+        RUNS_ARTIFACT_READ,
         RUNTIME_ADMIN,
     }
 )
@@ -145,6 +149,8 @@ __all__ = [
     "GOVERNANCE_VIEW",
     "RUNS_VIEW",
     "OPERATIONS_VIEW",
+    "RUNS_CONTENT_READ",
+    "RUNS_ARTIFACT_READ",
     "RUNTIME_ADMIN",
     "WILDCARD",
     "ALL_PERMISSIONS",

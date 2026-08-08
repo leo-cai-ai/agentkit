@@ -8,6 +8,7 @@ history in the same database.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import sqlite3
@@ -85,6 +86,56 @@ _BLOCKING_RUN_STATUSES = (
     "waiting_for_approval",
 )
 
+_MAX_RUN_PAGE_LIMIT = 200
+
+
+@dataclass(frozen=True)
+class RunListFilter:
+    """Run 列表查询参数（服务端过滤 + 游标分页）。
+
+    ``tenant_id`` 是必填的第一隔离边界；其余字段都是可选的固定字段过滤。
+    """
+
+    tenant_id: str
+    limit: int = 50
+    cursor: str = ""
+    status: str = ""
+    agent_id: str = ""
+    conversation_id: str = ""
+    started_after: float | None = None
+    started_before: float | None = None
+
+
+@dataclass(frozen=True)
+class RunPage:
+    """一页 Run 结果与下一页游标。"""
+
+    items: tuple[dict[str, Any], ...]
+    next_cursor: str = ""
+    has_more: bool = False
+
+
+def encode_run_cursor(*, started_at: float, run_id: str) -> str:
+    """把 (started_at, run_id) 编码为 URL-safe 游标。"""
+    raw = json.dumps(
+        {"started_at": float(started_at), "run_id": str(run_id)},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii")
+
+
+def decode_run_cursor(cursor: str) -> tuple[float, str]:
+    """解码游标；非法游标抛出 ``ValueError("invalid run cursor")``。"""
+    try:
+        padded = cursor.encode("ascii") + b"=" * (-len(cursor) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded))
+        started_at = float(payload["started_at"])
+        run_id = str(payload["run_id"])
+    except (ValueError, TypeError, KeyError, UnicodeDecodeError, json.JSONDecodeError):
+        raise ValueError("invalid run cursor") from None
+    return started_at, run_id
+
 
 @dataclass
 class InMemoryAuditLog:
@@ -154,12 +205,26 @@ class InMemoryAuditLog:
                 run["status"] = "running"
                 run["finished_at"] = None
 
-    def events_for(self, run_id: str) -> list[dict[str, Any]]:
-        return [event for event in self._events if event["run_id"] == run_id]
+    def events_for(self, run_id: str, *, tenant_id: str | None = None) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        for index, event in enumerate(self._events):
+            if event["run_id"] != run_id:
+                continue
+            run = self._runs.get(run_id)
+            if tenant_id is not None and (run is None or run.get("tenant_id") != tenant_id):
+                continue
+            item = dict(event)
+            item["event_id"] = index
+            events.append(item)
+        return events
 
-    def get_run(self, run_id: str) -> dict[str, Any] | None:
+    def get_run(self, run_id: str, *, tenant_id: str | None = None) -> dict[str, Any] | None:
         run = self._runs.get(run_id)
-        return dict(run) if run is not None else None
+        if run is None:
+            return None
+        if tenant_id is not None and run.get("tenant_id") != tenant_id:
+            return None
+        return dict(run)
 
     def has_blocking_run(
         self,
@@ -192,10 +257,62 @@ class InMemoryAuditLog:
         ]
         return sorted(runs, key=lambda run: float(run.get("started_at") or 0.0))
 
-    def child_runs(self, parent_run_id: str) -> list[dict[str, Any]]:
-        return [
-            dict(run) for run in self._runs.values() if run.get("parent_run_id") == parent_run_id
+    def child_runs(
+        self, parent_run_id: str, *, tenant_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        runs = []
+        for run in self._runs.values():
+            if run.get("parent_run_id") != parent_run_id:
+                continue
+            if tenant_id is not None and run.get("tenant_id") != tenant_id:
+                continue
+            runs.append(dict(run))
+        return sorted(runs, key=lambda run: float(run.get("started_at") or 0.0))
+
+    def list_runs_page(self, filters: RunListFilter) -> RunPage:
+        """内存实现的游标分页，语义与 SQLite/PostgreSQL 后端一致。"""
+        if not 1 <= filters.limit <= _MAX_RUN_PAGE_LIMIT:
+            raise ValueError("limit must be between 1 and 200")
+        rows = [
+            dict(run) for run in self._runs.values() if run.get("tenant_id") == filters.tenant_id
         ]
+        if filters.status:
+            rows = [row for row in rows if row.get("status") == filters.status]
+        if filters.agent_id:
+            rows = [row for row in rows if row.get("agent_id") == filters.agent_id]
+        if filters.conversation_id:
+            rows = [row for row in rows if row.get("conversation_id") == filters.conversation_id]
+        if filters.started_after is not None:
+            rows = [row for row in rows if (row.get("started_at") or 0.0) >= filters.started_after]
+        if filters.started_before is not None:
+            rows = [row for row in rows if (row.get("started_at") or 0.0) <= filters.started_before]
+        rows.sort(
+            key=lambda row: (float(row.get("started_at") or 0.0), str(row.get("run_id"))),
+            reverse=True,
+        )
+        if filters.cursor:
+            cursor_started_at, cursor_run_id = decode_run_cursor(filters.cursor)
+            rows = [
+                row
+                for row in rows
+                if (
+                    float(row.get("started_at") or 0.0) < cursor_started_at
+                    or (
+                        float(row.get("started_at") or 0.0) == cursor_started_at
+                        and str(row.get("run_id")) < cursor_run_id
+                    )
+                )
+            ]
+        page_rows = rows[: filters.limit]
+        has_more = len(rows) > filters.limit
+        next_cursor = ""
+        if has_more and page_rows:
+            last = page_rows[-1]
+            next_cursor = encode_run_cursor(
+                started_at=float(last.get("started_at") or 0.0),
+                run_id=str(last["run_id"]),
+            )
+        return RunPage(items=tuple(page_rows), next_cursor=next_cursor, has_more=has_more)
 
     def run_for_thread(
         self, thread_id: str, *, tenant_id: str, user_id: str
@@ -329,19 +446,32 @@ class SQLiteAuditLog:
                     ("running", run_id, *TERMINAL_RUN_STATUSES),
                 )
 
-    def events_for(self, run_id: str) -> list[dict[str, Any]]:
+    def events_for(self, run_id: str, *, tenant_id: str | None = None) -> list[dict[str, Any]]:
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT ts, run_id, event_type, payload_json
-                FROM audit_events
-                WHERE run_id = ?
-                ORDER BY id ASC
-                """,
-                (run_id,),
-            ).fetchall()
+            if tenant_id:
+                rows = conn.execute(
+                    """
+                    SELECT e.id, e.ts, e.run_id, e.event_type, e.payload_json
+                    FROM audit_events e
+                    JOIN task_runs r ON r.run_id = e.run_id
+                    WHERE e.run_id = ? AND r.tenant_id = ?
+                    ORDER BY e.id ASC
+                    """,
+                    (run_id, tenant_id),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT id, ts, run_id, event_type, payload_json
+                    FROM audit_events
+                    WHERE run_id = ?
+                    ORDER BY id ASC
+                    """,
+                    (run_id,),
+                ).fetchall()
         return [
             {
+                "event_id": row["id"],
                 "ts": row["ts"],
                 "run_id": row["run_id"],
                 "type": row["event_type"],
@@ -377,9 +507,15 @@ class SQLiteAuditLog:
                 ).fetchall()
         return [dict(row) for row in rows]
 
-    def get_run(self, run_id: str) -> dict[str, Any] | None:
+    def get_run(self, run_id: str, *, tenant_id: str | None = None) -> dict[str, Any] | None:
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM task_runs WHERE run_id = ?", (run_id,)).fetchone()
+            if tenant_id:
+                row = conn.execute(
+                    "SELECT * FROM task_runs WHERE run_id = ? AND tenant_id = ?",
+                    (run_id, tenant_id),
+                ).fetchone()
+            else:
+                row = conn.execute("SELECT * FROM task_runs WHERE run_id = ?", (run_id,)).fetchone()
         return dict(row) if row is not None else None
 
     def has_blocking_run(
@@ -431,17 +567,82 @@ class SQLiteAuditLog:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def child_runs(self, parent_run_id: str) -> list[dict[str, Any]]:
+    def child_runs(
+        self, parent_run_id: str, *, tenant_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            if tenant_id:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM task_runs
+                    WHERE parent_run_id = ? AND tenant_id = ?
+                    ORDER BY started_at ASC
+                    """,
+                    (parent_run_id, tenant_id),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM task_runs
+                    WHERE parent_run_id = ?
+                    ORDER BY started_at ASC
+                    """,
+                    (parent_run_id,),
+                ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_runs_page(self, filters: RunListFilter) -> RunPage:
+        """服务端过滤 + 稳定游标分页，按 ``started_at DESC, run_id DESC`` 排序。
+
+        过滤字段全部是硬编码白名单，值全部参数化；只读取 ``limit + 1`` 行
+        判断是否还有下一页。
+        """
+        if not 1 <= filters.limit <= _MAX_RUN_PAGE_LIMIT:
+            raise ValueError("limit must be between 1 and 200")
+        conditions = ["tenant_id = ?"]
+        params: list[Any] = [filters.tenant_id]
+        if filters.status:
+            conditions.append("status = ?")
+            params.append(filters.status)
+        if filters.agent_id:
+            conditions.append("agent_id = ?")
+            params.append(filters.agent_id)
+        if filters.conversation_id:
+            conditions.append("conversation_id = ?")
+            params.append(filters.conversation_id)
+        if filters.started_after is not None:
+            conditions.append("started_at >= ?")
+            params.append(filters.started_after)
+        if filters.started_before is not None:
+            conditions.append("started_at <= ?")
+            params.append(filters.started_before)
+        if filters.cursor:
+            cursor_started_at, cursor_run_id = decode_run_cursor(filters.cursor)
+            conditions.append("(started_at < ? OR (started_at = ? AND run_id < ?))")
+            params.extend([cursor_started_at, cursor_started_at, cursor_run_id])
+        params.append(filters.limit + 1)
         with self._connect() as conn:
             rows = conn.execute(
-                """
-                SELECT * FROM task_runs
-                WHERE parent_run_id = ?
-                ORDER BY started_at ASC
+                f"""
+                SELECT run_id, tenant_id, user_id, text, status, started_at, finished_at,
+                       agent_id, parent_run_id, conversation_id
+                FROM task_runs
+                WHERE {' AND '.join(conditions)}
+                ORDER BY started_at DESC, run_id DESC
+                LIMIT ?
                 """,
-                (parent_run_id,),
+                params,
             ).fetchall()
-        return [dict(row) for row in rows]
+        items = [dict(row) for row in rows[: filters.limit]]
+        has_more = len(rows) > filters.limit
+        next_cursor = ""
+        if has_more and items:
+            last = items[-1]
+            next_cursor = encode_run_cursor(
+                started_at=float(last["started_at"] or 0.0),
+                run_id=str(last["run_id"]),
+            )
+        return RunPage(items=tuple(items), next_cursor=next_cursor, has_more=has_more)
 
     def run_for_thread(
         self, thread_id: str, *, tenant_id: str, user_id: str
@@ -692,12 +893,14 @@ class PostgresAuditLog(SQLiteAuditLog):
                     ("running", run_id, *TERMINAL_RUN_STATUSES),
                 )
 
-    def events_for(self, run_id: str) -> list[dict[str, Any]]:
+    def events_for(self, run_id: str, *, tenant_id: str | None = None) -> list[dict[str, Any]]:
+        if tenant_id is not None and self._tenant_id and tenant_id != self._tenant_id:
+            return []
         with self._connect() as conn:
             if self._tenant_id:
                 rows = conn.execute(
                     """
-                    SELECT e.ts, e.run_id, e.event_type, e.payload_json
+                    SELECT e.id, e.ts, e.run_id, e.event_type, e.payload_json
                     FROM audit_events e
                     JOIN task_runs r ON r.run_id = e.run_id
                     WHERE e.run_id = %s AND r.tenant_id = %s
@@ -708,7 +911,7 @@ class PostgresAuditLog(SQLiteAuditLog):
             else:
                 rows = conn.execute(
                     """
-                    SELECT ts, run_id, event_type, payload_json
+                    SELECT id, ts, run_id, event_type, payload_json
                     FROM audit_events
                     WHERE run_id = %s
                     ORDER BY id ASC
@@ -717,10 +920,11 @@ class PostgresAuditLog(SQLiteAuditLog):
                 ).fetchall()
         return [
             {
-                "ts": row[0],
-                "run_id": row[1],
-                "type": row[2],
-                "payload": row[3] if isinstance(row[3], dict) else json.loads(row[3]),
+                "event_id": row[0],
+                "ts": row[1],
+                "run_id": row[2],
+                "type": row[3],
+                "payload": row[4] if isinstance(row[4], dict) else json.loads(row[4]),
             }
             for row in rows
         ]
@@ -767,7 +971,9 @@ class PostgresAuditLog(SQLiteAuditLog):
             for row in rows
         ]
 
-    def get_run(self, run_id: str) -> dict[str, Any] | None:
+    def get_run(self, run_id: str, *, tenant_id: str | None = None) -> dict[str, Any] | None:
+        if tenant_id is not None and self._tenant_id and tenant_id != self._tenant_id:
+            return None
         with self._connect() as conn:
             if self._tenant_id:
                 row = conn.execute(
@@ -840,7 +1046,11 @@ class PostgresAuditLog(SQLiteAuditLog):
             ).fetchall()
         return [_postgres_run_row(row) for row in rows]
 
-    def child_runs(self, parent_run_id: str) -> list[dict[str, Any]]:
+    def child_runs(
+        self, parent_run_id: str, *, tenant_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        if tenant_id is not None and self._tenant_id and tenant_id != self._tenant_id:
+            return []
         with self._connect() as conn:
             if self._tenant_id:
                 rows = conn.execute(
@@ -865,6 +1075,56 @@ class PostgresAuditLog(SQLiteAuditLog):
                     (parent_run_id,),
                 ).fetchall()
         return [_postgres_run_row(row) for row in rows]
+
+    def list_runs_page(self, filters: RunListFilter) -> RunPage:
+        """PostgreSQL 版游标分页，语义与 SQLite 后端一致。"""
+        if not 1 <= filters.limit <= _MAX_RUN_PAGE_LIMIT:
+            raise ValueError("limit must be between 1 and 200")
+        tenant_scope = self._tenant_id or filters.tenant_id
+        conditions = ["tenant_id = %s"]
+        params: list[Any] = [tenant_scope]
+        if filters.status:
+            conditions.append("status = %s")
+            params.append(filters.status)
+        if filters.agent_id:
+            conditions.append("agent_id = %s")
+            params.append(filters.agent_id)
+        if filters.conversation_id:
+            conditions.append("conversation_id = %s")
+            params.append(filters.conversation_id)
+        if filters.started_after is not None:
+            conditions.append("started_at >= %s")
+            params.append(filters.started_after)
+        if filters.started_before is not None:
+            conditions.append("started_at <= %s")
+            params.append(filters.started_before)
+        if filters.cursor:
+            cursor_started_at, cursor_run_id = decode_run_cursor(filters.cursor)
+            conditions.append("(started_at < %s OR (started_at = %s AND run_id < %s))")
+            params.extend([cursor_started_at, cursor_started_at, cursor_run_id])
+        params.append(filters.limit + 1)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT run_id, tenant_id, user_id, text, status, started_at, finished_at,
+                       agent_id, parent_run_id, conversation_id
+                FROM task_runs
+                WHERE {' AND '.join(conditions)}
+                ORDER BY started_at DESC, run_id DESC
+                LIMIT %s
+                """,
+                params,
+            ).fetchall()
+        items = [_postgres_run_row(row) for row in rows[: filters.limit]]
+        has_more = len(rows) > filters.limit
+        next_cursor = ""
+        if has_more and items:
+            last = items[-1]
+            next_cursor = encode_run_cursor(
+                started_at=float(last["started_at"] or 0.0),
+                run_id=str(last["run_id"]),
+            )
+        return RunPage(items=tuple(items), next_cursor=next_cursor, has_more=has_more)
 
     def run_for_thread(
         self, thread_id: str, *, tenant_id: str, user_id: str

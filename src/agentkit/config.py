@@ -149,6 +149,12 @@ class Settings(BaseSettings):
     web_cookie_secure: bool = True
     web_auth_disabled: bool = False
 
+    # Run 360 外部日志 / Trace 跳转模板（可选）。支持占位符：
+    # {tenant_id} {run_id} {parent_run_id} {conversation_id} {trace_id}。
+    # 未配置时 Run 360 页面不显示外部链接按钮。
+    log_url_template: str = ""
+    trace_url_template: str = ""
+
     # Identity & console RBAC. Shared-token login maps to this subject/roles.
     web_token_subject: str = "console-admin"
     web_token_roles: str = "admin"

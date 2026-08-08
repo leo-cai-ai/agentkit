@@ -2845,3 +2845,161 @@ button.conversation-new {
     block-size: 30rem;
   }
 }
+
+
+/* ---- Run 360 Inspector ---- */
+.ak-run-tabs {
+  display: grid;
+  gap: var(--ak-sys-space-4);
+  min-inline-size: 0;
+}
+
+.ak-run-tabs [role="tabpanel"] {
+  min-inline-size: 0;
+}
+
+.ak-run-tabs [role="tabpanel"][hidden] {
+  display: none;
+}
+
+.ak-run-tabs [role="tabpanel"]:focus-visible {
+  outline: var(--ak-sys-focus-width) solid var(--ak-sys-color-focus-ring);
+  outline-offset: var(--ak-sys-focus-offset);
+}
+
+.ak-run-load-more {
+  margin-block-start: var(--ak-sys-space-3);
+  inline-size: 100%;
+}
+
+.ak-run-tree {
+  display: grid;
+  gap: var(--ak-sys-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ak-run-tree a {
+  color: var(--ak-sys-color-text-primary);
+  text-decoration: none;
+}
+
+.ak-run-tree a:hover {
+  color: var(--ak-sys-color-accent-strong);
+}
+
+.ak-run-request-text {
+  margin: 0;
+  padding-block-start: var(--ak-sys-space-2);
+  border-block-start: 1px solid var(--ak-sys-color-border-default);
+}
+
+.ak-status-facts {
+  border-block-start: 0;
+  padding-block-start: 0;
+}
+
+.ak-artifact-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ak-sys-space-3);
+  padding: var(--ak-sys-space-3) var(--ak-sys-space-4);
+  border: 1px solid var(--ak-sys-color-border-default);
+  border-radius: var(--ak-sys-radius-md);
+}
+
+.ak-artifact-row > div {
+  min-inline-size: 0;
+  display: grid;
+  gap: var(--ak-sys-space-1);
+}
+
+.ak-artifact-row strong {
+  color: var(--ak-sys-color-text-primary);
+  font-size: 0.875rem;
+}
+
+.ak-artifact-row span {
+  color: var(--ak-sys-color-text-secondary);
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+
+.ak-artifact-row small {
+  color: var(--ak-sys-color-text-subtle);
+  font-family: var(--ak-sys-font-mono);
+  font-size: 0.6875rem;
+}
+
+.ak-artifact-viewer {
+  display: grid;
+  gap: var(--ak-sys-space-3);
+  margin-block-start: var(--ak-sys-space-3);
+  padding: var(--ak-sys-space-3) var(--ak-sys-space-4);
+  border: 1px solid var(--ak-sys-color-border-default);
+  border-radius: var(--ak-sys-radius-md);
+}
+
+.ak-artifact-viewer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ak-sys-space-3);
+}
+
+.ak-artifact-viewer .ak-json-viewer {
+  max-block-size: 24rem;
+  overflow: auto;
+}
+
+.ak-conversation-viewer {
+  max-block-size: 30rem;
+  overflow: auto;
+}
+
+.ak-raw-audit {
+  margin-block-start: var(--ak-sys-space-3);
+}
+
+.ak-error-card {
+  display: grid;
+  gap: var(--ak-sys-space-2);
+  padding: var(--ak-sys-space-3) var(--ak-sys-space-4);
+  border: 1px solid var(--ak-sys-color-status-danger-border);
+  border-radius: var(--ak-sys-radius-md);
+  background: var(--ak-sys-color-status-danger-bg);
+}
+
+.ak-error-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ak-sys-space-2);
+}
+
+.ak-error-card-head strong {
+  color: var(--ak-sys-color-status-danger-fg);
+}
+
+.ak-error-card-head span,
+.ak-error-card-head code {
+  color: var(--ak-sys-color-text-secondary);
+  font-size: 0.75rem;
+}
+
+.ak-error-card p {
+  margin: 0;
+  color: var(--ak-sys-color-text-primary);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.ak-section-errors {
+  margin: 0;
+  padding-inline-start: var(--ak-sys-space-4);
+  color: var(--ak-sys-color-text-secondary);
+  font-size: 0.8125rem;
+}

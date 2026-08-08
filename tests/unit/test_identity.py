@@ -5,6 +5,9 @@ from __future__ import annotations
 from agentkit.config import Settings
 from agentkit.core.identity import (
     GOVERNANCE_VIEW,
+    RUNS_ARTIFACT_READ,
+    RUNS_CONTENT_READ,
+    RUNS_VIEW,
     RUNTIME_ADMIN,
     TASK_APPROVE,
     TASK_RUN,
@@ -76,3 +79,28 @@ def test_load_role_permissions_bad_json_falls_back_to_defaults() -> None:
     mapping = load_role_permissions(settings)
     member = Principal(subject="m", roles=("member",), auth_method="proxy")
     assert has_permission(member, TASK_RUN, mapping)
+
+
+def test_only_admin_has_sensitive_run_permissions_by_default() -> None:
+    admin = Principal(subject="a", roles=("admin",), auth_method="token")
+    assert has_permission(admin, RUNS_CONTENT_READ)
+    assert has_permission(admin, RUNS_ARTIFACT_READ)
+    for role in ("operator", "member", "viewer"):
+        principal = Principal(subject=role, roles=(role,), auth_method="proxy")
+        assert not has_permission(principal, RUNS_CONTENT_READ)
+        assert not has_permission(principal, RUNS_ARTIFACT_READ)
+        # 基础 runs:view 仍然开放给这些内置角色。
+        assert has_permission(principal, RUNS_VIEW)
+
+
+def test_custom_role_can_be_granted_sensitive_run_permissions() -> None:
+    settings = Settings(
+        _env_file=None,
+        rbac_role_permissions=(
+            '{"auditor": ["runs:view", "runs:content:read", "runs:artifact:read"]}'
+        ),
+    )
+    mapping = load_role_permissions(settings)
+    auditor = Principal(subject="aud", roles=("auditor",), auth_method="proxy")
+    assert has_permission(auditor, RUNS_CONTENT_READ, mapping)
+    assert has_permission(auditor, RUNS_ARTIFACT_READ, mapping)

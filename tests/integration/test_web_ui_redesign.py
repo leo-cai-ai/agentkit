@@ -137,6 +137,7 @@ def test_compact_navigation_explains_icons_with_tooltips(client) -> None:
     assert html.count('aria-label="Agent Network"') == 1
     assert 'data-nav-label="聊天"' in html
     assert 'data-nav-label="Agent Network"' in html
+    assert 'data-nav-label="评估"' in html
     assert "content: attr(data-nav-label)" in css
     assert ".ak-primary-nav a:focus-visible::after" in css
 
@@ -489,9 +490,10 @@ def test_operations_has_run_filters_and_parent_child_timeline(client) -> None:
     assert 'data-run-filter="query"' in html
     assert "data-run-list" in html
     assert "data-run-detail" in html
-    assert "data-run-chain" in html
-    assert "data-run-timeline" in html
     assert 'aria-label="清除运行过滤条件"' in html
+    # Run 360 结构：无论是否有数据，页面都包含 Tab 容器与分页钩子。
+    assert "data-run-tabs" in html
+    assert "data-run-load-more" in html
 
 
 def test_governance_uses_searchable_object_tabs_without_prompt_content(client) -> None:
