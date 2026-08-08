@@ -471,7 +471,8 @@ def test_operations_uses_run_browser_and_collapsible_json(client, monkeypatch, t
     assert 'data-run-filter="query"' in html
     assert 'data-run-filter="status"' in html
     assert 'data-run-filter="agent"' in html
-    assert html.count(f"/operations?run_id={run_id}#run-detail") == 1
+    assert html.count(f"/operations?run_id={run_id}") >= 1
+    assert "#run-detail" not in html  # 局部选择后不再携带锚点
     assert 'aria-current="location"' in html
     assert re.search(
         r'<time datetime="\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}">',

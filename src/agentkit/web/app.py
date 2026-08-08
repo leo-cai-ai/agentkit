@@ -399,20 +399,7 @@ def operations():
     run_groups = _group_runs(runs) if runs else []
     selected_run_id = request.args.get("run_id") or (runs[0]["run_id"] if runs else "")
 
-    detail = None
-    if selected_run_id and run_details is not None:
-        principal = current_principal()
-        mapping = load_role_permissions(get_settings())
-        access = RunDetailAccess(
-            can_read_content=has_permission(principal, RUNS_CONTENT_READ, mapping),
-            can_read_artifacts=has_permission(principal, RUNS_ARTIFACT_READ, mapping),
-        )
-        try:
-            detail = run_details.get_detail(
-                tenant_id=tenant_id, run_id=selected_run_id, access=access
-            )
-        except (RunDetailNotFound, ObservabilityBackendUnavailable):
-            detail = None
+    detail = _load_run_detail(runtime, tenant_id, selected_run_id)
 
     metrics = [
         {"label": "Total Runs", "value": total, "helper": "Recorded executions"},
@@ -430,6 +417,39 @@ def operations():
         run_groups=run_groups,
         initial_cursor=initial_cursor,
         selected_run_id=selected_run_id,
+        detail=detail,
+    )
+
+
+def _load_run_detail(runtime: Any, tenant_id: str, run_id: str) -> dict[str, Any] | None:
+    """按权限构造并加载单个 Run 的 Run 360 详情（供整页与局部路由共用）。"""
+    run_details = getattr(runtime, "run_details", None)
+    if not run_id or run_details is None:
+        return None
+    principal = current_principal()
+    mapping = load_role_permissions(get_settings())
+    access = RunDetailAccess(
+        can_read_content=has_permission(principal, RUNS_CONTENT_READ, mapping),
+        can_read_artifacts=has_permission(principal, RUNS_ARTIFACT_READ, mapping),
+    )
+    try:
+        return run_details.get_detail(
+            tenant_id=tenant_id, run_id=run_id, access=access
+        )
+    except (RunDetailNotFound, ObservabilityBackendUnavailable):
+        return None
+
+
+@app.get("/operations/run/<run_id>/partial")
+@require_permission(RUNS_VIEW)
+def operations_run_partial(run_id: str):
+    """Run 360 详情局部片段：前端选择运行后无刷新替换详情区。"""
+    runtime = get_runtime()
+    tenant_id = str(runtime.tenant_config.get("tenant_id") or "")
+    detail = _load_run_detail(runtime, tenant_id, run_id)
+    return render_template(
+        "_run_detail.html",
+        selected_run_id=run_id,
         detail=detail,
     )
 

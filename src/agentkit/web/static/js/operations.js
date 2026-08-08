@@ -210,9 +210,86 @@
     if (closeButton) closeButton.addEventListener("click", close);
   }
 
+  // ------------------------------------------------------------------
+  // Run 选择：无刷新加载详情（局部替换 + 高亮 + URL 同步）
+  // ------------------------------------------------------------------
+  async function selectRun(runId, rowLink) {
+    const list = document.querySelector("[data-run-list]");
+    // 1) 高亮并滚动选中行
+    list?.querySelectorAll("[data-run-row]").forEach((el) => el.removeAttribute("aria-current"));
+    if (rowLink) {
+      rowLink.setAttribute("aria-current", "location");
+      rowLink.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    } else if (list) {
+      const match = Array.from(list.querySelectorAll("[data-run-row]")).find(
+        (el) => new URL(el.href, window.location.href).searchParams.get("run_id") === runId
+      );
+      if (match) {
+        match.setAttribute("aria-current", "location");
+        match.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }
+    }
+    // 2) 局部加载详情片段
+    try {
+      const response = await fetch(`/operations/run/${encodeURIComponent(runId)}/partial`, {
+        headers: { Accept: "text/html" },
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const html = await response.text();
+      const inspector = document.querySelector("[data-run-detail]");
+      if (inspector) {
+        inspector.outerHTML = html;
+        bindRunTabs();
+        bindArtifactViewer();
+      }
+      history.replaceState(null, "", `/operations?run_id=${encodeURIComponent(runId)}`);
+    } catch {
+      // 局部加载失败（后端旧版等）：回退整页导航，保证可用。
+      window.location.href = `/operations?run_id=${encodeURIComponent(runId)}`;
+    }
+  }
+
+  function bindRunSelect() {
+    document.addEventListener("click", (event) => {
+      const link = event.target.closest('a[href*="run_id="]');
+      if (!link) return;
+      if (link.target && link.target !== "_self") return;
+      if (link.getAttribute("download") != null) return;
+      const runId = new URL(link.href, window.location.href).searchParams.get("run_id");
+      if (!runId) return;
+      // 只拦截运行选择链接（列表行与父子链路），不影响外部链接/表单。
+      if (!link.closest("[data-run-list]") && !link.closest("[data-run-detail]")) return;
+      event.preventDefault();
+      void selectRun(runId, link);
+    });
+  }
+
+  // URL 带 run_id 时定位到选中行（刷新 / 回退 / 新标签打开场景）。
+  function scrollToSelectedRun() {
+    const urlRunId = new URL(window.location.href).searchParams.get("run_id");
+    if (!urlRunId) return;
+    const list = document.querySelector("[data-run-list]");
+    if (!list) return;
+    const match = Array.from(list.querySelectorAll("[data-run-row]")).find(
+      (el) => new URL(el.href, window.location.href).searchParams.get("run_id") === urlRunId
+    );
+    if (match) {
+      match.scrollIntoView({ block: "nearest" });
+    } else {
+      // 选中运行不在当前第一页：提示用户可加载更多定位。
+      const hint = document.querySelector("[data-run-filter-empty]");
+      if (hint) {
+        hint.textContent = `选中的运行（${urlRunId.slice(0, 8)}…）在更早的记录中，点击「加载更多」可继续查找。`;
+        hint.hidden = false;
+      }
+    }
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
     bindRunTabs();
     bindRunLoadMore();
     bindArtifactViewer();
+    bindRunSelect();
+    scrollToSelectedRun();
   });
 })();

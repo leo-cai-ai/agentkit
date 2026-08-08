@@ -140,3 +140,35 @@ def test_operations_page_without_run_shows_empty_state(client) -> None:
     response = client.get("/operations")
     assert response.status_code == 200
     assert "选择一条运行以查看 Run 360 详情".encode() in response.data
+
+
+def test_run_detail_partial_renders_selected_run(client) -> None:
+    _login(client)
+    run_id = _seed_run(client)
+    response = client.get(f"/operations/run/{run_id}/partial")
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "Run 360 Inspector" in body
+    assert f'title="{run_id}"' in body  # Run ID code title
+    assert "Run ID" in body and run_id in body
+    assert "运行审计时间线" in body
+
+
+def test_operations_page_and_partial_render_same_detail(client) -> None:
+    """整页与局部路由共用 _run_detail.html partial，详情结构一致。"""
+    _login(client)
+    run_id = _seed_run(client)
+    page_html = client.get(f"/operations?run_id={run_id}").get_data(as_text=True)
+    partial_html = client.get(f"/operations/run/{run_id}/partial").get_data(as_text=True)
+    assert f'title="{run_id}"' in page_html
+    assert f'title="{run_id}"' in partial_html
+    # 两个入口都不再携带 #run-detail 锚点（避免整页跳转滚动干扰局部选择）
+    assert "#run-detail" not in page_html
+    assert "#run-detail" not in partial_html
+
+
+def test_run_detail_partial_unknown_run_shows_unavailable(client) -> None:
+    _login(client)
+    response = client.get("/operations/run/no-such-run/partial")
+    assert response.status_code == 200
+    assert "运行详情暂不可用".encode() in response.data
