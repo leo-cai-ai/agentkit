@@ -475,7 +475,9 @@ function scrollChatToBottom() {
 function addLiveAssistantMessage(labelOverride = "") {
   const thread = document.getElementById("chat-thread");
   if (!thread) return null;
-  thread.querySelector(".conversation-notice")?.remove();
+  // 与 addChatMessage 相同：结构已建立时插入 ak-timeline-content，
+  // 避免流式气泡残留在容器外造成重复。
+  const container = thread.querySelector("[data-timeline-content]") || thread;
   const node = document.createElement("div");
   node.className = "chat-message assistant";
   const span = document.createElement("span");
@@ -483,7 +485,7 @@ function addLiveAssistantMessage(labelOverride = "") {
   const paragraph = document.createElement("p");
   node.appendChild(span);
   node.appendChild(paragraph);
-  thread.appendChild(node);
+  container.appendChild(node);
   scrollChatToBottom();
   return { node, p: paragraph };
 }
@@ -1319,7 +1321,10 @@ function renderResult(payload, requestPayload = null, options = {}) {
 function addChatMessage(role, text, labelOverride = "") {
   const thread = document.getElementById("chat-thread");
   if (!thread) return;
-  thread.querySelector(".conversation-notice")?.remove();
+  // timeline 结构建立后（timelineShell 把 thread 拆成 live/content/notice），
+  // 消息必须进入 ak-timeline-content；否则会残留在容器外，与 render 重绘的
+  // 服务端消息重复显示。不要删除 notice——它是 timeline 结构的一部分。
+  const container = thread.querySelector("[data-timeline-content]") || thread;
   const node = document.createElement("div");
   node.className = `chat-message ${role}`;
   const label = labelOverride || (role === "user" ? "You" : getSelectedAgentLabel());
@@ -1336,7 +1341,7 @@ function addChatMessage(role, text, labelOverride = "") {
     body.innerHTML = renderAssistantHtml(text);
   }
   node.appendChild(body);
-  thread.appendChild(node);
+  container.appendChild(node);
   thread.scrollTop = thread.scrollHeight;
 }
 
