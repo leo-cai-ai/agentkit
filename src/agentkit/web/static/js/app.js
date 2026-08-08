@@ -471,13 +471,53 @@ function scrollChatToBottom() {
   if (thread) thread.scrollTop = thread.scrollHeight;
 }
 
+// 与 chat_timeline.js 的 timelineShell 结构一致：thread = [live, content, notice]。
+// 首次发送时（timelineShell 尚未运行）主动建立该结构，并把现有子节点
+// （欢迎消息、用户消息）移入 content；此后 timelineShell 识别结构完整便不会
+// 重建（replaceChildren 会丢弃额外节点），独立承载流式气泡的 stream 容器
+// 因此得以保留。
+function ensureTimelineShell(thread) {
+  if (!thread) return;
+  let live = thread.querySelector("[data-timeline-live]");
+  let content = thread.querySelector("[data-timeline-content]");
+  if (live && content) return;
+  if (!live) {
+    live = document.createElement("div");
+    live.className = "ak-timeline-live";
+    live.dataset.timelineLive = "";
+    thread.appendChild(live);
+  }
+  if (!content) {
+    content = document.createElement("div");
+    content.className = "ak-timeline-content";
+    content.dataset.timelineContent = "";
+    thread.appendChild(content);
+    const existing = Array.from(thread.children).filter(
+      (node) =>
+        node !== live &&
+        node !== content &&
+        node.dataset?.timelineNotice == null,
+    );
+    for (const node of existing) content.appendChild(node);
+  }
+}
+
 // A streaming assistant bubble whose `<p>` text is appended to as tokens arrive.
 function addLiveAssistantMessage(labelOverride = "") {
   const thread = document.getElementById("chat-thread");
   if (!thread) return null;
-  // 与 addChatMessage 相同：结构已建立时插入 ak-timeline-content，
-  // 避免流式气泡残留在容器外造成重复。
-  const container = thread.querySelector("[data-timeline-content]") || thread;
+  // 流式气泡放进独立的 ak-timeline-stream 容器：render 只重绘 content，
+  // 且 aria-live 播报（announcement）会 textContent 清空 live 容器，两者都不
+  // 适合承载流式气泡。首次发送时先确保 timelineShell 结构存在（live/content），
+  // timelineShell 之后识别结构完整便不会重建、也不会动 stream 容器。
+  ensureTimelineShell(thread);
+  let container = thread.querySelector("[data-timeline-stream]");
+  if (!container) {
+    container = document.createElement("div");
+    container.className = "ak-timeline-stream";
+    container.dataset.timelineStream = "";
+    thread.appendChild(container);
+  }
   const node = document.createElement("div");
   node.className = "chat-message assistant";
   const span = document.createElement("span");
@@ -1684,11 +1724,13 @@ async function runUnifiedChatTurn(message, selectedAgent) {
           void rehydrateConversationTimeline(conversationId, { forceScroll: true });
         }
       },
-      onFinal: (data) => {
+      onFinal: async (data) => {
         if (!chatSessionGuard.isCurrent(requestToken)) return;
         const conversationId = data?.conversation_id || currentConversationId;
         if (conversationId) {
-          void rehydrateConversationTimeline(conversationId, { forceScroll: true });
+          // 先完成 content 重绘（渲染持久化完整回答），再移除流式气泡，
+          // 避免与 content 版本重复显示。
+          await rehydrateConversationTimeline(conversationId, { forceScroll: true });
         }
       },
     });
@@ -1702,10 +1744,9 @@ async function runUnifiedChatTurn(message, selectedAgent) {
         return;
       } else {
         currentConversationId = finalData.conversation_id || currentConversationId;
-        // The streamed text already equals the reply; fall back to the final
-        // payload only when nothing streamed. Either way re-render the bubble
-        // with collapsible thinking + markdown.
-        finalizeAssistantBubble(bubble, streamed || finalData.assistant_text || "");
+        // onFinal 已 await 完成 content 重绘（持久化完整回答 + markdown）；
+        // 移除流式气泡，避免与 content 版本重复显示。
+        if (bubble?.node?.isConnected) bubble.node.remove();
       }
     }
     setExecutionState("Completed", 5, true);
