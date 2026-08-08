@@ -244,8 +244,16 @@
         bindArtifactViewer();
       }
       history.replaceState(null, "", `/operations?run_id=${encodeURIComponent(runId)}`);
-      if (Math.abs(window.scrollY - savedWinY) > 0) window.scrollTo(0, savedWinY);
-      if (listEl) listEl.scrollTop = savedListTop;
+      // 恢复滚动位置：立即一次 + 下一帧再校正一次（详情区替换后布局异步稳定，
+      // 单次恢复可能被浏览器后续的 layout/anchoring 覆盖）。
+      const restore = () => {
+        if (Math.abs(window.scrollY - savedWinY) > 0) window.scrollTo(0, savedWinY);
+        if (listEl && Math.abs(listEl.scrollTop - savedListTop) > 0) {
+          listEl.scrollTop = savedListTop;
+        }
+      };
+      restore();
+      requestAnimationFrame(restore);
     } catch {
       // 局部加载失败（后端旧版等）：回退整页导航，保证可用。
       window.location.href = `/operations?run_id=${encodeURIComponent(runId)}`;

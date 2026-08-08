@@ -729,6 +729,9 @@
 .ak-run-inspector {
   min-inline-size: 0;
   overflow: hidden;
+  /* 详情区替换（局部选择）会改变文档高度，禁用 scroll anchoring
+     可避免浏览器在 DOM 替换时自动调整窗口/列表滚动位置。 */
+  overflow-anchor: none;
 }
 
 .ak-run-browser {
@@ -781,6 +784,7 @@
   min-block-size: 12rem;
   overflow-y: auto;
   overscroll-behavior: contain;
+  overflow-anchor: none;
 }
 
 .ak-run-list-item {
