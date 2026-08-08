@@ -1407,20 +1407,17 @@ function bindRangeOutputs() {
   });
 }
 
-function finalizeActionResult(result, requestPayload, bubble, selectedAgent, streamed = "") {
+function finalizeActionResult(result, requestPayload, bubble, selectedAgent, streamed = "", removeBubble = true) {
   const response = runtimeView(result.response);
   const final = response.output?.final || {};
   const status = response.output?.status;
   if (status === "waiting_for_approval") {
     if (bubble) bubble.node.remove();
-  } else if (bubble) {
-    // Tokens emitted inside an action workflow may be an intermediate artifact
-    // (for example, only the generated article body). Once the workflow ends,
-    // prefer the server's complete evidence/report response.
-    finalizeAssistantBubble(bubble, result.assistant_text || streamed || "");
-    const label = bubble.node.querySelector(":scope > span");
-    if (label) label.textContent = agentLabel(result.agent || "general_agent");
-    appendAgentTrace(bubble.node, result.response || {});
+  } else if (bubble && removeBubble) {
+    // 普通完成：onFinal 已 await 完成 content 重绘，content 的 turn 渲染完整
+    // 回答 + trace + 审批动作，流式气泡是临时载体，final 后移除避免与 content
+    // 版本重复显示。rehydrate 失败时保留气泡作为兜底（removeBubble=false）。
+    if (bubble.node.isConnected) bubble.node.remove();
   }
   if (status === "needs_clarification") {
     const resolution = response.output?.input_resolution || {};
@@ -1700,6 +1697,7 @@ async function runUnifiedChatTurn(message, selectedAgent) {
   let streamed = "";
   let errored = null;
   let errorConversationId = null;
+  let rehydrateOk = true;
   try {
     const finalData = await streamSse("/api/chat/stream", requestPayload, {
       signal: requestToken.signal,
@@ -1730,7 +1728,7 @@ async function runUnifiedChatTurn(message, selectedAgent) {
         if (conversationId) {
           // 先完成 content 重绘（渲染持久化完整回答），再移除流式气泡，
           // 避免与 content 版本重复显示。
-          await rehydrateConversationTimeline(conversationId, { forceScroll: true });
+          rehydrateOk = await rehydrateConversationTimeline(conversationId, { forceScroll: true });
         }
       },
     });
@@ -1739,14 +1737,14 @@ async function runUnifiedChatTurn(message, selectedAgent) {
     if (finalData) {
       if (finalData.response) {
         currentConversationId = finalData.conversation_id || currentConversationId;
-        finalizeActionResult(finalData, requestPayload, bubble, selectedAgent, streamed);
+        finalizeActionResult(finalData, requestPayload, bubble, selectedAgent, streamed, rehydrateOk);
         if (isNewConversation) await loadConversations(selectedAgent);
         return;
       } else {
         currentConversationId = finalData.conversation_id || currentConversationId;
         // onFinal 已 await 完成 content 重绘（持久化完整回答 + markdown）；
-        // 移除流式气泡，避免与 content 版本重复显示。
-        if (bubble?.node?.isConnected) bubble.node.remove();
+        // 移除流式气泡，避免与 content 版本重复显示。rehydrate 失败时保留气泡兜底。
+        if (rehydrateOk && bubble?.node?.isConnected) bubble.node.remove();
       }
     }
     setExecutionState("Completed", 5, true);
