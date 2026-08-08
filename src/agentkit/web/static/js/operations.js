@@ -215,21 +215,22 @@
   // ------------------------------------------------------------------
   async function selectRun(runId, rowLink) {
     const list = document.querySelector("[data-run-list]");
-    // 1) 高亮并滚动选中行
+    // 1) 高亮选中行（点击时行已可见，不做滚动，避免页面跳动）
     list?.querySelectorAll("[data-run-row]").forEach((el) => el.removeAttribute("aria-current"));
     if (rowLink) {
       rowLink.setAttribute("aria-current", "location");
-      rowLink.scrollIntoView({ block: "nearest", behavior: "smooth" });
     } else if (list) {
       const match = Array.from(list.querySelectorAll("[data-run-row]")).find(
         (el) => new URL(el.href, window.location.href).searchParams.get("run_id") === runId
       );
-      if (match) {
-        match.setAttribute("aria-current", "location");
-        match.scrollIntoView({ block: "nearest", behavior: "smooth" });
-      }
+      if (match) match.setAttribute("aria-current", "location");
     }
     // 2) 局部加载详情片段
+    // 替换详情区可能触发浏览器 scroll anchoring / 文档高度变化，导致
+    // 页面或列表滚动位置漂移；替换后显式恢复原位置（无动画）。
+    const savedWinY = window.scrollY;
+    const listEl = document.querySelector("[data-run-list]");
+    const savedListTop = listEl ? listEl.scrollTop : 0;
     try {
       const response = await fetch(`/operations/run/${encodeURIComponent(runId)}/partial`, {
         headers: { Accept: "text/html" },
@@ -243,6 +244,8 @@
         bindArtifactViewer();
       }
       history.replaceState(null, "", `/operations?run_id=${encodeURIComponent(runId)}`);
+      if (Math.abs(window.scrollY - savedWinY) > 0) window.scrollTo(0, savedWinY);
+      if (listEl) listEl.scrollTop = savedListTop;
     } catch {
       // 局部加载失败（后端旧版等）：回退整页导航，保证可用。
       window.location.href = `/operations?run_id=${encodeURIComponent(runId)}`;
@@ -250,6 +253,19 @@
   }
 
   function bindRunSelect() {
+    // 鼠标按下时不聚焦链接：Chrome 对 focus 会隐式滚动到可视区，导致点击
+    // 时列表/页面位置跳动。键盘 Tab+Enter 仍正常（不走 mousedown）。
+    document.addEventListener(
+      "mousedown",
+      (event) => {
+        const link = event.target.closest('a[href*="run_id="]');
+        if (!link) return;
+        if (!link.closest("[data-run-list]") && !link.closest("[data-run-detail]")) return;
+        if (link.target && link.target !== "_self") return;
+        event.preventDefault();
+      },
+      true
+    );
     document.addEventListener("click", (event) => {
       const link = event.target.closest('a[href*="run_id="]');
       if (!link) return;
