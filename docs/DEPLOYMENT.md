@@ -330,12 +330,25 @@ agentkit --tenant company_alpha web
 
 - Chat：`http://127.0.0.1:8501/chat`
 - Agent 关系图：`http://127.0.0.1:8501/agents`
-- 运行追踪：`http://127.0.0.1:8501/operations`
+- 运行追踪（Run 360）：`http://127.0.0.1:8501/operations`
 - 治理：`http://127.0.0.1:8501/governance`
+- Eval 报告：`http://127.0.0.1:8501/evaluations`
 - 存活检查：`http://127.0.0.1:8501/livez`
 - 就绪检查：`http://127.0.0.1:8501/readyz`
+- 健康检查：`http://127.0.0.1:8501/healthz`
 
 Chat 中未使用 `@` 时由 General Agent 决定直接回答、澄清或委派；`@招聘` 等别名只对当前消息生效，下一条未带 `@` 的消息重新交给 General Agent，但仍共享同一 General 会话历史。
+
+### 运行追踪（Run 360）与 Eval 报告
+
+`/operations` 是 Run 360 管理页：左侧 Run Browser 使用服务端游标分页（`GET /api/runs`），
+右侧按状态默认打开 Overview / Timeline / Conversation / Artifacts / Diagnostics 五个 Tab，
+统一聚合 Audit 事件、会话投影、Artifact、错误、LLM/Tool 与成本摘要。完整 Conversation
+与 Artifact Payload 由独立权限控制（见 `docs/framework/01_INTERFACE_AND_ACCESS.md`）。
+
+`/evaluations` 是 Eval 报告只读页：读取 `evaluation/reports/*.json` 版本化报告，展示门禁
+结果、基线增量与逐 Case 明细。报告由 `agentkit eval-suite <suite.yaml>` 生成，该目录已被
+Git 忽略；需要长期保存的批准基线应复制到受评审的基线目录后显式提交。
 
 ## 8. Linux 进程部署
 

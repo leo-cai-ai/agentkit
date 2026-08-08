@@ -296,6 +296,9 @@ agentkit eval-suite evaluation/suites/trajectory.yaml --validate-only --json
 
 未指定 `--output` 时，报告写入 `evaluation/reports/<suite>-<UTC时间>.json`。该运行目录已被 Git 忽略；需要长期保存的批准基线应复制到单独、受评审的基线目录后显式提交。
 
+Web 控制台 `/evaluations` 页（需要 `governance:view`）只读展示这些版本化报告：报告列表、
+门禁通过状态、pass_rate / mean_score 阈值对比、基线增量、环境信息与逐 Case 明细。
+
 ### 5.4 CI 与迭代闭环
 
 当前 CI 执行：
@@ -395,6 +398,24 @@ Audit 适合回答：
 - LLM 用量和 Run 结果。
 
 不应在 Audit 中记录 Secret、Cookie、完整 Prompt、图片 Base64 或隐藏思维链。
+
+### 8.1 Run 360：运行详情的统一只读聚合
+
+`src/agentkit/runtime/run_detail.py` 提供只读 `RunDetailService`，把一次运行的全部证据
+聚合为一个授权后的 DTO（Overview / Timeline / Conversation / Artifacts / Diagnostics），
+不创建重复的持久化表。Web 控制台 `/operations` 展示五个 Tab，三个 API：
+
+- `GET /api/runs`：服务端游标分页 + 状态 / Agent / Conversation / 时间过滤。
+- `GET /api/runs/<run_id>`：Run 360 详情，包含四维状态
+  （`execution_status / review_status / business_outcome / evaluation_result`，缺失维度返回
+  `unknown` 而不相互推断）、事件时间线、错误、LLM/Tool/Cost 汇总与外部链接。
+- `GET /api/runs/<run_id>/artifacts/<artifact_id>`：受控 Artifact Payload，需要
+  `runs:artifact:read`；>256 KiB 或二进制只返回元数据，敏感字段递归脱敏。
+
+历史 Run 没有 `run_error` 事件时，从 `tool_call_failed / llm_context_failed /
+agent_route_failed / run_failed` 生成 `compatibility_projection=true` 的只读错误摘要，
+不回写旧 Audit。外部日志 / Trace 跳转通过 `AGENTKIT_LOG_URL_TEMPLATE` /
+`AGENTKIT_TRACE_URL_TEMPLATE` 配置，未配置时不显示链接。
 
 ### 8.2 Metrics
 
@@ -652,7 +673,7 @@ flowchart LR
 - Judge 存在模型偏差和波动，需要盲评样本、校准和确定性 Check 组合。
 - Eval Dataset 规模和业务覆盖仍需持续扩充；当前仓库只有基础 Golden 与 12 条策略轨迹 Case。
 - CI 默认只校验 Suite 契约；真实模型 Eval 需要在有模型凭据和隔离外部依赖的 Nightly/Release 环境运行。
-- 版本化报告当前是文件输出，没有集中式 Eval Registry、趋势 Dashboard 或批准基线工作流。
+- 版本化报告当前是文件输出，`/evaluations` 只提供只读展示与逐 Case 明细，尚无集中式 Eval Registry、跨版本趋势数据库或批准基线工作流。
 - 成本预算在调用前按已累计金额检查，不能阻止单次昂贵调用造成小幅超额。
 - 当前 Cost 以配置单价估算，不是云厂商账单对账系统。
 

@@ -266,9 +266,19 @@ flowchart TD
 | `chat:use` | Chat、Conversation、发布素材读取 |
 | `task:run` | 显式 Task |
 | `task:approve` | 审批 Resume |
-| `runs:view` | Run 列表和事件 |
-| `governance:view` | Registry 和治理页面 |
+| `runs:view` | Run 列表、Run 360 页面与详情摘要 |
+| `runs:content:read` | Run 详情的完整 Conversation / Review / Retry 内容 |
+| `runs:artifact:read` | Run 详情的完整（脱敏后）Artifact Payload |
+| `governance:view` | Registry、治理页面与 Eval 报告页 |
 | `runtime:admin` | Runtime reload |
+
+`runs:content:read` 与 `runs:artifact:read` 默认只由 `admin` 的 `*` 授予；`operator`、
+`member`、`viewer` 不自动获得，可通过 `AGENTKIT_RBAC_ROLE_PERMISSIONS` 给自定义治理角色
+（例如审计角色）显式授予。两个权限保持独立：拥有内容权限不代表可以读取 Artifact Payload。
+
+权限语义：`runs:view` 展示运行记录与事件安全摘要（含请求文本与错误摘要），
+`runs:content:read` 解锁完整 Conversation / Review / Retry 内容，
+`runs:artifact:read` 解锁完整（脱敏后）Artifact Payload。
 
 进入 Runtime 后，可信业务角色再映射为 `content.research`、`order.read` 等业务权限。请求 JSON 中提交的 `roles` 不会成为可信权限来源；接入层把它记录为 `ignored_payload_roles`，便于审计客户端误用或越权尝试。
 
@@ -401,6 +411,32 @@ Resume 不是重放原始请求。若 Checkpoint 缺失或失效，Action 标记
 - `GET /livez`：公开、常量时间，不初始化 Runtime。
 - `GET /readyz`：公开，探测当前租户 Runtime 和 Audit Store；失败返回 503，响应不包含底层异常文本。
 - `GET /metrics`：需要 `operations:view` 权限，输出 Prometheus 文本；标签不包含租户、用户、会话或 Run ID。
+
+### 11.2 Run 360 API 契约
+
+Run 360 由只读 `RunDetailService`（`src/agentkit/runtime/run_detail.py`）聚合 Audit、
+Conversation Projection 与 Artifact Store，不创建重复的 Run 详情表。三个接口：
+
+| 接口 | 说明 |
+|---|---|
+| `GET /api/runs?limit=&cursor=&status=&agent_id=&conversation_id=&started_after=&started_before=` | 服务端过滤 + 稳定游标分页；返回 `items / next_cursor / has_more` |
+| `GET /api/runs/<run_id>` | Run 360 详情：四维状态（execution / review / business / eval）、时间线、错误、LLM/Tool/Cost 摘要、关系与外部链接 |
+| `GET /api/runs/<run_id>/artifacts/<artifact_id>` | 受控 Artifact Payload：需要 `runs:artifact:read`，>256 KiB 或二进制只返回元数据，敏感字段递归脱敏 |
+
+分页游标基于 `(started_at, run_id)` 编码，非法游标返回 `400 invalid_run_filter`；
+跨租户或不存在统一返回 `404`；观测后端短暂故障返回 `503 observability_backend_unavailable`；
+所有成功响应带 `Cache-Control: no-store`。受限响应示例（普通 Viewer）：
+
+```json
+{
+  "run_id": "…",
+  "conversation": null,
+  "restrictions": {"content_restricted": true, "artifact_payload_restricted": true}
+}
+```
+
+外部日志 / Trace 跳转通过 `AGENTKIT_LOG_URL_TEMPLATE` / `AGENTKIT_TRACE_URL_TEMPLATE` 配置，
+占位符替换值全部 URL 编码；未配置时详情页不显示链接按钮。
 
 本地启动与日志命令见 [部署指南](../DEPLOYMENT.md)。
 
