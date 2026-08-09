@@ -35,6 +35,25 @@ flowchart TB
 
 任意一层允许不代表下一层自动允许。例如：用户有 `task:run` 只表示可调用 Task API，不表示拥有 `content.publish`；Skill 被 Agent 允许，也不表示其副作用 Tool 已经人工批准。
 
+### 2.1 Run 数据的租户读取边界
+
+Run 360 / 审计查询在存储层执行租户隔离，不只依赖 Web 路由：
+
+- `RunDetailService` 构造时固定 `tenant_id`（来自 Runtime），每个公开方法仍显式接收
+  `tenant_id`；两者不一致时按资源不存在处理，防止误用。
+- `list_runs_page(RunListFilter(tenant_id=...))` 只返回本租户的 Run；
+  `get_run / events_for / child_runs` 跨租户访问统一视为不存在（`404` / 空列表），
+  不泄露其他租户运行的存在性。
+- `RunArtifactReader.list_for_run / get_for_run` 同样以 `tenant_id` 校验，Artifact
+  Payload 在返回前按敏感 Key 递归脱敏（`secret / token / password / passwd / pwd /
+  credential / cookie / authorization / api_key / private_key / key` 等），
+  超大或二进制只返回元数据。
+
+Web 层叠加 RBAC 三档：`runs:view`（列表与安全摘要）→ `runs:content:read`（完整
+Conversation / Review / Retry 内容）→ `runs:artifact:read`（完整脱敏 Artifact Payload），
+默认仅 `admin` 的 `*` 拥有，详见 [接口与访问](01_INTERFACE_AND_ACCESS.md) 第 11.2 节。
+观测后端短暂故障返回 `503 observability_backend_unavailable`，不暴露底层异常文本。
+
 ## 3. 身份来源
 
 Web 层按配置解析 `Principal`：

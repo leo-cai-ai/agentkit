@@ -319,6 +319,32 @@ SQLite 使用立即事务 Claim；PostgreSQL 使用唯一约束和行锁。二�
 
 Reconcile 只修正状态，不重新执行工具或回滚外部系统。
 
+### 13.1 审计查询：服务端分页、过滤与租户边界
+
+Audit Store 提供 `list_runs_page()` 作为唯一的分页列表入口（InMemory / SQLite / PostgreSQL
+三后端语义一致），请求参数封装为 `RunListFilter`：
+
+- `tenant_id`：**必填的第一隔离边界**；其余字段都是可选的固定字段过滤。
+- `limit`：默认 50，上限 200（`_MAX_RUN_PAGE_LIMIT`），越界由 API 层拒绝。
+- `status / agent_id / conversation_id / started_after / started_before`：固定字段过滤。
+- `cursor`：基于 `(started_at, run_id)` 的 URL-safe base64 JSON 游标，保证新增/删除
+  运行时不产生跳过或重复；非法游标返回 `400 invalid_run_filter`。
+
+返回 `RunPage(items, next_cursor, has_more)`；消费方（Web `/operations` 的"加载更多"、
+`GET /api/runs`）只关心 `has_more` 与 `next_cursor`，不依赖行号或偏移量。
+
+单条读取同样强制租户边界：`get_run / events_for / child_runs` 都显式接收
+`tenant_id` 关键字；跨租户访问统一视为资源不存在（详情返回 `404`、事件返回空列表），
+不泄露其他租户运行的存在性。`events_for` 的每条事件带有稳定 `event_id`
+（SQLite 使用行 id，InMemory 使用序号），便于审计对账与幂等消费。
+
+全局聚合 `cost_summary / event_timing_summary`（`/governance` 成本与预算页使用）是
+跨全部运行的服务端统计，不区分租户；Run 360 详情内的 LLM / Tool / Cost 摘要则是
+按当前租户、单 Run 粒度的受限视图。这些查询能力与 `GET /api/runs` 契约、
+`runs:view / runs:content:read / runs:artifact:read` 权限语义见
+[接口与访问](01_INTERFACE_AND_ACCESS.md) 第 11.2 节；Run 360 详情聚合见
+[评估、可观测性与成本](08_EVALUATION_OBSERVABILITY_AND_COST.md) 第 8.2 节。
+
 ## 14. 会话删除边界
 
 会话删除是数据生命周期操作，不是业务事务回滚。
