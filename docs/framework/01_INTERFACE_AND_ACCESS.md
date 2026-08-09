@@ -440,7 +440,7 @@ Conversation Projection 与 Artifact Store，不创建重复的 Run 详情表。
 
 本地启动与日志命令见 [部署指南](../DEPLOYMENT.md)。
 
-### 11.2 测试证据
+### 11.3 测试证据
 
 - [`tests/integration/test_chat_api.py`](../../tests/integration/test_chat_api.py)：Chat/Task、会话、删除和父子 Run API。
 - [`tests/integration/test_conversation_timeline_api.py`](../../tests/integration/test_conversation_timeline_api.py)：Timeline、Retry Attempt、Action 决议、租户/用户作用域与旧端点移除。

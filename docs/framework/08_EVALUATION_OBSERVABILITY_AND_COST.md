@@ -399,7 +399,7 @@ Audit 适合回答：
 
 不应在 Audit 中记录 Secret、Cookie、完整 Prompt、图片 Base64 或隐藏思维链。
 
-### 8.1 Run 360：运行详情的统一只读聚合
+### 8.2 Run 360：运行详情的统一只读聚合
 
 `src/agentkit/runtime/run_detail.py` 提供只读 `RunDetailService`，把一次运行的全部证据
 聚合为一个授权后的 DTO（Overview / Timeline / Conversation / Artifacts / Diagnostics），
@@ -417,13 +417,13 @@ agent_route_failed / run_failed` 生成 `compatibility_projection=true` 的只�
 不回写旧 Audit。外部日志 / Trace 跳转通过 `AGENTKIT_LOG_URL_TEMPLATE` /
 `AGENTKIT_TRACE_URL_TEMPLATE` 配置，未配置时不显示链接。
 
-### 8.2 Metrics
+### 8.3 Metrics
 
 `timed_event()` 可以把任意代码块的 `duration_ms + ok` 写成 Audit Event；异常时也记录失败耗时后重新抛出。`ToolExecutor` 已记录 Tool 完成耗时。
 
 Audit Store 的 `event_timing_summary()` 当前按 Event Type 聚合 Count 和平均值。它不是完整时序数据库，也不直接计算 P95/P99；生产尾延迟应把原始事件或 OTel 数据导出到 Prometheus、ClickHouse、APM 等系统计算。
 
-### 8.3 OpenTelemetry
+### 8.4 OpenTelemetry
 
 Tracing 是可选能力：
 
