@@ -388,8 +388,16 @@
 
 /* Agent Network */
 .ak-agent-network-shell {
-  --ak-network-flow-highlight: color-mix(in srgb, var(--ak-sys-color-accent-default) 35%, white);
-  --ak-network-flow-live: color-mix(in srgb, var(--ak-sys-color-accent-strong) 55%, white);
+  --ak-network-flow-highlight: color-mix(
+    in srgb,
+    var(--ak-sys-color-accent-default, #cf674d) 35%,
+    white
+  );
+  --ak-network-flow-live: color-mix(
+    in srgb,
+    var(--ak-ref-color-teal-400, #2dd4bf) 60%,
+    white
+  );
   display: grid;
   gap: var(--ak-sys-space-3);
 }
@@ -480,9 +488,11 @@
 }
 .ak-network-current.is-active-run {
   opacity: 1;
-  stroke: var(--ak-network-flow-live);
+  stroke: var(--ak-network-flow-live, #7ce8da);
   stroke-width: 7;
-  animation: ak-network-flow 2.1s linear infinite;
+  stroke-dasharray: 4 12;
+  filter: drop-shadow(0 0 5px rgb(45 212 191 / 0.65));
+  animation: ak-network-flow 1.3s linear infinite;
 }
 .ak-network-node { cursor: grab; transition: opacity 160ms ease; }
 .ak-network-node:active { cursor: grabbing; }
@@ -1817,6 +1827,14 @@ button.conversation-new {
   color: var(--ak-sys-color-status-danger-fg);
   background: var(--ak-sys-color-status-danger-bg);
   line-height: 1.5;
+}
+
+/* “需要澄清”是业务追问，不是失败：用琥珀色提示，不显示“重新尝试”。 */
+.ak-attempt[data-attempt-status="needs_clarification"] .ak-attempt-error,
+.ak-attempt-disclosure[data-attempt-status="needs_clarification"] .ak-attempt-error {
+  border-inline-start-color: var(--ak-sys-color-status-warning-fg);
+  color: var(--ak-sys-color-status-warning-fg);
+  background: var(--ak-sys-color-status-warning-bg);
 }
 
 .ak-attempt-retry {

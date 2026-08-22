@@ -30,6 +30,7 @@ _ACTIVE_STATUSES = {
 }
 _TERMINAL_STATUSES = {
     AttemptStatus.SUCCEEDED,
+    AttemptStatus.NEEDS_CLARIFICATION,
     AttemptStatus.FAILED,
     AttemptStatus.INTERRUPTED,
     AttemptStatus.REJECTED,

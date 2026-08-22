@@ -292,6 +292,39 @@
     });
   }
 
+  function applyActiveFlags(payload) {
+    if (!graph) return;
+    const activeByEdge = new Map();
+    for (const relationship of payload.relationships || []) {
+      const key = `${relationship.source}|${relationship.target}|${relationship.type}`;
+      activeByEdge.set(key, relationship.active === true);
+    }
+    for (const edge of graph.edges) {
+      edge.active = activeByEdge.get(`${edge.source}|${edge.target}|${edge.type}`) === true;
+    }
+    canvas.querySelectorAll(".ak-network-current").forEach((current) => {
+      const key = `${current.dataset.source}|${current.dataset.target}|${current.dataset.edgeType}`;
+      current.classList.toggle("is-active-run", activeByEdge.get(key) === true);
+    });
+  }
+
+  let refreshingActive = false;
+  async function pollActive() {
+    if (refreshingActive || document.hidden) return;
+    refreshingActive = true;
+    try {
+      const response = await fetch("/api/registry");
+      if (response.ok) {
+        const payload = await response.json();
+        applyActiveFlags(payload);
+      }
+    } catch {
+      // 网络抖动时保留上次状态，不打断当前图。
+    } finally {
+      refreshingActive = false;
+    }
+  }
+
   function renderList() {
     if (!graph) return;
     const labels = { agent: "Agents", skill: "Skills", tool: "Tools" };
@@ -346,4 +379,8 @@
   });
   retryButton?.addEventListener("click", loadNetwork);
   loadNetwork();
+  setInterval(pollActive, 6000);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) pollActive();
+  });
 })();

@@ -310,7 +310,7 @@ def test_route_failure_projects_visible_terminal_clarification(tmp_path) -> None
 
     attempt = _timeline(projection, response.conversation_id).turns[0]["attempts"][0]
     assert response.status == "needs_clarification"
-    assert attempt["status"] == "rejected"
+    assert attempt["status"] == "needs_clarification"
     assert "未调用任何 Agent、Skill 或 Tool" in attempt["messages"][0]["content"]
     assert gateway.requests == []
 

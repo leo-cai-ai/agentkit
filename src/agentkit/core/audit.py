@@ -269,6 +269,27 @@ class InMemoryAuditLog:
             runs.append(dict(run))
         return sorted(runs, key=lambda run: float(run.get("started_at") or 0.0))
 
+    def active_runs(self, *, tenant_id: str | None = None) -> list[dict[str, Any]]:
+        """当前处于 running / waiting_for_approval 的 Run（用于实时图高亮）。"""
+        runs = []
+        for run in self._runs.values():
+            if run.get("status") not in _BLOCKING_RUN_STATUSES:
+                continue
+            if tenant_id is not None and run.get("tenant_id") != tenant_id:
+                continue
+            row = dict(run)
+            last_ts = max(
+                (
+                    float(event.get("ts") or 0.0)
+                    for event in self._events
+                    if event.get("run_id") == run.get("run_id")
+                ),
+                default=float(row.get("started_at") or 0.0),
+            )
+            row["last_ts"] = last_ts
+            runs.append(row)
+        return sorted(runs, key=lambda run: float(run.get("started_at") or 0.0))
+
     def list_runs_page(self, filters: RunListFilter) -> RunPage:
         """内存实现的游标分页，语义与 SQLite/PostgreSQL 后端一致。"""
         if not 1 <= filters.limit <= _MAX_RUN_PAGE_LIMIT:
@@ -684,6 +705,29 @@ class SQLiteAuditLog:
                     """
                 ).fetchall()
         return {str(row["status"]): int(row["count"]) for row in rows}
+
+    def active_runs(self, *, tenant_id: str | None = None) -> list[dict[str, Any]]:
+        placeholders = ",".join("?" for _ in _BLOCKING_RUN_STATUSES)
+        params: list[Any] = list(_BLOCKING_RUN_STATUSES)
+        tenant_where = ""
+        if tenant_id:
+            tenant_where = "AND tenant_id = ?"
+            params.append(tenant_id)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT r.run_id, r.tenant_id, r.user_id, r.text, r.status,
+                       r.started_at, r.finished_at, r.agent_id,
+                       r.parent_run_id, r.conversation_id, MAX(e.ts) AS last_ts
+                FROM task_runs r
+                LEFT JOIN audit_events e ON e.run_id = r.run_id
+                WHERE r.status IN ({placeholders}) {tenant_where}
+                GROUP BY r.run_id
+                ORDER BY r.started_at ASC
+                """,
+                tuple(params),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def event_counts_by_type(self, *, limit: int = 20) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -1170,6 +1214,30 @@ class PostgresAuditLog(SQLiteAuditLog):
                 ).fetchall()
         return {str(row[0]): int(row[1]) for row in rows}
 
+    def active_runs(self, *, tenant_id: str | None = None) -> list[dict[str, Any]]:
+        tenant_scope = self._tenant_id or tenant_id
+        placeholders = ",".join("%s" for _ in _BLOCKING_RUN_STATUSES)
+        params: list[Any] = list(_BLOCKING_RUN_STATUSES)
+        tenant_where = ""
+        if tenant_scope:
+            tenant_where = "AND tenant_id = %s"
+            params.append(tenant_scope)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT r.run_id, r.tenant_id, r.user_id, r.text, r.status,
+                       r.started_at, r.finished_at, r.agent_id,
+                       r.parent_run_id, r.conversation_id, MAX(e.ts) AS last_ts
+                FROM task_runs r
+                LEFT JOIN audit_events e ON e.run_id = r.run_id
+                WHERE r.status IN ({placeholders}) {tenant_where}
+                GROUP BY r.run_id
+                ORDER BY r.started_at ASC
+                """,
+                tuple(params),
+            ).fetchall()
+        return [_postgres_run_row(row) for row in rows]
+
     def event_counts_by_type(self, *, limit: int = 20) -> list[dict[str, Any]]:
         with self._connect() as conn:
             if self._tenant_id:
@@ -1349,4 +1417,5 @@ def _postgres_run_row(row: Any) -> dict[str, Any]:
         "agent_id": row[7],
         "parent_run_id": row[8],
         "conversation_id": row[9],
+        "last_ts": row[10] if len(row) > 10 else None,
     }

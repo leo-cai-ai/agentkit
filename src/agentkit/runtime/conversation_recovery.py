@@ -11,6 +11,7 @@ from typing import Any
 from agentkit.core.audit import TERMINAL_RUN_STATUSES
 from agentkit.core.memory.store import ConversationConflictError
 from agentkit.core.metrics import record_scoped_metric
+from agentkit.runtime.conversation_projection_models import AttemptStatus
 
 _ACTIVE_ACTION_STATUSES = {"pending", "approved", "rejected"}
 _DECIDED_ACTION_STATUSES = {"approved", "rejected"}
@@ -19,7 +20,7 @@ _RUN_TO_ATTEMPT_STATUS = {
     "completed": "succeeded",
     "blocked": "rejected",
     "capability_denied": "rejected",
-    "needs_clarification": "rejected",
+    "needs_clarification": AttemptStatus.NEEDS_CLARIFICATION.value,
     "rejected": "rejected",
     "cancelled": "cancelled",
     "failed": "failed",

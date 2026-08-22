@@ -1,0 +1,17 @@
+AgentKit bundles two open-source font families, both licensed under the
+SIL Open Font License, Version 1.1.
+
+- Space Grotesk — designed by Florian Karsten (copyright 2018 The Space
+  Grotesk Project Authors). Google Fonts distribution.
+  https://fonts.google.com/specimen/Space+Grotesk
+
+- DM Sans — designed by Google (copyright 2014-2018 Google LLC). Google
+  Fonts distribution.
+  https://fonts.google.com/specimen/DM+Sans
+
+The full license text is available at:
+https://openfontlicense.org/open-font-license-official-text/
+
+This license permits unrestricted use, modification, and redistribution
+subject to the condition that the font files are not sold by themselves
+and the license terms remain attached to the fonts.

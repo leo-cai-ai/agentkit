@@ -1308,7 +1308,9 @@ class MultiAgentCoordinator:
     def _attempt_status(status: str) -> AttemptStatus:
         if status == "completed":
             return AttemptStatus.SUCCEEDED
-        if status in {"blocked", "needs_clarification", "rejected"}:
+        if status == "needs_clarification":
+            return AttemptStatus.NEEDS_CLARIFICATION
+        if status in {"blocked", "rejected"}:
             return AttemptStatus.REJECTED
         if status == "cancelled":
             return AttemptStatus.CANCELLED

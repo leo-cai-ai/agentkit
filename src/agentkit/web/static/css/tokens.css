@@ -88,8 +88,10 @@
   --ak-ref-easing-standard: cubic-bezier(0.2, 0, 0, 1);
   --ak-ref-font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Consolas,
     "Liberation Mono", Menlo, monospace;
-  --ak-ref-font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
-    "Segoe UI", sans-serif;
+  --ak-ref-font-display: "Space Grotesk", "DM Sans", ui-sans-serif, system-ui,
+    -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --ak-ref-font-sans: "DM Sans", ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", sans-serif;
 
   /* Semantic surfaces and content */
   --ak-sys-color-bg-canvas: var(--ak-ref-color-neutral-1000);
@@ -139,6 +141,7 @@
   --ak-sys-radius-md: var(--ak-ref-radius-md);
   --ak-sys-radius-lg: var(--ak-ref-radius-lg);
   --ak-sys-radius-full: var(--ak-ref-radius-full);
+  --ak-sys-font-display: var(--ak-ref-font-display);
   --ak-sys-size-control-md: var(--ak-ref-size-control-md);
   --ak-sys-size-control-lg: var(--ak-ref-size-control-lg);
   --ak-sys-size-control-touch: var(--ak-ref-size-control-touch);
@@ -167,7 +170,28 @@
   --ak-sys-motion-duration-fast: var(--ak-ref-duration-fast);
   --ak-sys-motion-duration-normal: var(--ak-ref-duration-normal);
   --ak-sys-motion-duration-drawer: 180ms;
+  --ak-sys-motion-duration-enter: 240ms;
+  --ak-sys-motion-duration-exit: 150ms;
   --ak-sys-motion-easing-standard: var(--ak-ref-easing-standard);
+  --ak-sys-easing-enter: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* Ambient glow + gradient accents (HUD/immersive direction, locked palette). */
+  --ak-sys-gradient-brand: linear-gradient(
+    135deg,
+    var(--ak-ref-color-teal-400),
+    var(--ak-ref-color-blue-400) 48%,
+    var(--ak-sys-color-accent-default)
+  );
+  --ak-sys-gradient-nav: linear-gradient(
+    180deg,
+    var(--ak-ref-color-teal-400),
+    var(--ak-sys-color-accent-default)
+  );
+  --ak-sys-glow-brand: 0 0 0 1px rgb(255 255 255 / 0.06),
+    0 8px 22px rgb(45 212 191 / 0.26);
+  --ak-sys-glow-accent: 0 8px 24px rgb(45 212 191 / 0.24);
+  --ak-sys-glow-panel: 0 0 0 1px var(--ak-sys-color-accent-soft),
+    0 14px 38px rgb(0 0 0 / 0.28);
 
   /*
    * Legacy compatibility aliases. Keep these values indirect so a future

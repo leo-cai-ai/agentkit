@@ -28,6 +28,9 @@ from .models import ContextRenderRequest, LLMInvocationResult, RenderedContext
 
 _JSON_FENCE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", flags=re.IGNORECASE | re.DOTALL)
 _JSON_SCHEMA_HEADING = "Runtime 强制输出契约：必须严格按照以下 JSON Schema 返回唯一 JSON 值。"
+# Schema 校验失败时允许的修正次数（含失败当次共 N 次尝试），避免模型偶发
+# 多输出字段导致整轮运行直接失败。
+_SCHEMA_RETRY_LIMIT = 2
 _PHONE = re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)")
 _EMAIL = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 _NAMED_SECRET = re.compile(
@@ -154,23 +157,48 @@ class ContextInvocationService:
                     system=rendered.system,
                     user=rendered.user,
                 )
-            raw = call(rendered.system, rendered.user)
-            value: Any = _parse_json_value(raw, request.context_id) if parse_json else raw.strip()
-            if not parse_json and not value:
-                raise ContextOutputInvalidError(
-                    f"{request.context_id}: 模型返回空文本",
-                    context_id=request.context_id,
-                )
-            if parse_json and rendered.output_schema is not None:
-                errors = sorted(
-                    Draft202012Validator(rendered.output_schema).iter_errors(value),
-                    key=lambda error: [str(part) for part in error.path],
-                )
-                if errors:
+            for attempt in range(1, _SCHEMA_RETRY_LIMIT + 1):
+                raw = call(rendered.system, rendered.user)
+                try:
+                    value: Any = (
+                        _parse_json_value(raw, request.context_id)
+                        if parse_json
+                        else raw.strip()
+                    )
+                except ContextOutputInvalidError:
+                    if parse_json and attempt < _SCHEMA_RETRY_LIMIT:
+                        rendered = replace(
+                            rendered,
+                            user=rendered.user
+                            + "\n\n上一次输出不是合法 JSON，请只返回唯一的 JSON 对象。",
+                        )
+                        continue
+                    raise
+                if not parse_json and not value:
                     raise ContextOutputInvalidError(
-                        f"{request.context_id}: 输出不符合 Schema: {errors[0].message}",
+                        f"{request.context_id}: 模型返回空文本",
                         context_id=request.context_id,
                     )
+                if parse_json and rendered.output_schema is not None:
+                    errors = sorted(
+                        Draft202012Validator(rendered.output_schema).iter_errors(value),
+                        key=lambda error: [str(part) for part in error.path],
+                    )
+                    if errors:
+                        if attempt < _SCHEMA_RETRY_LIMIT and isinstance(value, dict):
+                            # 把校验错误回喂给模型，要求只返回符合 Schema 的 JSON。
+                            corrective = (
+                                f"\n\n上一次输出不符合 Runtime JSON Schema，请只返回严格符合该"
+                                f" Schema 的 JSON，不要再添加 Schema 之外的字段。校验错误："
+                                f"{errors[0].message}"
+                            )
+                            rendered = replace(rendered, user=rendered.user + corrective)
+                            continue
+                        raise ContextOutputInvalidError(
+                            f"{request.context_id}: 输出不符合 Schema: {errors[0].message}",
+                            context_id=request.context_id,
+                        )
+                break
             result = LLMInvocationResult(
                 value=value,
                 rendered=rendered,

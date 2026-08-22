@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -1613,13 +1614,96 @@ def api_run_artifact(run_id: str, artifact_id: str):
     return response
 
 
+# 判定“实时运行”的心跳窗口：最后一次审计事件之后多久仍算活跃。
+_ACTIVE_RUN_IDLE_SECONDS = 300
+
+
+def _engaged_network_nodes(audit: Any, gateway: Any, tenant_id: str) -> set[str]:
+    """返回当前处于活跃运行（running / waiting_for_approval）的整段子图。
+
+    以活跃业务 Agent 为根，沿注册表展开到它允许的 Skill 与 Tool（不依赖
+    事件词汇，任何图版本都能高亮）。父级 General Run 不计入，避免
+    general_agent 一有请求就点亮整圈坐标边。
+
+    只有“最近仍产生事件”的 run 才视为实时运行；被丢弃/遗留、早已无心跳的
+    僵尸 running 不再点亮图，避免对话结束后仍一直显示运行。
+    """
+    agents: set[str] = set()
+    for run in audit.active_runs(tenant_id=tenant_id):
+        last_ts = float(run.get("last_ts") or run.get("started_at") or 0.0)
+        if last_ts and time.time() - last_ts > _ACTIVE_RUN_IDLE_SECONDS:
+            continue
+        agent_id = str(run.get("agent_id") or "")
+        if agent_id and agent_id != "general_agent":
+            agents.add(agent_id)
+    engaged: set[str] = set(agents)
+    for name in agents:
+        try:
+            agent = gateway.agents.get(name)
+        except KeyError:
+            continue
+        for skill_name in agent.allowed_skills:
+            engaged.add(skill_name)
+            try:
+                skill = gateway.skills.get(skill_name)
+            except KeyError:
+                continue
+            for tool_name in skill.tools:
+                engaged.add(tool_name)
+    return engaged
+
+
+def _mark_active_relationships(
+    relationships: list[dict[str, Any]],
+    *,
+    engaged: set[str],
+) -> list[dict[str, Any]]:
+    """给任一节点处于活跃运行的关系打上 ``active`` 标记。"""
+    return [
+        {
+            **relationship,
+            "active": (
+                relationship.get("source") in engaged or relationship.get("target") in engaged
+            ),
+        }
+        for relationship in relationships
+    ]
+
+
 @app.get("/api/registry")
 @require_permission(GOVERNANCE_VIEW)
 def api_registry():
     runtime = get_runtime()
     gateway = runtime.gateway
     directory = dict(runtime.tenant_config.get("agent_directory") or {})
-    return jsonify(
+    tenant_id = str(runtime.tenant_config.get("tenant_id") or "")
+    relationships = (
+        [
+            {
+                "source": "general_agent",
+                "target": agent.name,
+                "type": "coordinates",
+            }
+            for agent in gateway.agents.all()
+            if agent.name != "general_agent"
+        ]
+        + [
+            {"source": agent.name, "target": skill, "type": "binds"}
+            for agent in gateway.agents.all()
+            for skill in agent.allowed_skills
+        ]
+        + [
+            {"source": skill.name, "target": tool, "type": "uses"}
+            for skill in gateway.skills.all()
+            for tool in skill.tools
+        ]
+    )
+    engaged = _engaged_network_nodes(gateway.audit, gateway, tenant_id)
+    relationships = _mark_active_relationships(
+        relationships,
+        engaged=engaged,
+    )
+    response = jsonify(
         {
             "agents": [
                 {
@@ -1666,27 +1750,11 @@ def api_registry():
                 for tool in gateway.tools.all()
             ],
             "strategies": list(runtime.strategy_names),
-            "relationships": [
-                {
-                    "source": "general_agent",
-                    "target": agent.name,
-                    "type": "coordinates",
-                }
-                for agent in gateway.agents.all()
-                if agent.name != "general_agent"
-            ]
-            + [
-                {"source": agent.name, "target": skill, "type": "binds"}
-                for agent in gateway.agents.all()
-                for skill in agent.allowed_skills
-            ]
-            + [
-                {"source": skill.name, "target": tool, "type": "uses"}
-                for skill in gateway.skills.all()
-                for tool in skill.tools
-            ],
+            "relationships": relationships,
         }
     )
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 def get_ui_config(tenant_config: dict[str, Any]) -> dict[str, Any]:

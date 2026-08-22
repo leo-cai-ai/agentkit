@@ -37,6 +37,7 @@ _NON_TERMINAL_ATTEMPT_STATUSES = {
 }
 _TERMINAL_ATTEMPT_STATUSES = {
     AttemptStatus.SUCCEEDED.value,
+    AttemptStatus.NEEDS_CLARIFICATION.value,
     AttemptStatus.FAILED.value,
     AttemptStatus.INTERRUPTED.value,
     AttemptStatus.REJECTED.value,

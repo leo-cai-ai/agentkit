@@ -33,6 +33,8 @@ def _responder(system: str, user: str) -> str:
                 "signals": [],
             }
         )
+    if "hello" in user.lower():
+        return "你好，请问有什么可以帮你？"
     return "{}"
 
 
@@ -75,4 +77,4 @@ def test_full_graph_handles_chitchat_inside_explicit_agent(monkeypatch, tmp_path
 
     assert response.status == "completed"
     assert response.strategy == "direct"
-    assert response.output == {"answer": "友好地回应用户"}
+    assert response.output == {"answer": "你好，请问有什么可以帮你？"}

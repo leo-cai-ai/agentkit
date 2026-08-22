@@ -3,10 +3,17 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#0a0f17">
     <title>安全登录 | AgentKit</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230a0f17'/%3E%3Cpath d='M8 10h6v12h-2V12h-4v10H8z' fill='%232dd4bf'/%3E%3Cpath d='M17 22V10h4.5c2.2 0 3.6 1.5 3.6 3.7 0 1.6-.8 2.8-2.2 3.3L25 22h-2.4l-2-5h-1.6v5zM19 15h2.4c.9 0 1.5-.5 1.5-1.4 0-.9-.6-1.4-1.5-1.4H19z' fill='%23cf674d'/%3E%3C/svg%3E"
+    >
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/fonts.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/tokens.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/components.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/login.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/polish.css') }}">
     <script defer src="{{ url_for('static', filename='js/login.js') }}"></script>
   </head>
   <body class="login-page" data-page="login">

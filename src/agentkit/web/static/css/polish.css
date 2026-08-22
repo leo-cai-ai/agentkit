@@ -1,0 +1,630 @@
+/* =====================================================================
+   AgentKit UI polish layer
+
+   Applies the ui-ux-pro-max design direction (immersive / HUD-style,
+   balanced density) on top of the existing semantic token system:
+   ambient atmosphere, bundled display typography, glass surfaces,
+   guided motion, and micro-interaction feedback.
+
+   Rules here must remain token-driven, non-breaking, and fully guarded
+   by prefers-reduced-motion + forced-colors.
+   ===================================================================== */
+
+/* ---------------------------------------------------------------------
+   1. Ambient atmosphere
+   ------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+.ak-app-page {
+  background:
+    radial-gradient(46rem 26rem at 82% -12%, rgb(45 212 191 / 0.1), transparent 62%),
+    radial-gradient(38rem 24rem at -10% 108%, rgb(207 103 77 / 0.09), transparent 60%),
+    radial-gradient(30rem 22rem at 108% 86%, rgb(96 165 250 / 0.07), transparent 60%),
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px),
+    var(--bg);
+  background-size:
+    100% 100%,
+    100% 100%,
+    100% 100%,
+    44px 44px,
+    44px 44px,
+    100% 100%;
+}
+
+.ak-app-sidebar {
+  background:
+    linear-gradient(180deg, rgb(45 212 191 / 0.05), transparent 10rem),
+    var(--ak-sys-color-bg-elevated);
+}
+
+/* ---------------------------------------------------------------------
+   2. Typography
+   ------------------------------------------------------------------- */
+
+.ak-page-header h1,
+.ak-login-story h1,
+.ak-login-panel h2,
+.ak-panel-header h2,
+.ak-chat-heading h2,
+.ak-history-group h3,
+.ak-run-summary-heading h3,
+.ak-eyebrow,
+.ak-network-detail h2,
+.ak-trace-drawer-header h2 {
+  font-family: var(--ak-sys-font-display);
+}
+
+.ak-page-header h1,
+.ak-panel-header h2,
+.ak-login-story h1,
+.ak-login-panel h2 {
+  text-wrap: balance;
+}
+
+.ak-page-header h1 {
+  letter-spacing: -0.02em;
+}
+
+.ak-page-header h1::after {
+  content: "";
+  display: block;
+  inline-size: 3rem;
+  block-size: 2px;
+  margin-block-start: var(--ak-sys-space-2);
+  border-radius: var(--ak-sys-radius-full);
+  background: linear-gradient(
+    90deg,
+    var(--ak-ref-color-teal-400),
+    var(--ak-sys-color-accent-default),
+    transparent
+  );
+  opacity: 0.85;
+}
+
+/* ---------------------------------------------------------------------
+   3. Brand + primary navigation rail
+   ------------------------------------------------------------------- */
+
+.ak-brand-mark,
+.ak-login-brand > span {
+  background: var(--ak-sys-gradient-brand);
+  box-shadow: var(--ak-sys-glow-brand);
+}
+
+.ak-primary-nav a {
+  transition:
+    background-color var(--ak-sys-motion-duration-fast) var(--ak-sys-motion-easing-standard),
+    color var(--ak-sys-motion-duration-fast) var(--ak-sys-motion-easing-standard),
+    transform var(--ak-sys-motion-duration-fast) var(--ak-sys-easing-enter);
+}
+
+.ak-primary-nav a:hover {
+  transform: translateX(2px);
+}
+
+.ak-primary-nav a.active,
+.ak-primary-nav a[aria-current="page"] {
+  background: linear-gradient(
+    90deg,
+    var(--ak-sys-color-accent-soft),
+    var(--ak-sys-color-bg-surface-subtle)
+  );
+  box-shadow: inset 0 0 0 1px var(--ak-sys-color-accent-soft);
+}
+
+.ak-primary-nav a.active::before,
+.ak-primary-nav a[aria-current="page"]::before {
+  content: "";
+  position: absolute;
+  inset-block: 28%;
+  inset-inline-start: 0;
+  inline-size: 2px;
+  border-radius: var(--ak-sys-radius-full);
+  background: var(--ak-sys-gradient-nav);
+  box-shadow: 0 0 10px rgb(45 212 191 / 0.55);
+}
+
+.ak-tenant-summary {
+  transition:
+    border-color var(--ak-sys-motion-duration-fast) var(--ak-sys-motion-easing-standard),
+    box-shadow var(--ak-sys-motion-duration-fast) var(--ak-sys-motion-easing-standard);
+}
+
+.ak-tenant-summary:hover {
+  border-color: var(--ak-sys-color-border-interactive);
+  box-shadow: 0 0 0 3px var(--ak-sys-color-accent-soft);
+}
+
+/* ---------------------------------------------------------------------
+   4. Surfaces: panels, stat cards, capability cards
+   ------------------------------------------------------------------- */
+
+.ak-panel {
+  position: relative;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--ak-sys-color-bg-elevated) 55%, transparent),
+      transparent 6rem
+    ),
+    var(--ak-sys-color-bg-surface);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.035),
+    0 10px 30px rgb(0 0 0 / 0.16);
+  transition:
+    border-color var(--ak-sys-motion-duration-normal) var(--ak-sys-motion-easing-standard),
+    box-shadow var(--ak-sys-motion-duration-normal) var(--ak-sys-easing-enter);
+}
+
+.ak-panel::before {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  inset-block-start: 0;
+  block-size: 1px;
+  border-radius: var(--ak-sys-radius-md) var(--ak-sys-radius-md) 0 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--ak-sys-color-accent-default) 55%, transparent),
+    transparent
+  );
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.ak-panel:hover {
+  border-color: var(--ak-sys-color-border-interactive);
+  box-shadow: var(--ak-sys-glow-panel);
+}
+
+.ak-stat-card {
+  position: relative;
+  overflow: hidden;
+  transition:
+    transform var(--ak-sys-motion-duration-normal) var(--ak-sys-easing-enter),
+    border-color var(--ak-sys-motion-duration-normal) var(--ak-sys-motion-easing-standard),
+    box-shadow var(--ak-sys-motion-duration-normal) var(--ak-sys-easing-enter);
+}
+
+.ak-stat-card::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  inset-block-start: 0;
+  block-size: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--ak-ref-color-teal-400) 70%, transparent),
+    transparent
+  );
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.ak-stat-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--ak-sys-color-border-interactive);
+  box-shadow: var(--ak-sys-glow-panel);
+}
+
+.ak-capability-card {
+  transition:
+    transform var(--ak-sys-motion-duration-normal) var(--ak-sys-easing-enter),
+    border-color var(--ak-sys-motion-duration-normal) var(--ak-sys-motion-easing-standard),
+    box-shadow var(--ak-sys-motion-duration-normal) var(--ak-sys-easing-enter);
+}
+
+.ak-capability-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--ak-sys-color-border-interactive);
+  box-shadow: var(--ak-sys-glow-panel);
+}
+
+.activity-item,
+.ak-run-list-item {
+  position: relative;
+  transition:
+    background-color var(--ak-sys-motion-duration-fast) var(--ak-sys-motion-easing-standard),
+    box-shadow var(--ak-sys-motion-duration-fast) var(--ak-sys-easing-enter);
+}
+
+.activity-item:hover,
+.ak-run-list-item:hover {
+  background: linear-gradient(
+    90deg,
+    var(--ak-sys-color-accent-soft),
+    var(--ak-sys-color-bg-surface-subtle)
+  );
+}
+
+.ak-run-list-item[aria-current="location"] {
+  background: linear-gradient(
+    90deg,
+    var(--ak-sys-color-accent-soft),
+    var(--ak-sys-color-bg-surface-subtle)
+  );
+  box-shadow: inset 0 0 0 1px var(--ak-sys-color-accent-soft);
+}
+
+.ak-run-list-item[aria-current="location"]::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  inline-size: 2px;
+  background: var(--ak-sys-gradient-nav);
+  box-shadow: 0 0 10px rgb(45 212 191 / 0.5);
+}
+
+/* ---------------------------------------------------------------------
+   5. Buttons, inputs, composer
+   ------------------------------------------------------------------- */
+
+.ak-button-primary,
+button.primary,
+.ak-chat-composer .ak-composer-send {
+  border-color: transparent;
+  background: var(--ak-sys-gradient-brand);
+  box-shadow: var(--ak-sys-glow-accent);
+}
+
+.ak-button-primary:hover:not(:disabled):not([aria-disabled="true"]),
+button.primary:hover,
+.ak-chat-composer .ak-composer-send:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--ak-sys-gradient-brand);
+  filter: brightness(1.07) saturate(1.04);
+  box-shadow: 0 10px 26px rgb(45 212 191 / 0.34);
+}
+
+.ak-button-primary:active:not(:disabled),
+button.primary:active,
+button.secondary:active,
+.ak-chat-composer .ak-composer-send:active:not(:disabled),
+.ak-icon-button:active {
+  transform: scale(0.98);
+}
+
+.ak-button-primary,
+button.primary,
+button.secondary,
+.ak-chat-composer .ak-composer-send,
+.ak-composer-demo {
+  transition:
+    filter var(--ak-sys-motion-duration-fast) var(--ak-sys-motion-easing-standard),
+    box-shadow var(--ak-sys-motion-duration-fast) var(--ak-sys-easing-enter),
+    border-color var(--ak-sys-motion-duration-fast) var(--ak-sys-motion-easing-standard),
+    background-color var(--ak-sys-motion-duration-fast) var(--ak-sys-motion-easing-standard),
+    transform var(--ak-sys-motion-duration-fast) var(--ak-sys-easing-enter);
+}
+
+.ak-input:focus-visible {
+  box-shadow: 0 0 0 3px var(--ak-sys-color-accent-soft);
+}
+
+.ak-chat-composer {
+  transition:
+    border-color var(--ak-sys-motion-duration-normal) var(--ak-sys-motion-easing-standard),
+    box-shadow var(--ak-sys-motion-duration-normal) var(--ak-sys-easing-enter);
+}
+
+.ak-chat-composer:focus-within {
+  border-color: var(--ak-sys-color-border-interactive);
+  box-shadow:
+    0 0 0 3px var(--ak-sys-color-accent-soft),
+    0 14px 34px rgb(0 0 0 / 0.3);
+}
+
+/* ---------------------------------------------------------------------
+   6. Status + live indicators
+   ------------------------------------------------------------------- */
+
+.status-running,
+.status-waiting_for_approval {
+  box-shadow: 0 0 14px rgb(96 165 250 / 0.12);
+}
+
+.status-running::before,
+.status-waiting_for_approval::before {
+  animation: ak-status-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes ak-status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(0.78);
+  }
+}
+
+/* Eval check chips (previously unstyled in the case table). */
+.ak-check-chip {
+  display: inline-block;
+  margin-inline-end: var(--ak-sys-space-1);
+  padding: 0.125rem 0.5rem;
+  border: 1px solid var(--ak-sys-color-border-default);
+  border-radius: var(--ak-sys-radius-full);
+  color: var(--ak-sys-color-text-secondary);
+  background: var(--ak-sys-color-bg-inset);
+  font-family: var(--ak-sys-font-mono);
+  font-size: 0.625rem;
+  font-weight: 700;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.ak-check-pass {
+  border-color: var(--ak-sys-color-status-success-border);
+  color: var(--ak-sys-color-status-success-fg);
+  background: var(--ak-sys-color-status-success-bg);
+}
+
+.ak-check-fail {
+  border-color: var(--ak-sys-color-status-danger-border);
+  color: var(--ak-sys-color-status-danger-fg);
+  background: var(--ak-sys-color-status-danger-bg);
+}
+
+.ak-check-skip {
+  opacity: 0.65;
+  text-decoration: line-through;
+}
+
+/* ---------------------------------------------------------------------
+   7. Data + detail polish
+   ------------------------------------------------------------------- */
+
+.ak-data-table td,
+.ak-run-facts dd,
+.ak-key-value-row dd {
+  font-variant-numeric: tabular-nums;
+}
+
+.ak-event-item {
+  border-inline-start: 2px solid transparent;
+  transition:
+    background-color var(--ak-sys-motion-duration-fast) var(--ak-sys-motion-easing-standard),
+    border-color var(--ak-sys-motion-duration-fast) var(--ak-sys-easing-enter);
+}
+
+.ak-event-item:hover {
+  border-inline-start-color: var(--ak-sys-color-accent-default);
+  background: var(--ak-sys-color-bg-surface-subtle);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--line);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+/* ---------------------------------------------------------------------
+   8. Glass surfaces (drawers / overlays)
+   ------------------------------------------------------------------- */
+
+.ak-trace-drawer,
+.ak-drawer {
+  background: color-mix(in srgb, var(--ak-sys-color-bg-elevated) 86%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+/* ---------------------------------------------------------------------
+   9. Login page
+   ------------------------------------------------------------------- */
+
+.login-page {
+  background:
+    radial-gradient(44rem 26rem at 82% -14%, rgb(45 212 191 / 0.11), transparent 62%),
+    radial-gradient(36rem 24rem at 105% 106%, rgb(207 103 77 / 0.1), transparent 60%),
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px),
+    var(--ak-sys-color-bg-canvas);
+  background-size:
+    100% 100%,
+    100% 100%,
+    44px 44px,
+    44px 44px,
+    100% 100%;
+}
+
+.ak-login-story {
+  position: relative;
+  overflow: hidden;
+}
+
+.ak-login-story::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(36rem 24rem at 12% 6%, rgb(45 212 191 / 0.12), transparent 62%),
+    radial-gradient(30rem 22rem at 92% 96%, rgb(207 103 77 / 0.09), transparent 60%);
+  pointer-events: none;
+}
+
+.ak-login-story > *,
+.ak-login-panel > * {
+  position: relative;
+}
+
+.ak-login-story h1 {
+  font-family: var(--ak-sys-font-display);
+  letter-spacing: -0.035em;
+}
+
+.ak-login-story li::before {
+  text-shadow: 0 0 10px rgb(45 212 191 / 0.6);
+}
+
+/* ---------------------------------------------------------------------
+   9b. Chat workspace: composer pinned to viewport bottom, thread scrolls
+       inside the conversation box (never the page).
+   ------------------------------------------------------------------- */
+
+body[data-page="chat"] .ak-app-main {
+  height: 100dvh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding-block-end: 0;
+}
+
+body[data-page="chat"] .ak-app-main > .ak-page-header {
+  flex: 0 0 auto;
+}
+
+body[data-page="chat"] .ak-general-chat-layout {
+  min-block-size: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+body[data-page="chat"] .ak-chat-workspace {
+  min-block-size: 0;
+  block-size: auto;
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+body[data-page="chat"] .ak-chat-surface {
+  min-block-size: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+body[data-page="chat"] .ak-chat-thread {
+  min-block-size: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+body[data-page="chat"] .ak-chat-composer {
+  position: relative;
+  inset-block-end: auto;
+}
+
+/* ---------------------------------------------------------------------
+   10. Guided entrance motion
+   ------------------------------------------------------------------- */
+
+@keyframes ak-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes ak-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.ak-app-main > * {
+  animation: ak-fade-in var(--ak-sys-motion-duration-enter) ease-out both;
+}
+
+.ak-app-main > :nth-child(2) {
+  animation-delay: 40ms;
+}
+
+.ak-app-main > :nth-child(n + 3) {
+  animation-delay: 70ms;
+}
+
+.ak-stat-grid .ak-stat-card {
+  animation: ak-rise-in var(--ak-sys-motion-duration-enter) var(--ak-sys-easing-enter) both;
+}
+
+.ak-stat-grid .ak-stat-card:nth-child(1) { animation-delay: 50ms; }
+.ak-stat-grid .ak-stat-card:nth-child(2) { animation-delay: 85ms; }
+.ak-stat-grid .ak-stat-card:nth-child(3) { animation-delay: 120ms; }
+.ak-stat-grid .ak-stat-card:nth-child(4) { animation-delay: 155ms; }
+.ak-stat-grid .ak-stat-card:nth-child(n + 5) { animation-delay: 190ms; }
+
+.ak-login-story {
+  animation: ak-fade-in 360ms ease-out both;
+}
+
+.ak-login-panel {
+  animation: ak-rise-in 360ms var(--ak-sys-easing-enter) both;
+}
+
+/* ---------------------------------------------------------------------
+   11. Motion + accessibility guards
+   ------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .ak-app-main > *,
+  .ak-stat-grid .ak-stat-card,
+  .ak-login-story,
+  .ak-login-panel {
+    animation: none;
+  }
+
+  .ak-panel,
+  .ak-stat-card,
+  .ak-capability-card,
+  .activity-item,
+  .ak-run-list-item,
+  .ak-button-primary,
+  button.primary,
+  button.secondary,
+  .ak-chat-composer .ak-composer-send,
+  .ak-composer-demo,
+  .ak-chat-composer,
+  .ak-icon-button,
+  .ak-event-item,
+  .ak-primary-nav a {
+    transition: none;
+  }
+
+  .status-running::before,
+  .status-waiting_for_approval::before {
+    animation: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .ak-brand-mark,
+  .ak-login-brand > span {
+    background: Highlight;
+    color: HighlightText;
+    box-shadow: none;
+  }
+
+  .ak-panel,
+  .ak-stat-card {
+    box-shadow: none;
+  }
+
+  .ak-primary-nav a.active,
+  .ak-primary-nav a[aria-current="page"],
+  .ak-run-list-item[aria-current="location"] {
+    box-shadow: inset 0 0 0 1px Highlight;
+  }
+}

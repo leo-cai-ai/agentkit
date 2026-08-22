@@ -13,6 +13,7 @@ class AttemptStatus(StrEnum):
     WAITING_FOR_APPROVAL = "waiting_for_approval"
     RESUMING = "resuming"
     SUCCEEDED = "succeeded"
+    NEEDS_CLARIFICATION = "needs_clarification"
     FAILED = "failed"
     INTERRUPTED = "interrupted"
     REJECTED = "rejected"

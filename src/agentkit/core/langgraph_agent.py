@@ -51,6 +51,20 @@ from .tool_executor import ToolExecutor
 AuditLog = InMemoryAuditLog | SQLiteAuditLog | PostgresAuditLog
 
 
+def _answer_handler(context: ExecutionContext, request: StrategyRequest) -> dict[str, Any]:
+    """``response_mode=answer`` 时的兜底回答：用 Agent 人设回答真实用户输入。
+
+    之前此处没有接入 answer_handler，Direct 策略会直接把解析出的 goal 当作
+    答案回显（例如“查询当前系统中的开放职位列表并回复用户”），看起来像是
+    “说了要做却没做”。这里统一使用原始用户文本，让模型给出真实、诚实的答复。
+    """
+    from agentkit.core import llm_client
+
+    system = str(getattr(context.agent, "instructions", "") or "")
+    user = str(getattr(context.request, "text", "") or request.goal or "")
+    return {"answer": llm_client.require_chat(system, user)}
+
+
 class IntentResolver(Protocol):
     def __call__(
         self,
@@ -608,6 +622,7 @@ class UnifiedAgentGraph:
             context_invoker=self._context_invoker,
             budget=selection.budget,
             invoker=invoker,
+            answer_handler=_answer_handler,
         )
         strategy = self._strategies.get(selection.strategy.value)
         result = strategy.execute(

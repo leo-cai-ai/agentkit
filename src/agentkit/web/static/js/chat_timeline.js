@@ -29,6 +29,7 @@
     waiting_for_approval: "等待审批",
     resuming: "正在恢复",
     succeeded: "已完成",
+    needs_clarification: "需要澄清",
     failed: "执行失败",
     interrupted: "执行中断",
     rejected: "已拒绝",
